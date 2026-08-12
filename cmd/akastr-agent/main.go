@@ -55,6 +55,9 @@ func run(arguments []string, output io.Writer) error {
 			return err
 		}
 		if arguments[0] == "check-config" {
+			if _, err := app.BuildRuntime(model); err != nil {
+				return fmt.Errorf("validate runtime dependencies: %w", err)
+			}
 			_, err := fmt.Fprintln(output, "configuration valid")
 			return err
 		}

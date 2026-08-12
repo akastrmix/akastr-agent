@@ -71,3 +71,9 @@ akastr-agent run --config /etc/akastr-agent/config.json
 For a release asset, `scripts/install.sh` installs a checksum-verified binary without Git, enrolls, creates the systemd unit, and starts it. `scripts/update.sh` validates the new binary/config and restores the previous symlink if restart fails. Release publication and production rollout remain separate operator actions.
 
 Maintainers create deterministic Linux amd64/arm64 assets plus checksum files with `scripts/build-release.sh vX.Y.Z <new-output-directory>`; the installer expects those four files under the matching release tag.
+
+## Host installation
+
+The packaged runtime targets Linux amd64/arm64 with systemd, `curl`, and `sha256sum`. The full install, enrollment, WSS reconnect, natural IPv4 acknowledgment, systemd sandbox, successful update, and failed-update rollback paths are verified on Debian 12 amd64; Debian 13 uses the same supported path.
+
+`install.sh` accepts only a fresh host path and creates root-only configuration/state directories. Before enrollment, `check-config` performs a read-only validation of the enabled providers and local state as well as the JSON model. Its service uses a read-only filesystem sandbox except for `/var/lib/akastr-agent`, then must remain active through a bounded stabilization window before installation succeeds. Release directories are immutable. `update.sh` installs a new version beside the old one, validates it, atomically switches `current`, and automatically restores the previous version when the new process cannot remain running.

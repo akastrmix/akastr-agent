@@ -1,6 +1,16 @@
 #!/bin/sh
 set -eu
 
+service_is_stable() {
+  attempt=0
+  while [ "$attempt" -lt 5 ]; do
+    sleep 1
+    [ "$(systemctl is-active akastr-agent.service 2>/dev/null || true)" = "active" ] || return 1
+    [ "$(systemctl show akastr-agent.service --property=MainPID --value)" != "0" ] || return 1
+    attempt=$((attempt + 1))
+  done
+}
+
 [ "$#" -ge 1 ] && [ "$#" -le 2 ] || {
   echo "usage: update.sh VERSION [RELEASE_BASE_URL]" >&2
   exit 2
@@ -13,6 +23,8 @@ printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
 }
 [ "$(id -u)" -eq 0 ] || { echo "updater must run as root" >&2; exit 1; }
 [ -f /etc/akastr-agent/config.json ] || { echo "Akastr Agent is not installed" >&2; exit 1; }
+[ -x /usr/local/lib/akastr-agent/current/akastr-agent ] || { echo "current Akastr Agent release is invalid" >&2; exit 1; }
+[ -f /etc/systemd/system/akastr-agent.service ] || { echo "Akastr Agent service is not installed" >&2; exit 1; }
 
 machine=$(uname -m)
 case "$machine" in
@@ -36,14 +48,18 @@ actual=$(sha256sum "$temporary/$asset" | awk '{print $1}')
 [ "$actual" = "$expected" ] || { echo "release checksum mismatch" >&2; exit 1; }
 
 release_dir="/usr/local/lib/akastr-agent/releases/$version"
+[ ! -e "$release_dir" ] || { echo "release $version is already installed and immutable" >&2; exit 1; }
 install -d -m 0755 "$release_dir"
 install -m 0755 "$temporary/$asset" "$release_dir/akastr-agent"
 "$release_dir/akastr-agent" check-config --config /etc/akastr-agent/config.json
 previous=$(readlink -f /usr/local/lib/akastr-agent/current)
 ln -sfn "$release_dir" /usr/local/lib/akastr-agent/current
-if ! systemctl restart akastr-agent.service || ! systemctl is-active --quiet akastr-agent.service; then
+if ! systemctl restart akastr-agent.service || ! service_is_stable; then
   ln -sfn "$previous" /usr/local/lib/akastr-agent/current
-  systemctl restart akastr-agent.service
+  if ! systemctl restart akastr-agent.service || ! service_is_stable; then
+    echo "update and automatic rollback both failed" >&2
+    exit 1
+  fi
   echo "update failed; previous release restored" >&2
   exit 1
 fi

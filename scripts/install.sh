@@ -6,6 +6,16 @@ usage() {
   exit 2
 }
 
+service_is_stable() {
+  attempt=0
+  while [ "$attempt" -lt 5 ]; do
+    sleep 1
+    [ "$(systemctl is-active akastr-agent.service 2>/dev/null || true)" = "active" ] || return 1
+    [ "$(systemctl show akastr-agent.service --property=MainPID --value)" != "0" ] || return 1
+    attempt=$((attempt + 1))
+  done
+}
+
 [ "$#" -ge 3 ] && [ "$#" -le 4 ] || usage
 version=$1
 config_source=$2
@@ -19,6 +29,11 @@ printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
 [ "$(id -u)" -eq 0 ] || { echo "installer must run as root" >&2; exit 1; }
 [ -f "$config_source" ] || { echo "configuration file not found" >&2; exit 1; }
 [ -f "$token_source" ] || { echo "enrollment token file not found" >&2; exit 1; }
+[ ! -e /usr/local/lib/akastr-agent/current ] || { echo "Akastr Agent is already installed; use update.sh" >&2; exit 1; }
+[ ! -e /etc/systemd/system/akastr-agent.service ] || { echo "Akastr Agent service already exists" >&2; exit 1; }
+[ ! -e /etc/akastr-agent ] || { echo "/etc/akastr-agent already exists" >&2; exit 1; }
+[ ! -e /var/lib/akastr-agent ] || { echo "/var/lib/akastr-agent already exists" >&2; exit 1; }
+[ ! -e /usr/local/lib/akastr-agent ] || { echo "/usr/local/lib/akastr-agent already exists" >&2; exit 1; }
 
 machine=$(uname -m)
 case "$machine" in
@@ -43,7 +58,8 @@ actual=$(sha256sum "$temporary/$asset" | awk '{print $1}')
 [ "$actual" = "$expected" ] || { echo "release checksum mismatch" >&2; exit 1; }
 
 release_dir="/usr/local/lib/akastr-agent/releases/$version"
-install -d -m 0755 "$release_dir" /etc/akastr-agent /var/lib/akastr-agent
+install -d -m 0755 "$release_dir"
+install -d -m 0700 /etc/akastr-agent /var/lib/akastr-agent
 install -m 0755 "$temporary/$asset" "$release_dir/akastr-agent"
 install -m 0600 "$config_source" /etc/akastr-agent/config.json
 install -m 0600 "$token_source" /etc/akastr-agent/enrollment-token
@@ -68,8 +84,16 @@ TimeoutStopSec=30s
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
-ProtectHome=read-only
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/akastr-agent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target
@@ -77,5 +101,9 @@ UNIT
 chmod 0644 /etc/systemd/system/akastr-agent.service
 systemctl daemon-reload
 systemctl enable --now akastr-agent.service
-systemctl is-active --quiet akastr-agent.service
+if ! service_is_stable; then
+  systemctl stop akastr-agent.service >/dev/null 2>&1 || true
+  echo "Akastr Agent failed to remain running after installation" >&2
+  exit 1
+fi
 echo "Akastr Agent $version installed and running"
