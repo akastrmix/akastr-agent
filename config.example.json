@@ -5,10 +5,12 @@
     "name": "example-node"
   },
   "control": {
-    "endpoint": "wss://origin.example.com/internal/agent/ws",
-    "credential_file": "/etc/akastr-agent/identity.json"
+    "endpoint": "wss://origin.example.com/internal/agents/ws",
+    "credential_file": "/etc/akastr-agent/identity.json",
+    "enrollment_token_file": "/etc/akastr-agent/enrollment-token"
   },
   "state_file": "/var/lib/akastr-agent/state.json",
+  "ip_state_file": "/var/lib/akastr-agent/ip-state.json",
   "recent_operation_limit": 64,
   "capabilities": {
     "ip_watch": {

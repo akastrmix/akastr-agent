@@ -2,7 +2,7 @@
 
 Akastr Agent is the lightweight, outbound-controlled runtime for AkastrCloud service nodes. It replaces the design of the old `ip-changer` project with a single Go process, typed capabilities, bounded local state, and an agent-initiated WSS control channel.
 
-This repository is currently in the pre-production foundation stage. It is not connected to AkastrCloud production and must not replace any of the six existing IPChanger installations yet.
+This repository now contains the approved `2026-08-13.v1` pre-production runtime. It is not connected to AkastrCloud production and must not replace any of the six existing IPChanger installations until a staged node cutover is explicitly performed.
 
 ## Ownership boundary
 
@@ -36,6 +36,10 @@ internal/operation/     local operation mutex and bounded journal
 internal/state/         atomic state file persistence
 internal/features/      concrete node observations
 internal/providers/     fixed local execution providers
+internal/identity/      Ed25519 enrollment identity
+internal/protocol/      approved WSS wire contract
+internal/transport/ws/  authenticated reconnecting control client
+scripts/                checksum-verified install/update entry points
 ```
 
 Future features will be added as focused sibling packages under `internal/features/` and `internal/providers/`; empty placeholders are intentionally not created.
@@ -55,4 +59,15 @@ go run ./cmd/akastr-agent check-config --config ./config.example.json
 go run ./cmd/akastr-agent capabilities --config ./config.example.json
 ```
 
-The WSS daemon, enrollment, IPQuality Runner, and installation scripts are added only after the paired AkastrCloud protocol and rollout proposal is approved. Public IP observation and the fixed ChangeIP command provider already have isolated, unit-tested implementations but are not yet wired to a daemon.
+Enroll once, then run the daemon:
+
+```bash
+akastr-agent enroll --config /etc/akastr-agent/config.json
+akastr-agent run --config /etc/akastr-agent/config.json
+```
+
+`enroll` generates an Ed25519 key locally and consumes the root-only token file; only the public key is sent. `run` keeps one outbound WSS connection, rejects untyped commands, persists operation results before acknowledging them, and retries unconfirmed natural IPv4 events. Logs contain stable codes rather than payloads or proxy credentials.
+
+For a release asset, `scripts/install.sh` installs a checksum-verified binary without Git, enrolls, creates the systemd unit, and starts it. `scripts/update.sh` validates the new binary/config and restores the previous symlink if restart fails. Release publication and production rollout remain separate operator actions.
+
+Maintainers create deterministic Linux amd64/arm64 assets plus checksum files with `scripts/build-release.sh vX.Y.Z <new-output-directory>`; the installer expects those four files under the matching release tag.

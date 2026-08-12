@@ -10,8 +10,9 @@ import (
 const validConfig = `{
   "schema_version": 1,
   "node": {"id":"123e4567-e89b-42d3-a456-426614174000","name":"HKT"},
-  "control": {"endpoint":"wss://origin.example.com/internal/agent/ws","credential_file":"/etc/akastr-agent/identity.json"},
+  "control": {"endpoint":"wss://origin.example.com/internal/agents/ws","credential_file":"/etc/akastr-agent/identity.json","enrollment_token_file":"/etc/akastr-agent/enrollment-token"},
   "state_file":"/var/lib/akastr-agent/state.json",
+  "ip_state_file":"/var/lib/akastr-agent/ip-state.json",
   "recent_operation_limit":64,
   "capabilities": {
     "ip_watch":{"enabled":true,"interval_seconds":60,"observe_ipv6":false},
@@ -56,7 +57,7 @@ func TestValidateRequiresFixedChangeIPProgram(t *testing.T) {
 }
 
 func TestValidateRunnerConcurrencyIsOne(t *testing.T) {
-	input := strings.Replace(validConfig, `"ipquality_runner":{"enabled":false}`, `"ipquality_runner":{"enabled":true,"script_path":"/opt/akastr-agent/tools/ipquality/ip.sh","proxy_profiles_file":"/etc/akastr-agent/proxies.json","timeout_seconds":600,"max_concurrency":2}`, 1)
+	input := strings.Replace(validConfig, `"ipquality_runner":{"enabled":false}`, `"ipquality_runner":{"enabled":true,"script_path":"/opt/akastr-agent/tools/ipquality/ip.sh","proxy_profiles_file":"/etc/akastr-agent/proxies.json","timeout_seconds":600,"max_concurrency":2,"script_version":"v2026.08.13","script_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, 1)
 	_, err := Load(writeConfig(t, input))
 	if err == nil || !strings.Contains(err.Error(), "max_concurrency must be 1") {
 		t.Fatalf("Load() error = %v, want concurrency error", err)

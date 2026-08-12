@@ -1,6 +1,8 @@
 package operation
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -30,13 +32,14 @@ const (
 )
 
 type Record struct {
-	OperationID    string     `json:"operation_id"`
-	Kind           string     `json:"kind"`
-	ExclusiveGroup string     `json:"exclusive_group"`
-	Status         Status     `json:"status"`
-	StartedAt      time.Time  `json:"started_at"`
-	FinishedAt     *time.Time `json:"finished_at,omitempty"`
-	TerminalCode   string     `json:"terminal_code,omitempty"`
+	OperationID    string          `json:"operation_id"`
+	Kind           string          `json:"kind"`
+	ExclusiveGroup string          `json:"exclusive_group"`
+	Status         Status          `json:"status"`
+	StartedAt      time.Time       `json:"started_at"`
+	FinishedAt     *time.Time      `json:"finished_at,omitempty"`
+	TerminalCode   string          `json:"terminal_code,omitempty"`
+	TerminalResult json.RawMessage `json:"terminal_result,omitempty"`
 }
 
 type Snapshot struct {
@@ -130,6 +133,10 @@ func (e *Engine) Begin(operationID, kind, exclusiveGroup string) (Record, error)
 }
 
 func (e *Engine) Finish(operationID string, status Status, terminalCode string) (Record, error) {
+	return e.FinishWithResult(operationID, status, terminalCode, nil)
+}
+
+func (e *Engine) FinishWithResult(operationID string, status Status, terminalCode string, terminalResult json.RawMessage) (Record, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -138,6 +145,12 @@ func (e *Engine) Finish(operationID string, status Status, terminalCode string) 
 	}
 	if !stableToken.MatchString(terminalCode) {
 		return Record{}, errors.New("terminal code must be a stable lowercase token")
+	}
+	if len(terminalResult) > 8192 || (len(terminalResult) > 0 && !json.Valid(terminalResult)) {
+		return Record{}, errors.New("terminal result must be valid JSON no larger than 8192 bytes")
+	}
+	if len(terminalResult) > 0 && terminalResult[0] != '{' {
+		return Record{}, errors.New("terminal result must be a JSON object")
 	}
 
 	group, record, found := findActive(e.snapshot, operationID)
@@ -148,6 +161,7 @@ func (e *Engine) Finish(operationID string, status Status, terminalCode string) 
 	record.Status = status
 	record.FinishedAt = &finishedAt
 	record.TerminalCode = terminalCode
+	record.TerminalResult = bytes.Clone(terminalResult)
 
 	next := cloneSnapshot(e.snapshot)
 	delete(next.Active, group)
@@ -160,6 +174,26 @@ func (e *Engine) Finish(operationID string, status Status, terminalCode string) 
 	}
 	e.snapshot = next
 	return record, nil
+}
+
+func (e *Engine) Recent(operationID string) (Record, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for index := len(e.snapshot.Recent) - 1; index >= 0; index-- {
+		if e.snapshot.Recent[index].OperationID == operationID {
+			record := e.snapshot.Recent[index]
+			record.TerminalResult = bytes.Clone(record.TerminalResult)
+			return record, true
+		}
+	}
+	return Record{}, false
+}
+
+func (e *Engine) Active(operationID string) (Record, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, record, found := findActive(e.snapshot, operationID)
+	return record, found
 }
 
 func (e *Engine) Snapshot() Snapshot {
@@ -194,6 +228,9 @@ func validateSnapshot(snapshot Snapshot) error {
 		}
 		if record.FinishedAt == nil || !stableToken.MatchString(record.TerminalCode) {
 			return fmt.Errorf("invalid recent terminal record %s", record.OperationID)
+		}
+		if len(record.TerminalResult) > 8192 || (len(record.TerminalResult) > 0 && (!json.Valid(record.TerminalResult) || record.TerminalResult[0] != '{')) {
+			return fmt.Errorf("invalid recent terminal result %s", record.OperationID)
 		}
 		if err := validateRecordTokens(record); err != nil {
 			return err
@@ -252,7 +289,11 @@ func cloneSnapshot(source Snapshot) Snapshot {
 		Recent:        make([]Record, len(source.Recent)),
 	}
 	copy.Recent = append(copy.Recent[:0], source.Recent...)
+	for index := range copy.Recent {
+		copy.Recent[index].TerminalResult = bytes.Clone(copy.Recent[index].TerminalResult)
+	}
 	for key, record := range source.Active {
+		record.TerminalResult = bytes.Clone(record.TerminalResult)
 		copy.Active[key] = record
 	}
 	return copy

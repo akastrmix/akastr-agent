@@ -45,13 +45,17 @@ func buildCapabilities(cfg config.CapabilitiesConfig) (*capability.Registry, err
 		})
 	}
 	if cfg.SOCKS5.Enabled {
+		properties := map[string]string{
+			"address_source": cfg.SOCKS5.AddressSource,
+			"port":           strconv.Itoa(cfg.SOCKS5.Port),
+		}
+		if cfg.SOCKS5.AddressSource == "static" {
+			properties["advertised_host"] = cfg.SOCKS5.AdvertisedHost
+		}
 		descriptors = append(descriptors, capability.Descriptor{
-			Name:    "proxy.socks5",
-			Version: 1,
-			Properties: map[string]string{
-				"address_source": cfg.SOCKS5.AddressSource,
-				"port":           strconv.Itoa(cfg.SOCKS5.Port),
-			},
+			Name:       "proxy.socks5",
+			Version:    1,
+			Properties: properties,
 		})
 	}
 	if cfg.IPQualityRunner.Enabled {
@@ -61,6 +65,7 @@ func buildCapabilities(cfg config.CapabilitiesConfig) (*capability.Registry, err
 			ExclusiveGroups: []string{"ipquality-runner"},
 			Properties: map[string]string{
 				"max_concurrency": strconv.Itoa(cfg.IPQualityRunner.MaxConcurrency),
+				"script_version":  cfg.IPQualityRunner.ScriptVersion,
 			},
 		})
 	}

@@ -21,6 +21,7 @@ type Config struct {
 	Node                 NodeConfig         `json:"node"`
 	Control              ControlConfig      `json:"control"`
 	StateFile            string             `json:"state_file"`
+	IPStateFile          string             `json:"ip_state_file"`
 	RecentOperationLimit int                `json:"recent_operation_limit"`
 	Capabilities         CapabilitiesConfig `json:"capabilities"`
 }
@@ -31,8 +32,9 @@ type NodeConfig struct {
 }
 
 type ControlConfig struct {
-	Endpoint       string `json:"endpoint"`
-	CredentialFile string `json:"credential_file"`
+	Endpoint            string `json:"endpoint"`
+	CredentialFile      string `json:"credential_file"`
+	EnrollmentTokenFile string `json:"enrollment_token_file"`
 }
 
 type CapabilitiesConfig struct {
@@ -49,10 +51,11 @@ type IPWatchConfig struct {
 }
 
 type ChangeIPConfig struct {
-	Enabled        bool     `json:"enabled"`
-	Program        string   `json:"program"`
-	Args           []string `json:"args"`
-	TimeoutSeconds int      `json:"timeout_seconds"`
+	Enabled               bool     `json:"enabled"`
+	Program               string   `json:"program"`
+	Args                  []string `json:"args"`
+	TimeoutSeconds        int      `json:"timeout_seconds"`
+	ObserveTimeoutSeconds int      `json:"observe_timeout_seconds"`
 }
 
 type SOCKS5Config struct {
@@ -68,6 +71,8 @@ type IPQualityRunnerConfig struct {
 	ProxyProfilesFile string `json:"proxy_profiles_file"`
 	TimeoutSeconds    int    `json:"timeout_seconds"`
 	MaxConcurrency    int    `json:"max_concurrency"`
+	ScriptVersion     string `json:"script_version"`
+	ScriptSHA256      string `json:"script_sha256"`
 }
 
 func Load(filePath string) (Config, error) {
@@ -115,6 +120,9 @@ func (c Config) Validate() error {
 	if err := validateAbsoluteLinuxPath("state_file", c.StateFile); err != nil {
 		return err
 	}
+	if err := validateAbsoluteLinuxPath("ip_state_file", c.IPStateFile); err != nil {
+		return err
+	}
 	if c.RecentOperationLimit < 16 || c.RecentOperationLimit > 1024 {
 		return errors.New("recent_operation_limit must be between 16 and 1024")
 	}
@@ -135,7 +143,13 @@ func validateControl(control ControlConfig) error {
 	if endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
 		return errors.New("control.endpoint must not contain user info, query, or fragment")
 	}
-	return validateAbsoluteLinuxPath("control.credential_file", control.CredentialFile)
+	if endpoint.Path != "/internal/agents/ws" {
+		return errors.New("control.endpoint path must be /internal/agents/ws")
+	}
+	if err := validateAbsoluteLinuxPath("control.credential_file", control.CredentialFile); err != nil {
+		return err
+	}
+	return validateAbsoluteLinuxPath("control.enrollment_token_file", control.EnrollmentTokenFile)
 }
 
 func validateCapabilities(capabilities CapabilitiesConfig) error {
@@ -161,6 +175,9 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 		}
 		if capabilities.ChangeIP.TimeoutSeconds < 1 || capabilities.ChangeIP.TimeoutSeconds > 300 {
 			return errors.New("capabilities.change_ip.timeout_seconds must be between 1 and 300")
+		}
+		if capabilities.ChangeIP.ObserveTimeoutSeconds < 30 || capabilities.ChangeIP.ObserveTimeoutSeconds > 900 {
+			return errors.New("capabilities.change_ip.observe_timeout_seconds must be between 30 and 900")
 		}
 	}
 	if capabilities.SOCKS5.Enabled {
@@ -194,6 +211,12 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 		}
 		if capabilities.IPQualityRunner.MaxConcurrency != 1 {
 			return errors.New("capabilities.ipquality_runner.max_concurrency must be 1 in the first release")
+		}
+		if !regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`).MatchString(capabilities.IPQualityRunner.ScriptVersion) {
+			return errors.New("capabilities.ipquality_runner.script_version must be a stable lowercase token")
+		}
+		if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(capabilities.IPQualityRunner.ScriptSHA256) {
+			return errors.New("capabilities.ipquality_runner.script_sha256 must be a lowercase SHA-256 digest")
 		}
 	}
 	if enabled == 0 {

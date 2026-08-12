@@ -22,7 +22,7 @@ For IPQuality, the control plane must obtain two resources before dispatch:
 
 Requests for the same target/day/IP generation coalesce into one real run. AkastrCloud returns the cached report after the first real run. A Hong Kong calendar-day rollover or observed IPv4 change starts a new cache generation.
 
-The network contract, authentication handshake, database schema, and durable job payload remain intentionally unspecified in this repository until the paired ADR 0024 proposal is approved.
+The paired ADR 0024 proposal is approved as `2026-08-13/akastr-agent-wss-v1`. Protocol `2026-08-13.v1` uses a 15-second server nonce and Ed25519 signature over a newline-delimited, context-bound challenge. Enrollment tokens are one-time; only public identity and non-secret capabilities enter AkastrCloud. Offers, accepts, terminal results, result acknowledgements, and natural IPv4 observations all carry stable UUIDs. Delivery is at least once, while local journals and database uniqueness make execution/results idempotent.
 
 ## 3. Package boundaries
 
@@ -30,19 +30,11 @@ The network contract, authentication handshake, database schema, and durable job
 - `internal/capability`: deterministic, non-secret capability descriptions.
 - `internal/state`: atomic JSON file persistence with a schema marker.
 - `internal/operation`: local exclusive-group enforcement and a bounded operation journal. It stores no command payload or credentials.
-- `internal/features/ipwatch`: bounded HTTPS public-IP observation with explicit address-family dialing.
+- `internal/features/ipwatch`: bounded HTTPS public-IP observation with explicit address-family dialing and durable unconfirmed IPv4 events.
 - `internal/providers/changeip/command`: fixed argv execution without a shell, with timeout and process-tree termination.
-- `internal/app`: assembles configuration and capabilities for CLI/runtime entry points.
-
-Remaining first-release functionality belongs under:
-
-```text
-internal/features/changeip/
-internal/features/socks5/
-internal/features/ipqualityrunner/
-internal/providers/ipquality/script/
-internal/transport/ws/
-```
+- `internal/providers/ipquality/script`: checksum-pinned Bash execution through a secret SOCKS5 profile, pre/post proxy IPv4 verification and bounded output parsing.
+- `internal/identity`, `internal/protocol`, `internal/transport/ws`: local Ed25519 identity and the reconnecting approved control channel.
+- `internal/app`: assembles configuration, executors and runtime entry points.
 
 Reserved features become sibling packages only when their behavior is approved:
 
@@ -58,7 +50,7 @@ Every executable operation names an exclusive group. The engine persists an acti
 
 The journal deliberately stores only operation ID, kind, exclusive group, timestamps, state, and a stable terminal code. It does not store task payloads, SOCKS5 credentials, script output, customer information, or Telegram identifiers.
 
-After restart, an active record remains active for explicit protocol reconciliation. The Agent never guesses that an interrupted operation succeeded and never silently deletes an unknown or corrupt state file.
+Terminal records include only the bounded safe protocol result needed for retransmission. After restart, an active record remains blocked until the same command is offered; it then becomes `interrupted_unknown` without re-executing and releases the group. The Agent never guesses that an interrupted operation succeeded and never silently deletes an unknown or corrupt state file.
 
 ## 5. SOCKS5 and IPQuality
 
