@@ -25,6 +25,8 @@ const maxOutputBytes = 2 * 1024 * 1024
 
 var reportURLPattern = regexp.MustCompile(`(?i)https://report\.check\.place/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]+`)
 
+var requiredCommands = []string{"/bin/bash", "jq", "curl", "bc", "nc", "dig", "ip"}
+
 type Config struct {
 	ScriptPath        string
 	ProfilesFile      string
@@ -69,7 +71,19 @@ func New(config Config) (*Provider, error) {
 	if err := provider.verifyScript(); err != nil {
 		return nil, err
 	}
+	if err := verifyDependencies(); err != nil {
+		return nil, err
+	}
 	return provider, nil
+}
+
+func verifyDependencies() error {
+	for _, command := range requiredCommands {
+		if _, err := exec.LookPath(command); err != nil {
+			return fmt.Errorf("IPQuality required command %q is unavailable", command)
+		}
+	}
+	return nil
 }
 
 func (p *Provider) Run(ctx context.Context, request Request) Result {
@@ -110,11 +124,9 @@ func (p *Provider) Run(ctx context.Context, request Request) Result {
 	}
 	done := make(chan error, 1)
 	go func() { done <- process.Wait() }()
+	var processError error
 	select {
-	case err := <-done:
-		if err != nil {
-			return Result{Code: "script_failed", IPv4Before: before, CheckedAt: p.now().UTC()}
-		}
+	case processError = <-done:
 	case <-runContext.Done():
 		terminateProcess(process)
 		<-done
@@ -124,12 +136,9 @@ func (p *Provider) Run(ctx context.Context, request Request) Result {
 		}
 		return Result{Code: code, IPv4Before: before, CheckedAt: p.now().UTC()}
 	}
-	if output.overflow {
-		return Result{Code: "script_output_too_large", IPv4Before: before, CheckedAt: p.now().UTC()}
-	}
-	reportURL := reportURLPattern.FindString(output.buffer.String())
-	if reportURL == "" {
-		return Result{Code: "report_url_missing", IPv4Before: before, CheckedAt: p.now().UTC()}
+	reportURL, outputCode := interpretScriptOutput(output, processError)
+	if outputCode != "" {
+		return Result{Code: outputCode, IPv4Before: before, CheckedAt: p.now().UTC()}
 	}
 	after, err := observeProxyIPv4(ctx, proxyAddress, profile)
 	if err != nil {
@@ -139,6 +148,20 @@ func (p *Provider) Run(ctx context.Context, request Request) Result {
 		return Result{Code: "proxy_ipv4_changed", ReportURL: reportURL, IPv4Before: before, IPv4After: after, CheckedAt: p.now().UTC()}
 	}
 	return Result{Code: "report_ready", ReportURL: reportURL, IPv4Before: before, IPv4After: after, CheckedAt: p.now().UTC()}
+}
+
+func interpretScriptOutput(output *limitedBuffer, processError error) (string, string) {
+	if output.overflow {
+		return "", "script_output_too_large"
+	}
+	reportURL := reportURLPattern.FindString(output.buffer.String())
+	if reportURL != "" {
+		return reportURL, ""
+	}
+	if processError != nil {
+		return "", "script_failed"
+	}
+	return "", "report_url_missing"
 }
 
 func (p *Provider) verifyScript() error {

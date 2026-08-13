@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/url"
+	"reflect"
 	"sync"
 	"time"
 
@@ -60,6 +61,9 @@ func New(options struct {
 	if options.Executor == nil {
 		return nil, errors.New("WSS executor is required")
 	}
+	if options.Observations != nil && isNilObservationSource(options.Observations) {
+		return nil, errors.New("WSS observation source contains a nil implementation")
+	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
 	}
@@ -77,6 +81,16 @@ func New(options struct {
 		running: make(map[string]struct{}), pending: make(map[string]protocol.OperationOffer),
 		completed: make(map[string]protocol.ExecutionResult),
 	}, nil
+}
+
+func isNilObservationSource(source ObservationSource) bool {
+	value := reflect.ValueOf(source)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (c *Client) Run(ctx context.Context) error {

@@ -16,13 +16,21 @@ import (
 
 type Handler struct {
 	engine         *operation.Engine
-	observer       *ipwatch.Observer
-	provider       *changecommand.Provider
+	observer       ipwatch.AddressObserver
+	provider       commandProvider
 	observeTimeout time.Duration
+	pollInterval   time.Duration
 }
 
-func New(engine *operation.Engine, observer *ipwatch.Observer, provider *changecommand.Provider, observeTimeout time.Duration) *Handler {
-	return &Handler{engine: engine, observer: observer, provider: provider, observeTimeout: observeTimeout}
+type commandProvider interface {
+	Run(context.Context) changecommand.Result
+}
+
+func New(engine *operation.Engine, observer ipwatch.AddressObserver, provider commandProvider, observeTimeout time.Duration) *Handler {
+	return &Handler{
+		engine: engine, observer: observer, provider: provider,
+		observeTimeout: observeTimeout, pollInterval: 5 * time.Second,
+	}
 }
 
 func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
@@ -86,9 +94,11 @@ func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) pr
 		return result
 	}
 	deadline := time.Now().Add(h.observeTimeout)
+	observedAfterChange := false
 	for time.Now().Before(deadline) {
 		observation, observeError := h.observer.Observe(ctx, ipwatch.IPv4)
 		if observeError == nil {
+			observedAfterChange = true
 			after := observation.Address.String()
 			if after != before {
 				return protocol.ExecutionResult{
@@ -100,8 +110,11 @@ func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) pr
 		select {
 		case <-ctx.Done():
 			return failure("cancelled", &before, &before, time.Now().UTC())
-		case <-time.After(5 * time.Second):
+		case <-time.After(h.pollInterval):
 		}
+	}
+	if !observedAfterChange {
+		return failure("ipv4_observe_timed_out", &before, nil, time.Now().UTC())
 	}
 	return failure("ipv4_unchanged", &before, &before, time.Now().UTC())
 }

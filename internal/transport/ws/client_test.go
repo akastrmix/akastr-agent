@@ -2,14 +2,45 @@ package ws
 
 import (
 	"context"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/capability"
+	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 type recordingExecutor struct {
 	executed chan string
+}
+
+type nilObservationSource struct{}
+
+func (*nilObservationSource) Run(context.Context, func(protocol.IPObservationBody) error) error {
+	return nil
+}
+
+func (*nilObservationSource) Ack(string) error { return nil }
+
+func TestNewRejectsTypedNilObservationSource(t *testing.T) {
+	var observations *nilObservationSource
+	_, err := New(struct {
+		Endpoint     string
+		Identity     identity.Identity
+		Version      string
+		Capabilities []capability.Descriptor
+		Executor     Executor
+		Observations ObservationSource
+		Logger       *slog.Logger
+	}{
+		Endpoint: "wss://control.example/internal/agents/ws", Executor: &recordingExecutor{},
+		Observations: observations,
+	})
+	if err == nil || !strings.Contains(err.Error(), "nil implementation") {
+		t.Fatalf("New() error = %v, want typed nil rejection", err)
+	}
 }
 
 func (e *recordingExecutor) Execute(_ context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {

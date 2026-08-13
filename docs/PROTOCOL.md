@@ -23,6 +23,8 @@ After `auth.response` / `auth.accepted`, the Agent sends `agent.hello`; a connec
 
 `operation.offer` contains `command_id`, `command_type`, `payload_version=1`, a typed payload, `not_before`, and `expires_at`. First-release types are `changeip.execute` and `ipquality.execute`. The Agent replies `operation.accepted`, persists local running state, executes only its configured provider, persists the bounded terminal result, and sends `operation.result`. AkastrCloud confirms only after its database transaction and downstream event admission succeed.
 
+A successful ChangeIP provider call is not itself success: the Agent must subsequently observe a different public IPv4. Repeated observations of the old address return `ipv4_unchanged`; a transition that never regains public IPv4 observation returns `ipv4_observe_timed_out`. For the pinned official IPQuality script, a bounded official report URL followed by a successful proxy postflight is terminal success even when the script's IPv4-only Bash process exits non-zero; non-zero exit without a report remains `script_failed`.
+
 Offers and results may repeat after disconnect. `command_id` is therefore both the execution idempotency key and the local journal key. A terminal local record is replayed, never executed again. No payload may select a program, argv, shell fragment, file, credential, or arbitrary URL.
 
 `ip.observed` carries one natural IPv4 transition with `observation_id`, previous/new address, and observation time. The Agent retains one pending transition until `ip.observed_ack`; the first observation establishes a baseline and is not announced. AkastrCloud applies the existing private-message subscription guards and IPQuality cache reset. Telegram channel delivery is absent.

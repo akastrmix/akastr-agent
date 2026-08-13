@@ -99,6 +99,10 @@ func run(arguments []string, output io.Writer) error {
 				return err
 			}
 			logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+			var observations transportws.ObservationSource
+			if monitor := runtime.IPMonitor(); monitor != nil {
+				observations = monitor
+			}
 			client, err := transportws.New(struct {
 				Endpoint     string
 				Identity     identity.Identity
@@ -110,7 +114,7 @@ func run(arguments []string, output io.Writer) error {
 			}{
 				Endpoint: model.Config.Control.Endpoint, Identity: credentials,
 				Version: version, Capabilities: model.Capabilities.List(),
-				Executor: runtime, Observations: runtime.IPMonitor(), Logger: logger,
+				Executor: runtime, Observations: observations, Logger: logger,
 			})
 			if err != nil {
 				return err

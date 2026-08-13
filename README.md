@@ -22,6 +22,8 @@ AkastrCloud owns orchestration and business policy:
 
 IPQuality is limited to one real run per service node per Hong Kong calendar day. Further requests use that day's cache. The daily state resets at `00:00 Asia/Hong_Kong` or immediately after the node's observed IPv4 changes. This rule is enforced centrally so reinstalling an Agent cannot bypass it.
 
+The pinned official IPQuality script can return a non-zero Bash status after a completed IPv4-only run. The Runner therefore treats a bounded, valid official report URL plus successful proxy postflight as completion; a non-zero exit without that URL remains a failure.
+
 Telegram channel delivery, generic offline alerts, generic host monitoring, arbitrary remote commands, and HTTP-flow ChangeIP are not part of the first release.
 
 ## Repository map
@@ -68,6 +70,8 @@ akastr-agent run --config /etc/akastr-agent/config.json
 
 `enroll` generates an Ed25519 key locally and consumes the root-only token file; only the public key is sent. `run` keeps one outbound WSS connection, rejects untyped commands, persists operation results before acknowledging them, and retries unconfirmed natural IPv4 events. Logs contain stable codes rather than payloads or proxy credentials.
 
+After an accepted ChangeIP provider call, the result distinguishes a repeatedly observed unchanged address from a complete loss of public-IP observation. A network transition that never regains observation returns `ipv4_observe_timed_out`, rather than incorrectly claiming that the old address remained reachable.
+
 For a release asset, `scripts/install.sh` installs a checksum-verified binary without Git, enrolls, creates the systemd unit, and starts it. `scripts/update.sh` validates the new binary/config and restores the previous symlink if restart fails. Release publication and production rollout remain separate operator actions.
 
 Maintainers create deterministic Linux amd64/arm64 assets plus checksum files with `scripts/build-release.sh vX.Y.Z <new-output-directory>`; the installer expects those four files under the matching release tag.
@@ -76,4 +80,4 @@ Maintainers create deterministic Linux amd64/arm64 assets plus checksum files wi
 
 The packaged runtime targets Linux amd64/arm64 with systemd, `curl`, and `sha256sum`. The full install, enrollment, WSS reconnect, natural IPv4 acknowledgment, systemd sandbox, successful update, and failed-update rollback paths are verified on Debian 12 amd64; Debian 13 uses the same supported path.
 
-`install.sh` accepts only a fresh host path and creates root-only configuration/state directories. Before enrollment, `check-config` performs a read-only validation of the enabled providers and local state as well as the JSON model. Its service uses a read-only filesystem sandbox except for `/var/lib/akastr-agent`, then must remain active through a bounded stabilization window before installation succeeds. Release directories are immutable. `update.sh` installs a new version beside the old one, validates it, atomically switches `current`, and automatically restores the previous version when the new process cannot remain running.
+`install.sh` accepts only a fresh host path and creates root-only configuration/state directories. Before enrollment, `check-config` performs a read-only validation of the enabled providers, local state, pinned IPQuality script, proxy profiles, and required IPQuality commands as well as the JSON model. Its service uses a read-only filesystem sandbox except for `/var/lib/akastr-agent`, then must remain active through a bounded stabilization window before installation succeeds. Release directories are immutable. `update.sh` installs a new version beside the old one, validates it, atomically switches `current`, and automatically restores the previous version when the new process cannot remain running.
