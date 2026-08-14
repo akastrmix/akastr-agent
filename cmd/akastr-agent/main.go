@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/app"
+	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	transportws "github.com/akastrmix/akastr-agent/internal/transport/ws"
@@ -31,7 +32,7 @@ func main() {
 
 func run(arguments []string, output io.Writer) error {
 	if len(arguments) == 0 {
-		return errors.New("expected one of: run, enroll, check-config, capabilities, version")
+		return errors.New("expected one of: bootstrap, run, enroll, check-config, capabilities, version")
 	}
 	switch arguments[0] {
 	case "version":
@@ -39,6 +40,31 @@ func run(arguments []string, output io.Writer) error {
 			return errors.New("version accepts no arguments")
 		}
 		_, err := fmt.Fprintln(output, version)
+		return err
+	case "bootstrap":
+		flags := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		agentID := flags.String("agent-id", "", "installation UUID")
+		endpoint := flags.String("endpoint", "", "HTTPS bootstrap endpoint")
+		tokenFile := flags.String("token-file", "", "root-only enrollment token file")
+		outputDir := flags.String("output-dir", "", "empty root-only output directory")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("unexpected positional arguments")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		payload, err := bootstrap.FetchAndWrite(ctx, bootstrap.FetchOptions{
+			Endpoint: *endpoint, AgentID: *agentID, TokenFile: *tokenFile,
+			OutputDir: *outputDir, IPQVersion: bootstrap.IPQualityVersion,
+			IPQSHA256: bootstrap.IPQualitySHA256,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(output, "bootstrap_mode=%s\n", payload.Mode)
 		return err
 	case "run", "enroll", "check-config", "capabilities":
 		flags := flag.NewFlagSet(arguments[0], flag.ContinueOnError)

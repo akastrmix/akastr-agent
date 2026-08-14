@@ -24,6 +24,7 @@ func repositoryFile(t *testing.T, parts ...string) string {
 
 func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	build := repositoryFile(t, "scripts", "build-release.sh")
+	powerShellBuild := repositoryFile(t, "scripts", "build-release.ps1")
 	if !strings.Contains(build, "GOARCH=amd64") {
 		t.Fatal("release builder must target amd64")
 	}
@@ -33,22 +34,36 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 		}
 	}
 	if !strings.Contains(build, "scripts/install.sh > \"$output/install.sh\"") {
-		t.Fatal("release builder must render the version-bound interactive installer")
+		t.Fatal("release builder must render the version-bound noninteractive installer")
 	}
 	if !strings.Contains(build, "[ -s \"$output/$asset\" ]") {
 		t.Fatal("release builder must fail when the cross-compiler does not create the asset")
 	}
+	for _, required := range []string{"GOOS = 'linux'", "GOARCH = 'amd64'", "akastr-agent-linux-amd64"} {
+		if !strings.Contains(powerShellBuild, required) {
+			t.Fatalf("PowerShell release builder missing contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{"arm64", ".sha256"} {
+		if strings.Contains(powerShellBuild, forbidden) {
+			t.Fatalf("PowerShell release builder contains obsolete contract %q", forbidden)
+		}
+	}
 }
 
-func TestInstallerKeepsSecretsOutOfTheGeneratedCommandContract(t *testing.T) {
+func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 	installer := repositoryFile(t, "scripts", "install.sh")
 	for _, required := range []string{
 		"@AKASTR_AGENT_VERSION@",
 		"@AKASTR_AGENT_BINARY_SHA256@",
-		"prompt_secret '一次性 enrollment token",
-		"AKASTR_AGENT_MODE",
+		"AKASTR_AGENT_ENROLLMENT_TOKEN",
+		"AKASTR_AGENT_BOOTSTRAP_ENDPOINT",
+		" bootstrap \\",
+		"--install)",
+		"--update)",
+		"--status)",
+		"--uninstall)",
 		"IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'",
-		"max_concurrency:1",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer missing contract %q", required)
@@ -57,6 +72,11 @@ func TestInstallerKeepsSecretsOutOfTheGeneratedCommandContract(t *testing.T) {
 	for _, forbidden := range []string{
 		"$asset.sha256",
 		"arm64)",
+		"AKASTR_AGENT_MODE",
+		"/dev/tty",
+		"prompt()",
+		"prompt_secret",
+		"IFS= read",
 		"eval ",
 		"printf 'fail\\nsilent\\nshow-error\\nlocation\\n'",
 	} {

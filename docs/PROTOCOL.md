@@ -4,7 +4,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 
 ## Enrollment 与身份认证
 
-管理员先在 AkastrCloud 后台创建 installation。后台签发一次性的 32-byte canonical base64url token，并生成预填 installation UUID、mode 和 WSS endpoint 的 v0.2.0 bootstrap 命令；token 不嵌入命令。交互安装器从 TTY 静默读取 token，只在 enrollment 前写入 root-only 文件。`akastr-agent enroll` 在本地生成 Ed25519 keypair，通过 HTTPS 发送 token、raw 32-byte public key、Agent version 和不含秘密的 capability list，然后把服务端返回的 installation UUID 与 private key 原子写入 `credential_file`。事务成功后 token 立即失效并从节点删除，private key 从不发送给主控。
+管理员先在 AkastrCloud 后台创建 installation 并填写全部节点参数。后台签发一次性的 32-byte canonical base64url token，把 provider secret 仅作为 AES-256-GCM 密文短期保存，并生成 v0.3.0 一键命令。Agent 以 installation UUID 和 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本地认证解密并生成 root-only 文件。随后 `akastr-agent enroll` 生成 Ed25519 keypair，通过 HTTPS 发送同一个 token、raw 32-byte public key、Agent version 和不含秘密的 capability list。事务成功后 token 立即失效，主控删除密封配置，节点删除 token；private key 从不发送给主控。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -26,7 +26,7 @@ Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`�
 `operation.offer` 包含：
 
 - `command_id`：稳定 UUID，也是执行幂等键与本地 journal key；
-- `command_type`：v0.2.0 runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
+- `command_type`：v0.3.0 runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
 - `payload_version=1` 与对应类型的严格 payload；
 - `not_before` 和 `expires_at`。
 
@@ -63,9 +63,9 @@ Agent 在本地只保留一个 pending transition，收到相同 `observation_id
 ## 安全与兼容性
 
 - 协议固定为 `2026-08-13.v1`，没有版本自动降级。
-- v0.2.0 是 Agent release/bootstrap 版本，不会改变线协议标识。
+- v0.3.0 是 Agent release/bootstrap 版本，不会改变线协议标识。
 - 认证只使用一次性 token 和本地 Ed25519 private key，不使用长期 bearer token 建立 WSS。
-- 后台生成的安装命令不得包含一次性 token、SOCKS5 password 或 ChangeIP bearer。
+- 后台生成的安装命令只可包含短期一次性 token，不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL 或服务端日志。
 - capability list、journal 和日志不得含密码或脚本输出。
 - Agent 不实现任意命令、远程 shell 或旧 IPChanger HTTP endpoint。
 - 修改认证、消息字段、持久 payload 或 rollout 边界时，必须与 AkastrCloud 侧按 ADR 0024 一并批准和实现。
