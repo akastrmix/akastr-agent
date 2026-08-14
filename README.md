@@ -83,7 +83,16 @@ go vet ./...
 go build ./cmd/akastr-agent
 ```
 
-维护者生成 release 资产：
+每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建和 shell 语法检查。正式发布只需从已经验证并合入 `main` 的提交创建并推送语义化版本标签：
+
+```bash
+git tag -a vX.Y.Z -m "Akastr Agent vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+标签必须严格符合 `vX.Y.Z`。发布工作流会再次运行完整验证，只构建 Linux amd64 binary 与该版本 `install.sh`，验证版本、架构和资产集合后，自动创建 GitHub Release。构建或验证失败时不会创建 Release，也不会覆盖已经发布的同名版本；因此旧下载地址始终不可变，新版本下载地址在工作流成功后自动可用。
+
+本地排查发布构建时可以运行：
 
 ```bash
 scripts/build-release.sh vX.Y.Z /path/to/new-output-directory
@@ -100,4 +109,4 @@ install.sh
 
 `install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件以 `--install`、`--update`、`--status` 和显式确认的 `--uninstall` 处理生命周期。
 
-release 发布与生产节点迁移是两项独立操作。生成 release 不代表允许启用 WSS Gate 或替换任何节点。
+自动发布与生产节点迁移是两项独立操作。Release 成功不代表允许启用 WSS Gate、让 AkastrCloud 改用新版本或替换任何节点。

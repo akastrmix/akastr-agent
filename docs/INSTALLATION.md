@@ -186,3 +186,16 @@ sudo sh /tmp/akastr-agent-install.sh --uninstall --confirm-destroy-local-agent
 5. 通过观察和回滚 Gate 后才停用旧实例。
 
 回滚时先阻止新 command，保留 Agent identity/state/journal，再恢复 AkastrCloud 到旧 integration 并验证旧路径。不能仅停止 Agent 就宣称业务回滚，也不能在观察期直接卸载。
+
+## 10. 维护者发布新版本
+
+普通 `main` 提交和 Pull Request 会自动执行测试、静态检查、构建与安装脚本语法检查，但不会发布文件。确认某个 `main` 提交可以发布后，只需创建并推送一个新的语义化标签：
+
+```bash
+git tag -a vX.Y.Z -m "Akastr Agent vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+GitHub Actions 会从这个已存在的标签重新验证源码，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`，核对 binary 的 Linux amd64 架构、内嵌版本、资产集合和脚本语法，然后自动创建 GitHub Release。任一步失败都不会发布；已经存在的 Release 不允许由工作流覆盖或替换。
+
+新版本会得到独立的 `releases/download/vX.Y.Z/...` 地址。AkastrCloud 应在批准的发布中显式固定准备迁移的 Agent 版本；不会悄悄把正式节点切换到 `latest`。Release 发布本身也不会创建 installation、更新现有 Agent 或触发 ChangeIP/IPQuality。

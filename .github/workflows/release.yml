@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing semantic version tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Validate immutable release input
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "release $RELEASE_TAG already exists; published assets are immutable" >&2
+            exit 1
+          fi
+
+      - name: Verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./...
+          go vet ./...
+          go build ./cmd/akastr-agent
+          bash -n scripts/install.sh
+          bash -n scripts/build-release.sh
+
+      - name: Build release assets
+        shell: bash
+        run: scripts/build-release.sh "$RELEASE_TAG" dist
+
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find dist -maxdepth 1 -type f -printf '%f\n' | sort | paste -sd ' ' -)" = "akastr-agent-linux-amd64 install.sh"
+          test -x dist/akastr-agent-linux-amd64
+          test -x dist/install.sh
+          file dist/akastr-agent-linux-amd64 | grep -Eq 'ELF 64-bit.*x86-64.*statically linked'
+          test "$(dist/akastr-agent-linux-amd64 version)" = "$RELEASE_TAG"
+          bash -n dist/install.sh
+          ! grep -Eq '@AKASTR_AGENT_(VERSION|BINARY_SHA256)@' dist/install.sh
+
+      - name: Publish immutable GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            dist/akastr-agent-linux-amd64 \
+            dist/install.sh \
+            --verify-tag \
+            --title "Akastr Agent $RELEASE_TAG" \
+            --generate-notes \
+            --latest
