@@ -1,12 +1,14 @@
-# Akastr Agent protocol `2026-08-13.v1`
+# Akastr Agent 协议 `2026-08-13.v1`
 
-AkastrCloud exposes HTTPS enrollment and an outbound-only WSS control route. Every JSON envelope contains exactly `protocol`, `message_id`, `type`, `sent_at`, and `body`; text frames are at most 64 KiB. Unknown fields, message types, capability fields, binary frames, invalid UUIDs, and future protocol versions fail closed.
+AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 64 KiB。未知字段、未知 message type、未知 capability 字段、binary frame、无效 UUID 和未来协议版本均会失败关闭。
 
-## Enrollment and authentication
+## Enrollment 与身份认证
 
-An operator creates an installation in AkastrCloud and places the one-time 32-byte base64url token in a root-only file. `akastr-agent enroll` creates an Ed25519 keypair, sends the token, raw 32-byte public key, version, and non-secret capability list over HTTPS, then atomically stores the returned installation UUID with its private key. The token becomes unusable after that transaction.
+操作者先在 AkastrCloud 创建 installation，再把一次性的 32-byte canonical base64url token 写入 root-only 文件。`akastr-agent enroll` 在本地生成 Ed25519 keypair，通过 HTTPS 发送 token、raw 32-byte public key、Agent version 和不含秘密的 capability list，然后把服务端返回的 installation UUID 与 private key 原子写入 `credential_file`。该事务成功后 token 立即失效，private key 从不发送给主控。
 
-WSS connects with `agent_id`. AkastrCloud sends `auth.challenge` containing a 32-byte nonce and 15-second validity. The Agent signs these UTF-8 lines without a final newline:
+enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
+
+WSS 连接 query 中包含 `agent_id`。AkastrCloud 发送 `auth.challenge`，其中 nonce 为 32 bytes、有效期为 15 秒。Agent 对下面这些 UTF-8 行签名，末尾没有换行：
 
 ```text
 akastr-agent-auth-v1
@@ -17,16 +19,51 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-After `auth.response` / `auth.accepted`, the Agent sends `agent.hello`; a connection is ready only after `hello.accepted`. A newer authenticated connection replaces an older one for the same installation.
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；只有收到 `hello.accepted`，连接才进入 ready。相同 installation 的新认证连接会替换旧连接。
 
-## Operations and events
+## Operation
 
-`operation.offer` contains `command_id`, `command_type`, `payload_version=1`, a typed payload, `not_before`, and `expires_at`. First-release types are `changeip.execute` and `ipquality.execute`. The Agent replies `operation.accepted`, persists local running state, executes only its configured provider, persists the bounded terminal result, and sends `operation.result`. AkastrCloud confirms only after its database transaction and downstream event admission succeed.
+`operation.offer` 包含：
 
-A successful ChangeIP provider call is not itself success: the Agent must subsequently observe a different public IPv4. Repeated observations of the old address return `ipv4_unchanged`; a transition that never regains public IPv4 observation returns `ipv4_observe_timed_out`. For the pinned official IPQuality script, a bounded official report URL followed by a successful proxy postflight is terminal success even when the script's IPv4-only Bash process exits non-zero; non-zero exit without a report remains `script_failed`.
+- `command_id`：稳定 UUID，也是执行幂等键与本地 journal key；
+- `command_type`：v0.1.0 只接受 `changeip.execute` 和 `ipquality.execute`；
+- `payload_version=1` 与对应类型的严格 payload；
+- `not_before` 和 `expires_at`。
 
-Offers and results may repeat after disconnect. `command_id` is therefore both the execution idempotency key and the local journal key. A terminal local record is replayed, never executed again. No payload may select a program, argv, shell fragment, file, credential, or arbitrary URL.
+Agent 先回复 `operation.accepted`。只有主控再发送 `operation.accepted_ack` 且 `accepted=true`，Agent 才持久化 running 状态并调用本地已配置 provider。终态先持久化，再通过 `operation.result` 发送；AkastrCloud 仅在数据库事务和下游事件接纳成功后发送 `operation.result_ack`。
 
-`ip.observed` carries one natural IPv4 transition with `observation_id`, previous/new address, and observation time. The Agent retains one pending transition until `ip.observed_ack`; the first observation establishes a baseline and is not announced. AkastrCloud applies the existing private-message subscription guards and IPQuality cache reset. Telegram channel delivery is absent.
+断线后 offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件、凭据或任意 URL。
 
-IPQuality payloads contain only target UUID, expected IPv4, non-secret SOCKS5 host/port, local profile id, and script version. Username/password remain in the Runner's root-only profile file. The Runner permits one active command, verifies the pinned script SHA-256 before every execution, checks proxy IPv4 before and after, and rejects a stale/changed generation.
+### `changeip.execute`
+
+payload 只包含 `expected_ipv4`。Agent 在调用 provider 前观察当前公网 IPv4：不匹配时返回 `stale_expected_ipv4`，不执行 provider。provider 使用本机配置中的固定 `program` 与 `args`，其 stdout/stderr 不进入协议或日志。
+
+provider 零退出并不等于换 IP 成功。之后观察到新地址才返回 `ipv4_changed`；反复看到旧地址返回 `ipv4_unchanged`；始终无法重新观察则返回 `ipv4_observe_timed_out`。其他稳定 code 包括 `start_failed`、`exited_nonzero`、`timed_out`、`cancelled`、`local_conflict` 和状态恢复相关错误。
+
+### `ipquality.execute`
+
+payload 只包含 `target_server_id`、`expected_ipv4`、不含秘密的 `proxy_host` / `proxy_port`、本地 `proxy_profile_id` 和 `script_version`。SOCKS5 username/password 只存在 Runner 的 root-only profile 文件中。
+
+Runner 同一时间只允许一个 command。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
+
+```text
+/bin/bash <script_path> -4 -n -x <local_socks5_relay_url>
+```
+
+本地 relay 只监听 `127.0.0.1` 的随机端口，并使用 profile 中的凭据连接上游 SOCKS5。脚本结束后 Runner 再做 postflight；代理地址改变、预期 IPv4 过期、checksum 不一致或找不到 profile 都会失败。
+
+有效 `https://report.check.place/...` URL 加成功 postflight 是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
+
+## 自然 IPv4 事件
+
+`ip.observed` 表示一次自然 IPv4 变化，包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。首次观察只建立本地 baseline，不产生消息。
+
+Agent 在本地只保留一个 pending transition，收到相同 `observation_id` 且 `persisted=true` 的 `ip.observed_ack` 后才清除；连接不可用时会继续保留并在重连后重发。AkastrCloud 随后应用既有私聊订阅条件并重置该 IP 代际的 IPQuality 缓存。协议没有 Telegram channel delivery。
+
+## 安全与兼容性
+
+- 协议固定为 `2026-08-13.v1`，没有版本自动降级。
+- 认证只使用一次性 token 和本地 Ed25519 private key，不使用长期 bearer token 建立 WSS。
+- capability list、journal 和日志不得含密码或脚本输出。
+- Agent 不实现任意命令、远程 shell 或旧 IPChanger HTTP endpoint。
+- 修改认证、消息字段、持久 payload 或 rollout 边界时，必须与 AkastrCloud 侧按 ADR 0024 一并批准和实现。
