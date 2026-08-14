@@ -1,601 +1,376 @@
-# Akastr Agent 安装、配置与使用教程
+# Akastr Agent 安装与使用教程
 
-本文面向第一次安装或手动迁移节点的操作者。所有示例都使用 `example.com`、示例 UUID 和占位凭据；复制配置后必须替换标注值。
+本文面向手动迁移节点的操作者。v0.2.0 不再要求用户下载 binary、复制 JSON、创建 token 文件或手工验证 checksum；唯一推荐入口是 AkastrCloud 后台为 installation 生成的一行交互式安装命令。
 
-> 当前不能开始正式迁移：AkastrCloud 生产环境的 Agent WSS Gate 仍然关闭，正式 installation 和 command 数量均为零。请先完成下载、依赖与配置准备；只有主控操作者明确启用 Gate，并通过安全渠道提供 installation UUID 和一次性 enrollment token 后，才能执行 enrollment 或安装脚本。不要提前停用旧 IPChanger。
+> 当前不能执行：AkastrCloud 生产环境的 Agent WSS Gate 仍然关闭，正式节点尚未迁移。请等待主控操作者明确开放 Gate 和迁移窗口。现在执行安装无法完成正常 enrollment，也不得提前停用旧 IPChanger。
 
-## 1. 支持范围和依赖
+## 1. 支持范围与准备
 
-v0.1.0 release 提供静态 Linux 二进制：
+v0.2.0 只支持：
 
-| 系统 | 架构 | release asset |
-| --- | --- | --- |
-| Debian 12/13（systemd） | x86_64 / amd64 | `akastr-agent-linux-amd64` |
-| Debian 12/13（systemd） | aarch64 / arm64 | `akastr-agent-linux-arm64` |
+- Debian 12 或 Debian 13；
+- `x86_64` / `amd64`；
+- 以 systemd 为 init；
+- 可以使用 root 权限和交互式 TTY；
+- 可以访问 AkastrCloud WSS/HTTPS、GitHub release；Runner 还需访问官方 IPQuality 脚本地址。
 
-完整安装、enrollment、WSS 重连、自然 IPv4 确认、systemd sandbox、正常更新和失败更新回滚已在 Debian 12 amd64 验证；Debian 13 使用相同路径。其他 Linux 发行版不是 v0.1.0 的已验证目标。容器、OpenRC 和 Windows service 不在支持范围。release 安装不需要 Git 或 Go。
+不再发布 ARM binary。Ubuntu、Alpine、OpenRC、容器和 Windows service 不是受支持路径。节点不需要 Git 或 Go。
 
-基础安装需要 root、systemd、有效 CA、`curl`、`sha256sum` 以及 Debian 基础工具。下文按 root shell 编写：普通 sudo 管理员可先执行 `sudo -i`；如果已直接以 root 登录且系统没有 `sudo`，去掉示例中的 `sudo` 前缀即可。先确认 systemd 是 PID 1：
-
-```bash
-ps -p 1 -o comm=
-sudo apt-get update
-sudo apt-get install --yes ca-certificates curl coreutils systemd
-```
-
-ChangeIP 示例以 `/usr/bin/curl` 为固定 provider，因此目标节点也需要 `curl`。IPQuality Runner 还必须具有运行时硬检查的全部命令：`/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 和 `ip`。Debian 可安装：
-
-```bash
-sudo apt-get install --yes bash jq curl bc netcat-openbsd dnsutils iproute2
-command -v /bin/bash jq curl bc nc dig ip
-```
-
-Agent 还需要出站 HTTPS/WSS、DNS 和准确系统时间。不得关闭 TLS 或主机名校验来绕过连接问题。
-
-## 2. 下载并校验 v0.1.0
-
-在目标机建立 root-only 暂存目录：
-
-```bash
-sudo install -d -m 0700 /root/akastr-agent-install
-cd /root/akastr-agent-install
-```
-
-先确认架构：
+先确认系统：
 
 ```bash
 uname -m
+ps -p 1 -o comm=
+. /etc/os-release
+printf '%s %s\n' "$ID" "$VERSION_ID"
 ```
 
-amd64 下载：
+预期分别看到 `x86_64`、`systemd` 和 `debian 12` 或 `debian 13`。后台生成的命令需要先下载生成版 `install.sh`，因此主机至少要有可信 CA 和 `curl`；缺少时先安装：
 
 ```bash
-sudo curl --fail --silent --show-error --location \
-  https://github.com/akastrmix/akastr-agent/releases/download/v0.1.0/akastr-agent-linux-amd64 \
-  --output akastr-agent-linux-amd64
-sudo curl --fail --silent --show-error --location \
-  https://github.com/akastrmix/akastr-agent/releases/download/v0.1.0/akastr-agent-linux-amd64.sha256 \
-  --output akastr-agent-linux-amd64.sha256
-sudo sha256sum --check akastr-agent-linux-amd64.sha256
+sudo apt-get update
+sudo apt-get install --yes ca-certificates curl
 ```
 
-arm64 把两个文件名换为 `akastr-agent-linux-arm64`。v0.1.0 的已发布摘要为：
+安装器必须以 root 运行。普通管理员应使用后台命令中提供的 `sudo`；已经直接登录 root 时按后台提示执行。安装器会自行安装其余依赖：
 
-| asset | SHA-256 |
-| --- | --- |
-| `akastr-agent-linux-amd64` | `c81619997d4733dbf7afc0cdd956d230d9886e8ea12eaa24d7ed706d76a47a0f` |
-| `akastr-agent-linux-arm64` | `582d91f4a762e90d1794b7f9f37bd952653271a9ae4a3e88b6a42927e469a2d5` |
+- 所有模式：`ca-certificates`、`curl`、`jq`；
+- Runner 额外安装：`bash`、`bc`、`netcat-openbsd`、`dnsutils`、`iproute2`。
 
-只有 `sha256sum --check` 输出 `OK` 且摘要与可信发布记录一致时才继续。不要使用 `curl | sh`，也不要跳过 checksum。
+不要关闭 TLS/host 校验，不要使用 `curl | sh`，也不要把非交互管道当作终端。安装器会直接从 `/dev/tty` 读取问题和秘密。
 
-可在安装前验证二进制版本。amd64 示例：
+## 2. 在 AkastrCloud 后台创建 installation
 
-```bash
-sudo chmod 0755 akastr-agent-linux-amd64
-./akastr-agent-linux-amd64 version
-```
+WSS Gate 开放后，管理员在 AkastrCloud 后台进入 Agent 管理，创建以下一种 installation：
 
-输出必须为 `v0.1.0`。
+- `target`：服务目标节点，负责 IPv4 观察、可选 ChangeIP 和 SOCKS5 描述；
+- `runner`：专用 IPQuality Runner，通过目标节点的 SOCKS5 排队执行检测。
 
-## 3. 从 AkastrCloud 取得 enrollment 信息
+后台会生成：
 
-v0.1.0 没有面向节点操作者的自助管理 UI，也没有在本仓库提供“生成 token”的命令。不要猜测 API 或手工生成 token。
+1. 稳定 installation UUID；
+2. 一次性 enrollment token；
+3. 预填 `AKASTR_AGENT_ID`、`AKASTR_AGENT_MODE` 和 `AKASTR_CONTROL_ENDPOINT` 的一行安装命令。
 
-主控端启用 Agent WSS Gate 后，由 AkastrCloud 操作者通过获批的管理流程创建 installation，并通过安全渠道提供三项信息：
+一次性 token **不会**嵌入命令。这样可避免它进入 shell history、进程参数或后台复制记录；稍后由安装器在终端静默询问。
 
-1. installation UUID：写入 `node.id`，必须与 enrollment 响应一致；
-2. WSS endpoint：必须是 `wss://<可信主控域名>/internal/agents/ws`；
-3. 一次性 enrollment token：canonical、无 padding 的 32-byte base64url 字符串。
+不要自行生成 UUID/token，不要猜测 enrollment API，也不要手工拼装命令。后台生成的命令绑定 installation 类型和主控地址，是该节点的权威入口。
 
-token 必须单独放进权限 `0600` 的 regular file，不能写入 Git、聊天记录或教程配置：
+## 3. 执行一行安装命令
 
-```bash
-sudo install -m 0600 /dev/null /root/akastr-agent-install/enrollment-token
-sudo nano /root/akastr-agent-install/enrollment-token
-sudo chmod 0600 /root/akastr-agent-install/enrollment-token
-```
+在待迁移节点打开一个稳定的交互式 SSH 终端：
 
-一次 enrollment 成功后 token 立即失效。`enroll` 只把公钥发给主控，私钥保存在 `/etc/akastr-agent/identity.json`。
+1. 从 AkastrCloud 后台复制完整命令；
+2. 原样粘贴为一行，不改变 URL、version、installation UUID、mode 或 WSS endpoint；
+3. 执行后确认标题显示 `Akastr Agent v0.2.0 交互式安装器`；
+4. 按向导回答问题；
+5. 在 `一次性 enrollment token` 提示出现时粘贴后台 token；输入不会回显；
+6. 阅读不含秘密的安装摘要；
+7. 只有内容正确时，对最终确认输入 `y`。
 
-## 4. 配置目标节点
+直接按 Enter 等同采用方括号中的默认值。所有是/否问题默认 `N`，需要启用时明确输入 `y`。
 
-目标节点通常启用 `ip_watch`、`change_ip` 和 `socks5`，关闭 `ipquality_runner`。下面配置中的 UUID、endpoint、显示名和 provider 内容都必须替换：
+生成版安装器内嵌 v0.2.0 binary 的 SHA-256。它会自动下载 `akastr-agent-linux-amd64`、计算摘要并与内嵌值比较；不一致立即停止。用户不需要复制、保存或手工比对 SHA，也不应另找 binary 替换。
 
-```json
-{
-  "schema_version": 1,
-  "node": {
-    "id": "11111111-1111-4111-8111-111111111111",
-    "name": "example-target"
-  },
-  "control": {
-    "endpoint": "wss://control.example.com/internal/agents/ws",
-    "credential_file": "/etc/akastr-agent/identity.json",
-    "enrollment_token_file": "/etc/akastr-agent/enrollment-token"
-  },
-  "state_file": "/var/lib/akastr-agent/state.json",
-  "ip_state_file": "/var/lib/akastr-agent/ip-state.json",
-  "recent_operation_limit": 64,
-  "capabilities": {
-    "ip_watch": {
-      "enabled": true,
-      "interval_seconds": 60,
-      "observe_ipv6": false
-    },
-    "change_ip": {
-      "enabled": true,
-      "program": "/usr/bin/curl",
-      "args": [
-        "--config",
-        "/etc/akastr-agent/changeip.curl.conf"
-      ],
-      "timeout_seconds": 30,
-      "observe_timeout_seconds": 300
-    },
-    "socks5": {
-      "enabled": true,
-      "address_source": "observed_ipv4",
-      "advertised_host": "",
-      "port": 1080
-    },
-    "ipquality_runner": {
-      "enabled": false
-    }
-  }
-}
-```
+确认前，安装器只在权限 `0700` 的临时目录处理输入，并显示以下不含秘密的摘要：
 
-先把它保存到暂存目录并限制权限：
+- release version 和 `linux/amd64`；
+- installation UUID、节点名称、类型和主控 endpoint；
+- target 的检查间隔、ChangeIP/SOCKS5 开关；
+- Runner 的 profile 数量和固定并发。
 
-```bash
-sudo install -m 0600 /dev/null /root/akastr-agent-install/config.json
-sudo nano /root/akastr-agent-install/config.json
-sudo chmod 0600 /root/akastr-agent-install/config.json
-```
+在最终确认处选择取消会显示 `已取消，未修改系统`。
 
-### 固定 argv ChangeIP provider
+## 4. 目标节点向导
 
-Agent 不接受远端程序名、参数、shell 或 URL。上例始终执行两个固定 argv：
+后台命令已经把模式固定为 `target`。操作者仍需确认名称并配置该节点本地能力。
+
+### 4.1 通用信息
+
+- `节点名称`：默认取主机短名，可改为后台容易辨认的名称；长度 1–64 字符，首尾不能有空白。
+- `主控 WSS 地址`：后台命令已经预填；应以 `wss://` 开头，path 为 `/internal/agents/ws`。不要改成 IP、测试域名或关闭 TLS。
+- `一次性 enrollment token`：从后台复制，终端不回显。
+
+### 4.2 公网 IPv4 观察
+
+目标节点一定启用 IPv4 watch。向导询问：
 
 ```text
-/usr/bin/curl --config /etc/akastr-agent/changeip.curl.conf
+公网 IPv4 检查间隔（秒） [60]:
 ```
 
-把服务商 endpoint 和 bearer token 放在另一个 root-only curl 配置中，避免出现在 capability 或 Agent 主配置：
+允许范围为 10–3600 秒，推荐保留 60 秒。首次成功观察只建立 baseline，不通知用户；之后的自然 IPv4 变化会持久化并上报 AkastrCloud。主控确认前，Agent 会在重连后重发。
 
-```bash
-sudo install -d -m 0700 /etc/akastr-agent
-sudo install -m 0600 /dev/null /etc/akastr-agent/changeip.curl.conf
-sudo nano /etc/akastr-agent/changeip.curl.conf
-```
+v0.2.0 的向导固定 `observe_ipv6=false`，不会产生自然 IPv6 变化事件。
 
-文件示例：
+### 4.3 ChangeIP
+
+`启用 ChangeIP？ [N]` 选择 `y` 后有两种 provider。
+
+#### 方式一：HTTP POST + Bearer token（推荐）
+
+依次输入：
+
+- `ChangeIP HTTPS URL`：必须以 `https://` 开头，例如 `https://panel.example.com/api/v1/changeIP/`；
+- `Bearer token`：静默输入，只接受字母、数字、点、下划线、波浪线和连字符。
+
+安装器生成权限 `0600` 的本地 curl 配置，运行时固定执行：
 
 ```text
-url = "https://panel.example.com/api/v1/changeIP/"
-request = "POST"
-fail
-silent
-show-error
-header = "Authorization: Bearer REPLACE_WITH_PROVIDER_TOKEN"
+/usr/bin/curl --config /etc/akastr-agent/changeip-curl.conf
 ```
 
-随后确认：
+URL 和 bearer token 不进入 capability、operation journal 或 Agent 日志。
 
-```bash
-sudo chmod 0600 /etc/akastr-agent/changeip.curl.conf
-test -x /usr/bin/curl
-sudo test "$(stat -c '%a' /etc/akastr-agent/changeip.curl.conf)" = 600
-```
+#### 方式二：本机可执行程序 + 固定参数
 
-不要把真实 token 写进 JSON 示例、Git 或命令行。provider stdout/stderr 会被丢弃；服务商接口必须用退出码表示成功或失败。Agent 调用成功后还会最多等待 `observe_timeout_seconds`，只有观测到新公网 IPv4 才报告成功。
+仅在节点已经有经过审核的专用 provider 时选择。依次输入：
 
-`socks5` 只描述已有代理服务，Agent 不负责安装或启动 SOCKS5。`address_source=observed_ipv4` 使用 Agent 观察到的公网 IPv4，此时 `advertised_host` 必须为空；固定域名或地址则用 `address_source=static` 并填写 `advertised_host`。用户名和密码不放在目标节点 capability 中。
+- 可执行程序的规范绝对路径；
+- 参数数量，范围 0–32；
+- 每个固定参数，每项单独输入且不能为空。
 
-## 5. 配置专用 IPQuality Runner
+安装器不会把一整行命令交给 shell 解析；Agent 使用固定 `program` + argv 执行。不要选择 `/bin/sh -c`、`/bin/bash -c`、通用任务执行器或能形成远程 shell 的程序。该可执行文件必须在安装前已经存在、是 regular file 且具有执行权限，否则 `check-config` 会失败。
 
-Runner 不需要提供目标节点的 SOCKS5 服务；它使用目标 SOCKS5 执行官方脚本。建议 Runner 只启用 `ipquality_runner`：
+两种方式都使用 60 秒 provider timeout；provider 完成后最多等待 300 秒观察新公网 IPv4。退出码为零不代表换 IP 成功，只有看到不同地址才返回 `ipv4_changed`。
 
-```json
-{
-  "schema_version": 1,
-  "node": {
-    "id": "22222222-2222-4222-8222-222222222222",
-    "name": "example-ipquality-runner"
-  },
-  "control": {
-    "endpoint": "wss://control.example.com/internal/agents/ws",
-    "credential_file": "/etc/akastr-agent/identity.json",
-    "enrollment_token_file": "/etc/akastr-agent/enrollment-token"
-  },
-  "state_file": "/var/lib/akastr-agent/state.json",
-  "ip_state_file": "/var/lib/akastr-agent/ip-state.json",
-  "recent_operation_limit": 64,
-  "capabilities": {
-    "ip_watch": {
-      "enabled": false
-    },
-    "change_ip": {
-      "enabled": false
-    },
-    "socks5": {
-      "enabled": false
-    },
-    "ipquality_runner": {
-      "enabled": true,
-      "script_path": "/opt/akastr-agent/tools/ipquality/ip.sh",
-      "proxy_profiles_file": "/etc/akastr-agent/proxies.json",
-      "timeout_seconds": 600,
-      "max_concurrency": 1,
-      "script_version": "xykt-reviewed-commit",
-      "script_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-    }
-  }
-}
-```
+### 4.4 SOCKS5 描述
 
-`script_version` 与 64 个零的 `script_sha256` 都是占位值，直接使用会在 checksum 检查处失败。它们必须换成操作者实际审核并固定的上游 commit 标识和真实小写 SHA-256。
+`向主控公布该节点的 SOCKS5 入口？ [N]` 只描述已经存在的 SOCKS5 服务；Agent 不安装或启动代理，也不在目标 capability 中保存用户名/密码。
 
-### 固定官方脚本
+启用后输入端口 1–65535，再选择地址来源：
 
-官方项目是 [xykt/IPQuality](https://github.com/xykt/IPQuality)。Akastr Agent v0.1.0 **没有内置**上游 URL、commit、release version 或 SHA-256；这是刻意的操作者固定边界。不要使用上游 README 中的在线 `bash <(curl ...)` 形式，因为它每次可能取得不同内容，无法满足 Agent 的 checksum 固定要求。
+- 公网入口始终随节点 IPv4 变化：对“始终跟随观测到的公网 IPv4”输入 `y`；
+- 使用 DDNS、固定域名或固定地址：保留默认 `N`，再输入静态 host，例如 `node.example.com`。
 
-先在官方仓库选择并审核一个不可变的完整 commit SHA，然后下载该 commit 的 `ip.sh`：
+Runner 中对应 server key 的凭据必须能连接这里公布的 host/port。
 
-```bash
-ipq_commit='REPLACE_WITH_REVIEWED_40_HEX_COMMIT'
-sudo install -d -m 0755 /opt/akastr-agent/tools/ipquality
-sudo curl --fail --silent --show-error --location \
-  "https://raw.githubusercontent.com/xykt/IPQuality/${ipq_commit}/ip.sh" \
-  --output /opt/akastr-agent/tools/ipquality/ip.sh
-sudo chmod 0500 /opt/akastr-agent/tools/ipquality/ip.sh
-sudo sha256sum /opt/akastr-agent/tools/ipquality/ip.sh
-```
+## 5. IPQuality Runner 向导
 
-把输出的 64 位小写摘要写入 `script_sha256`，并为同一 commit 选择稳定小写 token，例如 `xykt-a1b2c3d4e5f6` 写入 `script_version`。采用前应通过受信渠道复核 commit 和摘要；仅对同一次网络下载自行计算摘要只能固定内容，不能单独证明来源可信。
+后台命令已经把模式固定为 `runner`。Runner 不启用目标 IPv4 watch、ChangeIP 或 SOCKS5 描述。
 
-运行时会固定调用：
+### 5.1 配置 profile
+
+先输入要配置的 SOCKS5 credential 数量，范围 1–128。每个 profile 依次输入：
+
+- `server key`：AkastrCloud 中目标节点使用的稳定小写标识，例如 `example-hk`；只能包含小写字母、数字、点、下划线和连字符，最长 64 字符，不能重复；
+- SOCKS5 username；
+- SOCKS5 password：静默输入，不回显。
+
+server key 必须与主控派发的 `proxy_profile_id` 完全一致。多个目标可在同一 Runner 中各有一个 profile，但凭据不会进入 capability、command payload 或日志。
+
+安装器把 profiles 写入：
 
 ```text
-/bin/bash <script_path> -4 -n -x <Agent 创建的本地 SOCKS5 relay URL>
+/etc/akastr-agent/proxy-profiles.json
 ```
 
-Agent 不允许 command payload 改变脚本路径、参数或 URL。脚本必须能够生成 `https://report.check.place/...` 报告 URL；隐私模式 `-p` 与 v0.1.0 的完成判定不兼容。
+文件权限固定为 `0600`。用户不需要也不应手工编辑 JSON；新增、删除或轮换 profile 应在维护窗口通过获批的配置流程处理。
 
-### root-only SOCKS5 profiles
+### 5.2 内置官方 IPQuality
 
-每个 Runner 都要保存它可能执行的目标凭据。profile ID 是主控 payload 引用的稳定标识；推荐直接使用对应目标节点的 UUID，且不能含秘密：
+v0.2.0 生成版安装器固定：
 
-```json
-{
-  "schema_version": 1,
-  "profiles": {
-    "11111111-1111-4111-8111-111111111111": {
-      "username": "REPLACE_WITH_SOCKS5_USERNAME",
-      "password": "REPLACE_WITH_SOCKS5_PASSWORD"
-    }
-  }
-}
-```
+- 官方项目：[xykt/IPQuality](https://github.com/xykt/IPQuality)；
+- commit：`0ee5f192fed70c04615852efba0e4b8bd43546c7`；
+- runtime version token：`0ee5f192fed7`；
+- timeout：900 秒；
+- `max_concurrency=1`。
 
-安装到配置中声明的路径：
+安装器从该不可变 commit 下载 `ip.sh`，并使用内嵌 SHA-256 自动验证。用户不需要选择 commit、复制 checksum 或手工运行脚本；校验失败会停止安装。
 
-```bash
-sudo install -d -m 0700 /etc/akastr-agent
-sudo install -m 0600 /dev/null /etc/akastr-agent/proxies.json
-sudo nano /etc/akastr-agent/proxies.json
-sudo chmod 0600 /etc/akastr-agent/proxies.json
-sudo test "$(stat -c '%a' /etc/akastr-agent/proxies.json)" = 600
-```
-
-文件只接受 `schema_version` 和 `profiles`；profile 数量为 1–128，ID 必须匹配 `[a-z0-9][a-z0-9._-]{0,63}`，username/password 各为 1–255 字符。UUID 符合该格式，但主控派发的 `proxy_profile_id` 必须与这里的 key 完全相同。该文件不得授予 group 或 other 任何权限。
-
-## 6. 配置字段速查
-
-配置解析会拒绝未知字段、多段 JSON 和尾随内容。所有路径必须是规范化的绝对 Linux 路径，且至少启用一种 capability。
-
-| 字段 | v0.1.0 约束 |
-| --- | --- |
-| `schema_version` | 必须为 `1` |
-| `node.id` | 主控签发的非零、规范小写 UUID；必须与 enrollment 身份一致 |
-| `node.name` | 1–64 字符，首尾不能有空白 |
-| `control.endpoint` | 绝对 `wss` URL，path 必须为 `/internal/agents/ws`，不能含 user info、query 或 fragment |
-| `control.credential_file` | enrollment 生成的 root-only Ed25519 identity 文件 |
-| `control.enrollment_token_file` | 一次性 token 的预期安装路径 |
-| `state_file` | operation active/recent 状态；未知或损坏 schema 会失败关闭 |
-| `ip_state_file` | IPv4 baseline 与待确认变化；即使未启用 watcher 也要提供合法路径 |
-| `recent_operation_limit` | `16`–`1024` |
-| `ip_watch.interval_seconds` | 启用时 `10`–`3600` 秒 |
-| `ip_watch.observe_ipv6` | v0.1.0 应设 `false`；当前自然变化 monitor 只上报 IPv4 |
-| `change_ip.program` | 启用时必须是存在、regular、可执行的绝对路径 |
-| `change_ip.args` | 固定 argv，最多 32 项；每项非空且不能含 NUL |
-| `change_ip.timeout_seconds` | provider 执行超时，`1`–`300` 秒 |
-| `change_ip.observe_timeout_seconds` | provider 完成后等待新 IPv4，`30`–`900` 秒；建议默认 `300` |
-| `socks5.address_source` | `observed_ipv4` 或 `static` |
-| `socks5.advertised_host` | `observed_ipv4` 时必须空；`static` 时必填 |
-| `socks5.port` | `1`–`65535` |
-| `ipquality_runner.script_path` | 固定、已审核官方脚本的绝对路径 |
-| `ipquality_runner.proxy_profiles_file` | root-only profiles 的绝对路径 |
-| `ipquality_runner.timeout_seconds` | `60`–`1800` 秒 |
-| `ipquality_runner.max_concurrency` | v0.1.0 必须为 `1` |
-| `ipquality_runner.script_version` | 1–64 字符稳定小写 token：`[a-z0-9][a-z0-9._-]{0,63}` |
-| `ipquality_runner.script_sha256` | 恰好 64 位小写十六进制 SHA-256 |
-
-## 7. 安装前检查 CLI
-
-把已校验的二进制路径代入下列命令。`capabilities` 只输出不含秘密的描述；`check-config` 还会检查运行时文件、状态、ChangeIP program、IPQuality checksum、profile 权限和 Runner 依赖。
-
-amd64 示例：
-
-```bash
-cd /root/akastr-agent-install
-sudo ./akastr-agent-linux-amd64 version
-sudo ./akastr-agent-linux-amd64 capabilities --config ./config.json
-sudo ./akastr-agent-linux-amd64 check-config --config ./config.json
-```
-
-成功时最后一条输出 `configuration valid`。必须先通过该检查，再使用一次性 token enrollment。
-
-## 8. 一键安装
-
-`install.sh` 只接受完全未安装的新路径；以下任一对象已存在都会拒绝运行：
+Agent 固定通过目标 SOCKS5 执行：
 
 ```text
+/bin/bash <pinned-ip.sh> -4 -n -x <local-socks5-relay>
+```
+
+本地 relay 只监听 `127.0.0.1` 的随机端口。Runner 在脚本前后都通过目标 SOCKS5 观察 IPv4；有效报告 URL 加成功 postflight 才是 `report_ready`。同一 Runner 永远只有一个执行槽，其余任务由 AkastrCloud 排队，不能另起第二个 Agent 绕过。
+
+“每个服务节点每天一次真实 IPQuality”仍由主控执行：同一天后续请求读取缓存；香港时间 `00:00` 或目标 IPv4 变化后重置。Runner 重装或新增 profile 不能绕过限额。
+
+## 6. 安装器实际完成的工作
+
+最终确认后，安装器按顺序：
+
+1. 用 apt 安装该模式所需的 Debian 依赖；
+2. 下载 v0.2.0 amd64 binary 并用内嵌 SHA-256 校验；
+3. 生成严格 Agent config 和必要的 root-only secret 文件；
+4. Runner 下载并校验内置 IPQuality 脚本；
+5. 将 binary 安装到 immutable release 目录；
+6. 运行 `check-config`，同时验证程序、状态、profile、脚本和依赖；
+7. 使用终端中的一次性 token 执行 HTTPS enrollment；
+8. enrollment 成功后删除本地 token 文件并清空 shell 变量；
+9. 创建加固的 systemd unit，启用并启动服务；
+10. 连续检查约 5 秒，确认 service 保持 active。
+
+主要路径：
+
+```text
+/etc/akastr-agent/config.json
+/etc/akastr-agent/identity.json
+/var/lib/akastr-agent/
+/usr/local/lib/akastr-agent/releases/v0.2.0/
 /usr/local/lib/akastr-agent/current
 /etc/systemd/system/akastr-agent.service
-/etc/akastr-agent
-/var/lib/akastr-agent
-/usr/local/lib/akastr-agent
 ```
 
-如果目标节点需要 ChangeIP curl 配置，或 Runner 需要脚本/profiles，应先按前文准备 `/etc/akastr-agent`。但这会触发 fresh-host 检查，所以这种节点应使用第 9 节的等价手动安装。当前 `install.sh` 更适合不需要额外 `/etc/akastr-agent` 文件的最小实例；这是 v0.1.0 的真实限制。
+ChangeIP HTTP provider 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/etc/akastr-agent/proxy-profiles.json` 和 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。
 
-对于满足 fresh-host 条件的实例，从不可变 v0.1.0 tag 下载脚本并校验脚本本身：
+配置、identity 和 secret 目录为 root-only；systemd service 的文件系统默认只读，只有 `/var/lib/akastr-agent` 可写。
 
-```bash
-cd /root/akastr-agent-install
-sudo curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/akastrmix/akastr-agent/v0.1.0/scripts/install.sh \
-  --output install.sh
-echo '791c4b1578c69a255b06f8be8adfc6c5981d8a076fe8e91330ccd15d812d1a1c  install.sh' \
-  | sudo sha256sum --check -
-sudo chmod 0700 install.sh
-```
+## 7. 安装后验收
 
-确认 Gate 已开启、配置已通过检查且 token 已就绪后执行：
+安装器显示成功后，在节点执行：
 
 ```bash
-sudo ./install.sh \
-  v0.1.0 \
-  /root/akastr-agent-install/config.json \
-  /root/akastr-agent-install/enrollment-token
-```
-
-完整接口为 `install.sh VERSION CONFIG_FILE ENROLLMENT_TOKEN_FILE [RELEASE_BASE_URL]`。可选 mirror 必须由操作者信任，并保持 `<base>/<version>/<asset>` 和 `<base>/<version>/<asset>.sha256` 布局；即使使用 mirror，checksum 也不会跳过。
-
-脚本会再次下载并验证对应架构的 binary/checksum，创建 `0700` 配置与状态目录，将 config/token 安装为 `0600`，运行 `check-config` 和 `enroll`，删除安装位置的 token，创建加固 systemd unit，并在服务连续稳定约 5 秒后成功退出。
-
-注意：脚本不会删除传入的 `/root/akastr-agent-install/enrollment-token` 源文件；成功后应将这个已经失效但仍属秘密的源文件安全移出工作区或删除。脚本也不是事务安装器：若 enrollment 或启动失败，它会保留已创建文件，之后不能直接重跑 fresh install；请保留证据、排障，并按手动步骤继续，不能用宽泛删除命令盲目清理。
-
-## 9. 等价手动安装
-
-目标节点和 Runner 通常需要提前准备 root-only provider 文件，因此推荐手动安装。下面以 amd64 为例；arm64 替换 asset 名称。
-
-### 9.1 安装 immutable release 与配置
-
-```bash
-sudo install -d -m 0755 /usr/local/lib/akastr-agent/releases/v0.1.0
-sudo install -d -m 0700 /etc/akastr-agent /var/lib/akastr-agent
-sudo install -m 0755 \
-  /root/akastr-agent-install/akastr-agent-linux-amd64 \
-  /usr/local/lib/akastr-agent/releases/v0.1.0/akastr-agent
-sudo install -m 0600 \
-  /root/akastr-agent-install/config.json \
-  /etc/akastr-agent/config.json
-sudo install -m 0600 \
-  /root/akastr-agent-install/enrollment-token \
-  /etc/akastr-agent/enrollment-token
-sudo ln -sfn \
-  /usr/local/lib/akastr-agent/releases/v0.1.0 \
-  /usr/local/lib/akastr-agent/current
-```
-
-安装后的 release 目录视为 immutable，不在原地覆盖 binary。
-
-### 9.2 检查、查看能力并 enrollment
-
-仅在 WSS Gate 已开启且 token 有效时执行 enrollment：
-
-```bash
+sudo systemctl is-active akastr-agent.service
+sudo systemctl show akastr-agent.service \
+  --property=MainPID,ActiveState,SubState,NRestarts
 sudo /usr/local/lib/akastr-agent/current/akastr-agent version
 sudo /usr/local/lib/akastr-agent/current/akastr-agent \
   check-config --config /etc/akastr-agent/config.json
 sudo /usr/local/lib/akastr-agent/current/akastr-agent \
   capabilities --config /etc/akastr-agent/config.json
-sudo /usr/local/lib/akastr-agent/current/akastr-agent \
-  enroll --config /etc/akastr-agent/config.json
-sudo rm -f -- /etc/akastr-agent/enrollment-token
 ```
 
-成功输出 `enrolled agent <UUID>`。只有成功后才删除安装位置的 token。另行安全处理暂存目录中的 token 源文件。
+预期：
 
-### 9.3 创建 systemd unit
+- `is-active` 输出 `active`；
+- `MainPID` 不为 0；
+- version 输出 `v0.2.0`；
+- config 检查输出 `configuration valid`；
+- capabilities 只含向导中启用的能力，不含 token、password 或 provider secret。
 
-先创建 unit 文件：
+查看日志：
 
 ```bash
-sudo install -m 0644 /dev/null /etc/systemd/system/akastr-agent.service
-sudo nano /etc/systemd/system/akastr-agent.service
+sudo journalctl -u akastr-agent.service -n 100 --no-pager
+sudo journalctl -u akastr-agent.service --since '30 minutes ago' --no-pager
 ```
 
-填入下面的完整内容：
+WSS 认证和 hello 完成后会出现 `control connection ready`。然后回到 AkastrCloud 后台，确认同一 installation 显示 active、版本和 capability 正确。主控未确认前不要开始迁移验收。
 
-```ini
-[Unit]
-Description=Akastr Agent
-After=network-online.target
-Wants=network-online.target
+## 8. 日常使用
 
-[Service]
-Type=simple
-ExecStart=/usr/local/lib/akastr-agent/current/akastr-agent run --config /etc/akastr-agent/config.json
-Restart=always
-RestartSec=5s
-TimeoutStopSec=30s
-UMask=0077
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/lib/akastr-agent
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
+Agent 没有本地 `change-ip` 或 `ipquality` CLI。用户仍从 AkastrCloud/Carpool 发起：
 
-[Install]
-WantedBy=multi-user.target
-```
+- 延迟立即更换，默认 5 分钟；
+- 预设更换；
+- 自动定时更换；
+- IPQuality 查询。
 
-然后启动并检查：
+主控把前三种统一转换为带类型的 `changeip.execute`；IPQuality 只有在每日缓存、目标互斥和 Runner 排队规则通过后才派发。不能登录节点手工绕过主控策略。
 
-```bash
-sudo chmod 0644 /etc/systemd/system/akastr-agent.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now akastr-agent.service
-sudo systemctl is-active akastr-agent.service
-sudo systemctl show akastr-agent.service \
-  --property=MainPID,ActiveState,SubState,NRestarts
-```
+自然 IPv4 首次观察只建立 baseline。之后的变化会先写入本地状态，再通过 WSS 至少一次投递；AkastrCloud 负责重置 IPQuality 缓存并向所有仍满足订阅条件的用户私聊播报。Agent 不连接 Telegram，也没有 channel 播报。
 
-`is-active` 必须输出 `active`，`MainPID` 不能为 `0`。systemd unit 以 root 运行以读取 root-only provider 文件，但 `ProtectSystem=strict` 令文件系统只读，只有 `/var/lib/akastr-agent` 可写。
-
-## 10. 日常使用与日志
-
-CLI 只有五个 command：
-
-```text
-akastr-agent version
-akastr-agent check-config [--config PATH]
-akastr-agent capabilities [--config PATH]
-akastr-agent enroll [--config PATH]
-akastr-agent run [--config PATH]
-```
-
-后四项默认 config 为 `/etc/akastr-agent/config.json`。`run` 是前台 daemon；systemd 已启动时不要再手工运行第二份。
-
-Agent 没有本地 `change-ip` 或 `ipquality` CLI。用户仍从 AkastrCloud/Carpool 发起延迟立即更换（默认 5 分钟）、预设或自动更换；主控统一把它们转换为 `changeip.execute`。IPQuality 也只能由主控在每日缓存、目标互斥和 Runner 排队规则通过后派发，不能登录 Runner 手工绕过。
-
-常用命令：
+常用服务命令：
 
 ```bash
 sudo systemctl status akastr-agent.service --no-pager
-sudo journalctl -u akastr-agent.service -n 100 --no-pager
-sudo journalctl -u akastr-agent.service --since '30 minutes ago' --no-pager
 sudo systemctl restart akastr-agent.service
+sudo journalctl -u akastr-agent.service -f
 ```
 
-日志为 JSON，连接成功会出现 `control connection ready`。断线只记录稳定 code，例如 `connection_failed` 或 `websocket_<close-code>`；不会记录 WSS payload、SOCKS5 密码或 IPQuality 脚本完整输出。
+不要启动第二份 `akastr-agent run`，不要手工修改 `identity.json`、operation state 或 IP observation state。
 
-### 自然 IPv4 上报
+## 9. 更新、状态与卸载
 
-启用 `ip_watch` 后，首次观察只在 `ip_state_file` 建立 baseline，不通知用户。之后的自然 IPv4 变化先持久化，再通过 WSS 发送。主控确认持久化以前，Agent 会保留并在重连后重发。AkastrCloud 负责向所有仍满足订阅条件的用户私聊播报，并重置该节点当天 IPQuality 缓存；Agent 自己不连接 Telegram。
+v0.2.0 没有独立 `update.sh` 或 `uninstall.sh`。以后要维护现有安装时，从 AkastrCloud 后台复制目标 release 新生成的一行命令并再次执行；安装器检测到现有 `current` 或 systemd unit 后显示：
 
-不要手工编辑 `state.json`、`ip-state.json` 或 `identity.json`。schema 不认识或文件损坏时，Agent 会失败关闭，防止重复执行或丢事件。
-
-## 11. 更新和回滚
-
-更新脚本把新版本安装到新的 immutable 目录，先用现有配置执行 `check-config`，再原子切换 `current` 并重启。若新服务无法稳定运行，它会自动把 symlink 恢复到旧 release 并再次验证服务。
-
-下载当前已审核的 v0.1.0 updater：
-
-```bash
-cd /root/akastr-agent-install
-sudo curl --fail --silent --show-error --location \
-  https://raw.githubusercontent.com/akastrmix/akastr-agent/v0.1.0/scripts/update.sh \
-  --output update.sh
-echo '1d0ee5de3feb9586c6f08a1e80a957e35e1ca8b70c53fddbaddb1157ece3b7fa  update.sh' \
-  | sudo sha256sum --check -
-sudo chmod 0700 update.sh
+```text
+1) 更新到 <该安装器版本>
+2) 查看服务状态
+3) 卸载
+4) 退出
 ```
 
-目标 release 正式发布并经操作者批准后执行，其中 `vX.Y.Z` 必须换成真实版本：
+### 更新
 
-```bash
-sudo ./update.sh vX.Y.Z
-```
+选择 1 后，安装器：
 
-完整接口为 `update.sh VERSION [RELEASE_BASE_URL]`，mirror 布局和 checksum 规则与安装器相同。不能更新到已存在的 release 目录，也不会修改 config。未来 release 若要求新版 updater，应从该 release 的不可变 tag 获取，并用可信发布记录中的摘要校验，不能盲目使用 main 分支脚本。
+- 下载目标 release binary 并以内嵌摘要校验；
+- 将它写入新的 immutable release 目录；
+- 用现有 config 运行 `check-config`；
+- 原子切换 `current` 并重启服务；
+- 新服务无法稳定运行时恢复旧 symlink，并尝试重启旧版本。
 
-若程序保持 active 但业务验收失败，先停止新任务，再明确选择仍存在的旧 release；下面只是以 v0.1.0 为例：
+更新保留 installation identity、config、secret 和本地状态，不重新 enrollment。运行与当前相同版本的安装器选择更新会被拒绝。
 
-```bash
-sudo ln -sfn \
-  /usr/local/lib/akastr-agent/releases/v0.1.0 \
-  /usr/local/lib/akastr-agent/current
-sudo systemctl restart akastr-agent.service
-sudo systemctl is-active akastr-agent.service
-sudo /usr/local/lib/akastr-agent/current/akastr-agent version
-```
+v0.2.0 的更新路径只更新 Agent binary，不重建向导配置、Runner profiles 或已安装的 IPQuality 脚本。未来 release 如果改变配置 schema 或 IPQuality pin，必须在该 release 明确提供迁移流程，不能假设现有更新菜单会自动改写。
 
-回滚 binary 不会自动回滚主控路由，也不能抹掉在途 operation。节点迁移回滚必须由 AkastrCloud 操作者协调，并保留 Agent identity、journal 和旧 IPChanger 证据。
+更新后必须重新检查 version、service、restart count、capabilities 和后台 active 状态。自动恢复旧 symlink 不等于业务路由已经回滚。
 
-## 12. 可恢复卸载
+### 查看状态
 
-仓库没有 `uninstall.sh`。在主控先注销/隔离 installation、确认没有 active command，并确认旧节点路径可接管后，再执行可恢复卸载。以下命令把配置、状态和 release 移进 root-only 备份，而不是立即销毁：
+选择 2 只调用 systemd status，不修改安装。
 
-```bash
-sudo test ! -e /root/akastr-agent-uninstall-backup
-sudo install -d -m 0700 /root/akastr-agent-uninstall-backup
-sudo systemctl disable --now akastr-agent.service
-sudo mv /etc/systemd/system/akastr-agent.service \
-  /root/akastr-agent-uninstall-backup/akastr-agent.service
-sudo mv /etc/akastr-agent \
-  /root/akastr-agent-uninstall-backup/etc-akastr-agent
-sudo mv /var/lib/akastr-agent \
-  /root/akastr-agent-uninstall-backup/var-lib-akastr-agent
-sudo mv /usr/local/lib/akastr-agent \
-  /root/akastr-agent-uninstall-backup/usr-local-lib-akastr-agent
-sudo systemctl daemon-reload
-sudo systemctl reset-failed akastr-agent.service
-```
+### 永久卸载
 
-备份含 private key、provider secret 和操作状态，必须持续保持 root-only。通过回滚观察期后才能按操作者的数据销毁流程处理；不要在教程中复制、输出或上传这些文件。
+选择 3 会再次要求明确确认，然后：
 
-## 13. 常见故障
+- 停止并 disable systemd service；
+- 删除 unit；
+- 永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent` 和 `/usr/local/lib/akastr-agent`；
+- 删除 private key、provider secret、profiles 和本地 operation/observation state。
 
-| 现象或 code | 含义与处理 |
+此操作不可由安装器恢复，而且不会自动吊销 AkastrCloud 后台的 installation。只有主控管理员先阻止新 command、完成业务回滚并明确允许销毁本地证据后才能卸载；之后还要在后台吊销 installation。
+
+## 10. 常见故障
+
+| 现象 | 含义与处理 |
 | --- | --- |
-| `control.endpoint must ...` | endpoint 必须是可信 `wss` 地址，path 精确为 `/internal/agents/ws`，且无 query/fragment |
-| `enrollment token must be ...` | token 不是 root-only regular file，或不是 32-byte canonical unpadded base64url；不要自行生成，向主控重新申请 |
-| enrollment 返回 HTTP 非 200 | Gate 未开启、token 无效/已使用或主控拒绝；保留日志并联系 AkastrCloud 操作者，不要关闭 TLS 校验 |
-| `identity already exists` | 此实例已经 enrollment；不要覆盖 private key。核对主控 installation，再决定继续或走正式注销流程 |
-| `configured node ID does not match enrolled identity` | `node.id` 与 `identity.json` 不同；恢复配套 config，不要编辑 identity |
-| `configuration valid` 之前报 state/schema 错误 | 状态未知或损坏；保留原文件调查，不要删除来强行启动 |
-| `IPQuality required command ... is unavailable` | 安装第 1 节列出的 Runner 依赖，并重新运行 `check-config` |
-| `IPQuality script checksum mismatch` | 脚本内容与 `script_sha256` 不同；停止 Runner，核对固定 commit 和可信摘要，不能直接更新摘要迁就未知内容 |
-| `proxy_profile_not_found` | 主控 payload 的 profile ID 不存在于 Runner 的 root-only profile 文件；修正映射并重启 |
-| `proxy_preflight_failed` / `proxy_postflight_failed` | SOCKS5 地址、凭据、出站 TLS 或代理稳定性失败；不要在日志中打印密码 |
-| `stale_expected_ipv4` / `proxy_ipv4_changed` | 目标 IPv4 代际已经变化；让主控重置缓存/任务，不要强行接受旧报告 |
-| `runner_busy` | Runner 的唯一执行槽正被占用，主控应排队，不要启动第二个 Agent |
-| `start_failed` / `exited_nonzero` / `timed_out` | ChangeIP 固定 provider 无法启动、非零退出或超时；在本机检查固定文件、权限和服务商接口 |
-| `ipv4_unchanged` | provider 完成，但观察窗口内公网 IPv4 没有改变 |
-| `ipv4_observe_timed_out` | provider 后公网 IPv4 一直不可观察，不等于“旧 IP 未变”；先恢复节点网络 |
-| service 反复重启 | 用 `systemctl show` 和 `journalctl` 查看稳定 code，修复后重新运行 `check-config`；不要清空 state 逃避错误 |
+| 安装器拒绝系统或架构 | 只支持 Debian 12/13 amd64；不要绕过检测或使用 ARM asset |
+| 提示需要交互式终端 | 通过正常 SSH TTY 运行后台命令；不要使用 `curl | sh`、cron 或无 TTY automation |
+| `installation UUID 格式不正确` | 后台命令被截断或修改；重新从同一 installation 复制，不要自行填写 |
+| token 输入后提示格式不正确 | 重新复制后台一次性 token，确认没有空格或换行；不要把 token 发到聊天或命令行 |
+| enrollment 返回 HTTP 非 200 | Gate 未开放、token 已用/过期或 installation 不匹配；保留现场并联系主控管理员，不要关闭 TLS |
+| `check-config` 报 ChangeIP program 错误 | 自定义程序不存在、不是 regular file 或不可执行；修复本地 provider，不能改为通用 shell |
+| HTTP ChangeIP 安装通过但操作失败 | 核对 HTTPS URL、专用 bearer 权限和服务商返回码；不要在日志或命令行输出 bearer |
+| `ipv4_unchanged` | provider 完成，但 300 秒观察窗口内公网 IPv4 未改变 |
+| `ipv4_observe_timed_out` | provider 后公网 IPv4 一直不可观察；这不代表旧地址仍然可达 |
+| Runner 官方脚本校验失败 | 停止安装并保留错误；不要改 checksum 或改用在线浮动脚本 |
+| `proxy_profile_not_found` | Runner 的 server key 与主控 `proxy_profile_id` 不一致 |
+| `proxy_preflight_failed` / `proxy_postflight_failed` | 检查目标 SOCKS5 host/port、凭据、出站 TLS 和代理稳定性，不要打印密码 |
+| `runner_busy` | 单并发执行槽正在使用，主控应排队 |
+| service 反复重启 | 用 `systemctl show` 和 `journalctl` 查看稳定 code，再运行 `check-config`；不要删除 state 逃避错误 |
 
-## 14. 正式节点迁移与回滚边界
+## 11. 高级排障边界
 
-一次安全的逐节点迁移顺序是：
+以下 CLI 只用于只读诊断：
 
-1. 主控批准并启用受限 WSS Gate，创建 installation 和一次性 token；
-2. 保留旧 IPChanger，安装 Agent 并验证 enrollment、WSS ready、capability 和自然 IPv4 baseline；
-3. 由 AkastrCloud 只把该节点的新 command 路由切到 Agent，避免两套执行端同时 ChangeIP；
-4. 在批准的测试窗口验证 ChangeIP、自然 IPv4 私聊、重连幂等和必要的 IPQuality 排队/缓存；
-5. 完成观察 Gate 后才停用旧实例；在全部六个节点迁移并超过回滚期前，不归档旧仓库和证据。
+```text
+akastr-agent version
+akastr-agent check-config --config /etc/akastr-agent/config.json
+akastr-agent capabilities --config /etc/akastr-agent/config.json
+```
 
-回滚时先阻止新 command，保留 Agent 的 identity/state/journal，恢复主控到旧 integration，再验证旧路径。不能仅停止一个 systemd service 就宣称业务回滚完成，也不能让旧 IPChanger 与 Agent 同时接受同一节点的 ChangeIP。
+`enroll` 由交互安装器管理，`run` 由 systemd 管理。不要手工重复 enrollment，也不要在服务已运行时另开前台 daemon。
 
-当前 Gate 关闭，因此以上步骤仍是操作边界，不是本教程授权执行的生产操作。
+如果安装在写入 runtime files 后失败，旧 IPChanger 不会被修改，但本地可能保留 partial installation。不要宽泛删除目录或反复使用新的 token；保留 `journalctl`、稳定错误 code 和现有 root-only 文件，交给主控管理员按该 installation 恢复或吊销。秘密文件内容不得复制到工单、聊天或日志。
+
+安装路径中的 JSON 是运行时严格配置，不是推荐用户界面。高级排障可检查文件是否存在、owner 和 mode，但不得用猜测字段的方式修补：
+
+```bash
+sudo stat -c '%U %G %a %n' \
+  /etc/akastr-agent/config.json \
+  /etc/akastr-agent/identity.json
+sudo readlink -f /usr/local/lib/akastr-agent/current
+```
+
+未知或损坏的 state schema 会失败关闭。不要删除 state 来强行启动，否则可能重复执行 command 或丢失自然 IP 事件。
+
+## 12. 正式迁移与回滚边界
+
+Gate 开放后，每个节点逐台进行：
+
+1. 在后台创建对应 installation，取得一次性 token 和一行命令；
+2. 保留旧 IPChanger，运行交互安装器；
+3. 验证 service、WSS ready、capabilities 和自然 IPv4 baseline；
+4. 由主控只把该节点的新 command 路由切到 Agent，避免两套执行端同时 ChangeIP；
+5. 在批准窗口验证 ChangeIP、自然 IPv4 私聊、重连幂等，以及需要时的 IPQuality 排队/缓存；
+6. 通过观察和回滚 Gate 后才停用旧实例。
+
+回滚时先阻止新 command，保留 Agent identity/state/journal，恢复 AkastrCloud 到旧 integration，再验证旧路径。不能仅停止 Agent service 就宣称业务回滚，也不能在观察期选择永久卸载。
+
+六个节点全部迁移、通过回滚期之前，旧 IPChanger 仓库和运行证据继续保持只读，不归档。当前生产 Gate 仍关闭，因此本节只是迁移边界，不是执行授权。
