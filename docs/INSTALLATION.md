@@ -65,7 +65,7 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 选择凭据有效期后点击“生成一键安装命令”，复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、token 和版本由后台填写：
 
 ```bash
-curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/v0.3.0/install.sh' -o /tmp/akastr-agent-install.sh && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_ENROLLMENT_TOKEN='<one-time-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh /tmp/akastr-agent-install.sh --install
+curl -qfsSL --proto '=https' --url 'https://github.com/akastrmix/akastr-agent/releases/download/v0.3.0/install.sh' --output /tmp/akastr-agent-install.sh && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_ENROLLMENT_TOKEN='<one-time-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh /tmp/akastr-agent-install.sh --install
 ```
 
 不要改写、拆分或公开这行命令，也不要使用 `curl | sh`。命令包含一个短期、一次性的 enrollment token，因此可能进入本机 shell history；它在注册成功后立即失效，过期或吊销后也不能取回配置。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他长期 secret。
@@ -143,7 +143,7 @@ sudo systemctl restart akastr-agent.service
 维护操作不进入菜单，也不询问问题。下载目标版本的 `install.sh` 后显式选择操作：
 
 ```bash
-curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/v0.3.0/install.sh' -o /tmp/akastr-agent-install.sh
+curl -qfsSL --proto '=https' --url 'https://github.com/akastrmix/akastr-agent/releases/download/v0.3.0/install.sh' --output /tmp/akastr-agent-install.sh
 sudo sh /tmp/akastr-agent-install.sh --update
 sudo sh /tmp/akastr-agent-install.sh --status
 ```
