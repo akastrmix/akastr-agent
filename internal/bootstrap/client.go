@@ -23,8 +23,8 @@ import (
 const maxBootstrapBytes = 128 * 1024
 
 type fetchRequest struct {
-	AgentID         string `json:"agent_id"`
-	EnrollmentToken string `json:"enrollment_token"`
+	AgentID      string `json:"agent_id"`
+	MachineToken string `json:"machine_token"`
 }
 
 type fetchResponse struct {
@@ -55,7 +55,7 @@ func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
 	if err != nil {
 		return Payload{}, err
 	}
-	body, err := json.Marshal(fetchRequest{AgentID: options.AgentID, EnrollmentToken: token})
+	body, err := json.Marshal(fetchRequest{AgentID: options.AgentID, MachineToken: token})
 	if err != nil {
 		return Payload{}, err
 	}
@@ -88,7 +88,7 @@ func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Payload{}, errors.New("bootstrap response contains trailing JSON")
 	}
-	if envelope.Schema != "akastr-agent-bootstrap.v1" {
+	if envelope.Schema != "akastr-agent-bootstrap.v2" {
 		return Payload{}, errors.New("bootstrap response schema is unsupported")
 	}
 	nonce, err := base64.RawURLEncoding.DecodeString(envelope.Nonce)
@@ -171,7 +171,7 @@ func deriveKey(token []byte, agentID string) []byte {
 	_, _ = extract.Write(token)
 	prk := extract.Sum(nil)
 	expand := hmac.New(sha256.New, prk)
-	_, _ = expand.Write([]byte("akastr-agent-bootstrap-v1"))
+	_, _ = expand.Write([]byte("akastr-agent-bootstrap-v2"))
 	_, _ = expand.Write([]byte{1})
 	return expand.Sum(nil)
 }

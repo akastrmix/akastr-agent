@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
@@ -32,9 +32,9 @@ type NodeConfig struct {
 }
 
 type ControlConfig struct {
-	Endpoint            string `json:"endpoint"`
-	CredentialFile      string `json:"credential_file"`
-	EnrollmentTokenFile string `json:"enrollment_token_file"`
+	Endpoint         string `json:"endpoint"`
+	CredentialFile   string `json:"credential_file"`
+	MachineTokenFile string `json:"machine_token_file"`
 }
 
 type CapabilitiesConfig struct {
@@ -149,7 +149,7 @@ func validateControl(control ControlConfig) error {
 	if err := validateAbsoluteLinuxPath("control.credential_file", control.CredentialFile); err != nil {
 		return err
 	}
-	return validateAbsoluteLinuxPath("control.enrollment_token_file", control.EnrollmentTokenFile)
+	return validateAbsoluteLinuxPath("control.machine_token_file", control.MachineTokenFile)
 }
 
 func validateCapabilities(capabilities CapabilitiesConfig) error {

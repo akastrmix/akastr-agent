@@ -1,10 +1,12 @@
-# Akastr Agent 协议 `2026-08-13.v1`
+# Akastr Agent 协议 `2026-08-16.v2`
 
 AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 64 KiB。未知字段、未知 message type、未知 capability 字段、binary frame、无效 UUID 和未来协议版本均会失败关闭。
 
 ## Enrollment 与身份认证
 
-管理员先在 AkastrCloud 后台创建 installation 并填写全部节点参数。后台签发一次性的 32-byte canonical base64url token，把 provider secret 仅作为 AES-256-GCM 密文短期保存，并生成 v0.3.3 一键命令。Agent 以 installation UUID 和 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本地认证解密并生成 root-only 文件。随后 `akastr-agent enroll` 生成 Ed25519 keypair，通过 HTTPS 发送同一个 token、raw 32-byte public key、Agent version 和不含秘密的 capability list。事务成功后 token 立即失效，主控删除密封配置，节点删除 token；private key 从不发送给主控。
+管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 provider 配置，并生成 v0.4.0 一键命令。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本地认证解密并生成 root-only 文件。随后 `akastr-agent enroll` 生成 Ed25519 keypair，通过 HTTPS 发送机器 token、raw 32-byte public key、Agent version 和不含秘密的 capability list。注册成功后节点删除本机 token 副本，主控保留加密 bootstrap，供同一节点重装；private key 从不发送给主控。
+
+机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。管理员可审计地重新显示安装命令，也可轮换 token；轮换在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。再次注册同一节点会替换公钥并断开旧 WSS 连接。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 时拒绝删除。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -19,14 +21,14 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；只有收到 `hello.accepted`，连接才进入 ready。相同 installation 的新认证连接会替换旧连接。
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；只有收到 `hello.accepted`，连接才进入 ready。相同节点的新认证连接会替换旧连接。
 
 ## Operation
 
 `operation.offer` 包含：
 
 - `command_id`：稳定 UUID，也是执行幂等键与本地 journal key；
-- `command_type`：v0.3.3 runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
+- `command_type`：v0.4.0 runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
 - `payload_version=1` 与对应类型的严格 payload；
 - `not_before` 和 `expires_at`。
 
@@ -62,10 +64,10 @@ Agent 在本地只保留一个 pending transition，收到相同 `observation_id
 
 ## 安全与兼容性
 
-- 协议固定为 `2026-08-13.v1`，没有版本自动降级。
-- v0.3.3 是 Agent release/bootstrap 版本，不会改变线协议标识。
-- 认证只使用一次性 token 和本地 Ed25519 private key，不使用长期 bearer token 建立 WSS。
-- 后台生成的安装命令只可包含短期一次性 token，不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL 或服务端日志。
+- 协议固定为 `2026-08-16.v2`，没有版本自动降级，也不接受 v1 字段。
+- v0.4.0 是 Agent release/bootstrap 版本。
+- bootstrap/enrollment 使用机器 token，WSS 只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame 或服务端日志。
+- 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
 - capability list、journal 和日志不得含密码或脚本输出。
 - Agent 不实现任意命令、远程 shell 或旧 IPChanger HTTP endpoint。
 - 修改认证、消息字段、持久 payload 或 rollout 边界时，必须与 AkastrCloud 侧按 ADR 0024 一并批准和实现。

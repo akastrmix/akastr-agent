@@ -44,9 +44,9 @@ func run(arguments []string, output io.Writer) error {
 	case "bootstrap":
 		flags := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
-		agentID := flags.String("agent-id", "", "installation UUID")
+		agentID := flags.String("agent-id", "", "persistent node UUID")
 		endpoint := flags.String("endpoint", "", "HTTPS bootstrap endpoint")
-		tokenFile := flags.String("token-file", "", "root-only enrollment token file")
+		tokenFile := flags.String("token-file", "", "root-only machine token file")
 		outputDir := flags.String("output-dir", "", "empty root-only output directory")
 		if err := flags.Parse(arguments[1:]); err != nil {
 			return err
@@ -100,7 +100,7 @@ func run(arguments []string, output io.Writer) error {
 				HTTPClient      *http.Client
 			}{
 				Endpoint:        model.Config.Control.Endpoint,
-				TokenFile:       model.Config.Control.EnrollmentTokenFile,
+				TokenFile:       model.Config.Control.MachineTokenFile,
 				IdentityFile:    model.Config.Control.CredentialFile,
 				ExpectedAgentID: model.Config.Node.ID,
 				AgentVersion:    version,

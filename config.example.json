@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "node": {
     "id": "00000000-0000-4000-8000-000000000001",
     "name": "example-node"
@@ -7,7 +7,7 @@
   "control": {
     "endpoint": "wss://origin.example.com/internal/agents/ws",
     "credential_file": "/etc/akastr-agent/identity.json",
-    "enrollment_token_file": "/etc/akastr-agent/enrollment-token"
+    "machine_token_file": "/etc/akastr-agent/machine-token"
   },
   "state_file": "/var/lib/akastr-agent/state.json",
   "ip_state_file": "/var/lib/akastr-agent/ip-state.json",

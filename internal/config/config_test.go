@@ -8,9 +8,9 @@ import (
 )
 
 const validConfig = `{
-  "schema_version": 1,
+  "schema_version": 2,
   "node": {"id":"123e4567-e89b-42d3-a456-426614174000","name":"HKT"},
-  "control": {"endpoint":"wss://origin.example.com/internal/agents/ws","credential_file":"/etc/akastr-agent/identity.json","enrollment_token_file":"/etc/akastr-agent/enrollment-token"},
+  "control": {"endpoint":"wss://origin.example.com/internal/agents/ws","credential_file":"/etc/akastr-agent/identity.json","machine_token_file":"/etc/akastr-agent/machine-token"},
   "state_file":"/var/lib/akastr-agent/state.json",
   "ip_state_file":"/var/lib/akastr-agent/ip-state.json",
   "recent_operation_limit":64,
@@ -33,7 +33,7 @@ func TestLoadValidConfig(t *testing.T) {
 }
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
-	input := strings.Replace(validConfig, `"schema_version": 1`, `"schema_version": 1, "unexpected": true`, 1)
+	input := strings.Replace(validConfig, `"schema_version": 2`, `"schema_version": 2, "unexpected": true`, 1)
 	_, err := Load(writeConfig(t, input))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("Load() error = %v, want unknown field", err)

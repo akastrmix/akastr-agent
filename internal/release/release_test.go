@@ -56,7 +56,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 	for _, required := range []string{
 		"AGENT_RELEASE_VERSION='@AKASTR_AGENT_VERSION@'",
 		"@AKASTR_AGENT_BINARY_SHA256@",
-		"AKASTR_AGENT_ENROLLMENT_TOKEN",
+		"AKASTR_AGENT_MACHINE_TOKEN",
 		"AKASTR_AGENT_BOOTSTRAP_ENDPOINT",
 		" bootstrap \\",
 		"--install)",

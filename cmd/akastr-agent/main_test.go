@@ -11,12 +11,12 @@ import (
 func TestCheckConfigValidatesRuntimeDependencies(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	config := `{
-  "schema_version": 1,
+  "schema_version": 2,
   "node": {"id": "123e4567-e89b-42d3-a456-426614174000", "name": "test-node"},
   "control": {
     "endpoint": "wss://control.example/internal/agents/ws",
     "credential_file": "/tmp/akastr-agent-test-identity.json",
-    "enrollment_token_file": "/tmp/akastr-agent-test-token"
+    "machine_token_file": "/tmp/akastr-agent-test-token"
   },
   "state_file": "/tmp/akastr-agent-test-state.json",
   "ip_state_file": "/tmp/akastr-agent-test-ip-state.json",

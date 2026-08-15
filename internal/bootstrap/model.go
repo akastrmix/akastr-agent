@@ -11,7 +11,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/config"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const (
 	IPQualityCommit  = "0ee5f192fed70c04615852efba0e4b8bd43546c7"
@@ -21,7 +21,7 @@ const (
 
 const (
 	identityPath = "/etc/akastr-agent/identity.json"
-	tokenPath    = "/etc/akastr-agent/enrollment-token"
+	tokenPath    = "/etc/akastr-agent/machine-token"
 	statePath    = "/var/lib/akastr-agent/state.json"
 	ipStatePath  = "/var/lib/akastr-agent/ip-state.json"
 	curlPath     = "/etc/akastr-agent/changeip-curl.conf"
@@ -196,9 +196,9 @@ func (r Runner) validate() error {
 
 func (p Payload) AgentConfig(ipQualityVersion, ipQualitySHA256 string) config.Config {
 	cfg := config.Config{
-		SchemaVersion: 1,
+		SchemaVersion: SchemaVersion,
 		Node:          config.NodeConfig{ID: p.AgentID, Name: p.Name},
-		Control:       config.ControlConfig{Endpoint: p.ControlEndpoint, CredentialFile: identityPath, EnrollmentTokenFile: tokenPath},
+		Control:       config.ControlConfig{Endpoint: p.ControlEndpoint, CredentialFile: identityPath, MachineTokenFile: tokenPath},
 		StateFile:     statePath, IPStateFile: ipStatePath, RecentOperationLimit: 64,
 	}
 	if p.Mode == "target" {

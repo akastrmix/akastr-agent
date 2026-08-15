@@ -42,8 +42,8 @@ func writeFiles(directory string, payload Payload, token, ipQualityVersion, ipQu
 	if err := writeJSON(filepath.Join(directory, "config.json"), cfg); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(directory, "enrollment-token"), []byte(token+"\n"), 0o600); err != nil {
-		return fmt.Errorf("write enrollment token: %w", err)
+	if err := os.WriteFile(filepath.Join(directory, "machine-token"), []byte(token+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write machine token: %w", err)
 	}
 	if payload.Mode == "target" && payload.Target.ChangeIP.Provider == "http_bearer" {
 		contents := fmt.Sprintf("url = \"%s\"\nrequest = \"POST\"\nheader = \"Authorization: Bearer %s\"\nfail\nsilent\nshow-error\n", escapeCurl(payload.Target.ChangeIP.URL), payload.Target.ChangeIP.BearerToken)

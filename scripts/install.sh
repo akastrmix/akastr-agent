@@ -36,7 +36,7 @@ trap 'cleanup; exit 1' HUP INT TERM
 
 require_uuid() {
   printf '%s\n' "$1" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$' \
-    || fail 'installation UUID 格式不正确'
+    || fail '节点 UUID 格式不正确'
 }
 
 preflight() {
@@ -170,20 +170,20 @@ fresh_install() {
   [ ! -e "$SERVICE_FILE" ] || fail 'systemd service 已存在；请使用 --update'
 
   agent_id=${AKASTR_AGENT_ID:-}
-  enrollment_token=${AKASTR_AGENT_ENROLLMENT_TOKEN:-}
+  machine_token=${AKASTR_AGENT_MACHINE_TOKEN:-}
   bootstrap_endpoint=${AKASTR_AGENT_BOOTSTRAP_ENDPOINT:-}
   [ -n "$agent_id" ] || fail '安装命令缺少 AKASTR_AGENT_ID'
-  [ -n "$enrollment_token" ] || fail '安装命令缺少一次性 token'
+  [ -n "$machine_token" ] || fail '安装命令缺少机器 token'
   [ -n "$bootstrap_endpoint" ] || fail '安装命令缺少 HTTPS bootstrap endpoint'
   require_uuid "$agent_id"
-  printf '%s\n' "$enrollment_token" | grep -Eq '^[A-Za-z0-9_-]{43}$' \
-    || fail '一次性 token 格式不正确'
+  printf '%s\n' "$machine_token" | grep -Eq '^[A-Za-z0-9_-]{43}$' \
+    || fail '机器 token 格式不正确'
 
   make_temporary
-  token_file="$temporary/enrollment-token"
-  printf '%s\n' "$enrollment_token" > "$token_file"
+  token_file="$temporary/machine-token"
+  printf '%s\n' "$machine_token" > "$token_file"
   chmod 0600 "$token_file"
-  unset AKASTR_AGENT_ENROLLMENT_TOKEN enrollment_token
+  unset AKASTR_AGENT_MACHINE_TOKEN machine_token
 
   download_binary
   bootstrap_dir="$temporary/bootstrap"
@@ -210,7 +210,7 @@ fresh_install() {
   install -d -m 0755 "$release_dir"
   install -m 0755 "$binary_path" "$release_dir/akastr-agent"
   install -m 0600 "$bootstrap_dir/config.json" "$CONFIG_DIR/config.json"
-  install -m 0600 "$bootstrap_dir/enrollment-token" "$CONFIG_DIR/enrollment-token"
+  install -m 0600 "$bootstrap_dir/machine-token" "$CONFIG_DIR/machine-token"
   if [ -f "$bootstrap_dir/changeip-curl.conf" ]; then
     install -m 0600 "$bootstrap_dir/changeip-curl.conf" "$CONFIG_DIR/changeip-curl.conf"
   fi
@@ -226,12 +226,12 @@ fresh_install() {
   "$RELEASE_ROOT/current/akastr-agent" enroll --config "$CONFIG_DIR/config.json" \
     || fail 'enrollment 失败；旧 IPChanger 未被修改'
   fresh_complete=true
-  rm -f -- "$CONFIG_DIR/enrollment-token" "$token_file"
+  rm -f -- "$CONFIG_DIR/machine-token" "$token_file"
 
   systemctl enable --now akastr-agent.service
   service_is_stable || fail '服务未能稳定运行；旧 IPChanger 未被修改'
   say "Akastr Agent $AGENT_RELEASE_VERSION 已安装并运行。"
-  say '请回到 AkastrCloud 确认 installation 已变为已注册，再进行迁移验收。'
+  say '请回到 AkastrCloud 确认节点已在线，再进行迁移验收。'
 }
 
 update_existing() {
@@ -272,7 +272,7 @@ uninstall_existing() {
   rm -f -- "$SERVICE_FILE"
   systemctl daemon-reload
   rm -rf -- "$CONFIG_DIR" "$STATE_DIR" "$RELEASE_ROOT"
-  say 'Akastr Agent 已卸载；主控中的 installation 仍需由管理员吊销。'
+  say 'Akastr Agent 已卸载；如需永久移除，请在主控中删除节点。'
 }
 
 preflight

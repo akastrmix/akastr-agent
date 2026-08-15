@@ -34,10 +34,10 @@ type Identity struct {
 }
 
 type enrollmentRequest struct {
-	EnrollmentToken string                  `json:"enrollment_token"`
-	PublicKey       string                  `json:"public_key"`
-	AgentVersion    string                  `json:"agent_version"`
-	Capabilities    []capability.Descriptor `json:"capabilities"`
+	MachineToken string                  `json:"machine_token"`
+	PublicKey    string                  `json:"public_key"`
+	AgentVersion string                  `json:"agent_version"`
+	Capabilities []capability.Descriptor `json:"capabilities"`
 }
 
 type enrollmentResponse struct {
@@ -113,29 +113,29 @@ func Enroll(ctx context.Context, options struct {
 	}
 	tokenInfo, err := os.Stat(options.TokenFile)
 	if err != nil {
-		return Identity{}, fmt.Errorf("stat enrollment token: %w", err)
+		return Identity{}, fmt.Errorf("stat machine token: %w", err)
 	}
 	if !tokenInfo.Mode().IsRegular() ||
 		(runtime.GOOS != "windows" && tokenInfo.Mode().Perm()&0o077 != 0) {
-		return Identity{}, errors.New("enrollment token must be a root-only regular file")
+		return Identity{}, errors.New("machine token must be a root-only regular file")
 	}
 	tokenBytes, err := os.ReadFile(options.TokenFile)
 	if err != nil {
-		return Identity{}, fmt.Errorf("read enrollment token: %w", err)
+		return Identity{}, fmt.Errorf("read machine token: %w", err)
 	}
 	token := strings.TrimSpace(string(tokenBytes))
 	if _, err := decodeKey(token, 32); err != nil {
-		return Identity{}, errors.New("enrollment token must be canonical base64url for 32 bytes")
+		return Identity{}, errors.New("machine token must be canonical base64url for 32 bytes")
 	}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return Identity{}, fmt.Errorf("generate identity: %w", err)
 	}
 	body, err := json.Marshal(enrollmentRequest{
-		EnrollmentToken: token,
-		PublicKey:       base64.RawURLEncoding.EncodeToString(publicKey),
-		AgentVersion:    options.AgentVersion,
-		Capabilities:    options.Capabilities,
+		MachineToken: token,
+		PublicKey:    base64.RawURLEncoding.EncodeToString(publicKey),
+		AgentVersion: options.AgentVersion,
+		Capabilities: options.Capabilities,
 	})
 	if err != nil {
 		return Identity{}, err
@@ -173,7 +173,7 @@ func Enroll(ctx context.Context, options struct {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Identity{}, errors.New("enrollment response contains trailing JSON")
 	}
-	if !result.OK || result.Protocol != "2026-08-13.v1" || result.AgentID != options.ExpectedAgentID {
+	if !result.OK || result.Protocol != "2026-08-16.v2" || result.AgentID != options.ExpectedAgentID {
 		return Identity{}, errors.New("enrollment response identity or protocol mismatch")
 	}
 	identity := Identity{
