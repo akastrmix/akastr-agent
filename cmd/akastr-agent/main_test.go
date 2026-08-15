@@ -2,11 +2,47 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestCheckIdentityAcceptsOnlyTheExpectedPersistentNode(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identityPath := filepath.Join(t.TempDir(), "identity.json")
+	contents, err := json.Marshal(map[string]any{
+		"schema_version": 1,
+		"agent_id":       "123e4567-e89b-42d3-a456-426614174000",
+		"public_key":     base64.RawURLEncoding.EncodeToString(publicKey),
+		"private_key":    base64.RawURLEncoding.EncodeToString(privateKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(identityPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{
+		"check-identity", "--identity", identityPath,
+		"--agent-id", "123e4567-e89b-42d3-a456-426614174000",
+	}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{
+		"check-identity", "--identity", identityPath,
+		"--agent-id", "123e4567-e89b-42d3-a456-426614174001",
+	}, &bytes.Buffer{}); err == nil {
+		t.Fatal("identity for another persistent node was accepted")
+	}
+}
 
 func TestCheckConfigValidatesRuntimeDependencies(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")

@@ -70,6 +70,14 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"debian:12|debian:13)",
 		"wget 退出码 $wget_code",
 		"packages='ca-certificates curl wget'",
+		"backup_existing \"$CONFIG_DIR\" \"$CONFIG_BACKUP\"",
+		"check-identity \\",
+		"akastr-agent-update.service",
+		"akastr-agent-update.timer",
+		"OnCalendar=*-*-* 00/6:00:00",
+		"RandomizedDelaySec=10m",
+		"self-update --config /etc/akastr-agent/config.json",
+		"rollback_directory \"$CONFIG_BACKUP\" \"$CONFIG_DIR\"",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer missing contract %q", required)
@@ -90,6 +98,9 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"wget --https-only --tries=3 --timeout=30 -qO",
 		"\nVERSION='@AKASTR_AGENT_VERSION@'",
 		"$RELEASE_BASE_URL/$VERSION/$ASSET",
+		"$CONFIG_DIR 已存在；请先核对现有安装",
+		"$STATE_DIR 已存在；请先核对现有安装",
+		"$RELEASE_ROOT 已存在；请先核对现有安装",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("installer contains forbidden contract %q", forbidden)

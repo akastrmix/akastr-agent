@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/app"
+	"github.com/akastrmix/akastr-agent/internal/autoupdate"
 	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
+	"github.com/akastrmix/akastr-agent/internal/operation"
 	transportws "github.com/akastrmix/akastr-agent/internal/transport/ws"
 )
 
@@ -32,7 +34,7 @@ func main() {
 
 func run(arguments []string, output io.Writer) error {
 	if len(arguments) == 0 {
-		return errors.New("expected one of: bootstrap, run, enroll, check-config, capabilities, version")
+		return errors.New("expected one of: bootstrap, run, enroll, check-config, check-identity, capabilities, self-update, version")
 	}
 	switch arguments[0] {
 	case "version":
@@ -66,10 +68,34 @@ func run(arguments []string, output io.Writer) error {
 		}
 		_, err = fmt.Fprintf(output, "bootstrap_mode=%s\n", payload.Mode)
 		return err
-	case "run", "enroll", "check-config", "capabilities":
+	case "check-identity":
+		flags := flag.NewFlagSet("check-identity", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		identityPath := flags.String("identity", "/etc/akastr-agent/identity.json", "root-only identity file")
+		agentID := flags.String("agent-id", "", "expected persistent node UUID")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *agentID == "" {
+			return errors.New("check-identity requires exactly --agent-id")
+		}
+		credentials, err := identity.Load(*identityPath)
+		if err != nil {
+			return err
+		}
+		if credentials.AgentID != *agentID {
+			return errors.New("identity belongs to a different persistent node")
+		}
+		_, err = fmt.Fprintln(output, "identity valid")
+		return err
+	case "run", "enroll", "check-config", "capabilities", "self-update":
 		flags := flag.NewFlagSet(arguments[0], flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
 		configPath := flags.String("config", "/etc/akastr-agent/config.json", "configuration file")
+		releaseRoot := "/usr/local/lib/akastr-agent"
+		if arguments[0] == "self-update" {
+			flags.StringVar(&releaseRoot, "release-root", releaseRoot, "immutable Agent release root")
+		}
 		if err := flags.Parse(arguments[1:]); err != nil {
 			return err
 		}
@@ -85,6 +111,61 @@ func run(arguments []string, output io.Writer) error {
 				return fmt.Errorf("validate runtime dependencies: %w", err)
 			}
 			_, err := fmt.Fprintln(output, "configuration valid")
+			return err
+		}
+		if arguments[0] == "self-update" {
+			credentials, err := identity.Load(model.Config.Control.CredentialFile)
+			if err != nil {
+				return err
+			}
+			if credentials.AgentID != model.Config.Node.ID {
+				return errors.New("configured node ID does not match enrolled identity")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			manifest, err := (autoupdate.Client{}).Check(
+				ctx, model.Config.Control.Endpoint, version, credentials,
+			)
+			if err != nil {
+				return err
+			}
+			if manifest.Status == "current" {
+				_, err = fmt.Fprintf(output, "update_status=current version=%s\n", version)
+				return err
+			}
+			if manifest.Status == "busy" {
+				_, err = fmt.Fprintf(output, "update_status=deferred_busy version=%s\n", version)
+				return err
+			}
+			engine, err := operation.Open(operation.Options{
+				StateFile: model.Config.StateFile, RecentLimit: model.Config.RecentOperationLimit,
+			})
+			if err != nil {
+				return err
+			}
+			if len(engine.Snapshot().Active) != 0 {
+				_, err = fmt.Fprintf(output, "update_status=deferred_active version=%s\n", version)
+				return err
+			}
+			if err := autoupdate.Apply(ctx, autoupdate.ApplyOptions{
+				Manifest: manifest, ConfigPath: *configPath, ReleaseRoot: releaseRoot,
+				OperationActive: func() (bool, error) {
+					latest, err := operation.Open(operation.Options{
+						StateFile: model.Config.StateFile, RecentLimit: model.Config.RecentOperationLimit,
+					})
+					if err != nil {
+						return false, err
+					}
+					return len(latest.Snapshot().Active) != 0, nil
+				},
+			}); err != nil {
+				if errors.Is(err, autoupdate.ErrOperationActive) {
+					_, err = fmt.Fprintf(output, "update_status=deferred_active version=%s\n", version)
+					return err
+				}
+				return err
+			}
+			_, err = fmt.Fprintf(output, "update_status=updated version=%s\n", manifest.Version)
 			return err
 		}
 		if arguments[0] == "enroll" {

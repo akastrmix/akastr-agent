@@ -4,7 +4,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 
 ## Enrollment 与身份认证
 
-管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 provider 配置，并生成 v0.5.0 一键命令。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本机认证解密并生成 root-only 文件。随后 `akastr-agent enroll` 生成 Ed25519 keypair，通过 HTTPS 发送机器 token、raw 32-byte public key、Agent version 和不含秘密的 capability list。注册成功后节点删除本机 token 副本，主控保留加密 bootstrap，供同一节点重装；private key 从不发送给主控。
+管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 provider 配置，并生成 v0.6.0 一键命令。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本机认证解密并生成 root-only 文件。随后 `akastr-agent enroll` 生成 Ed25519 keypair，通过 HTTPS 发送机器 token、raw 32-byte public key、Agent version 和不含秘密的 capability list。注册成功后节点删除本机 token 副本，主控保留加密 bootstrap，供同一节点重装；private key 从不发送给主控。同一节点重复安装时验证并保留现有 identity，不重新发送 private key 或机器 token。
 
 机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。管理员可审计地重新显示安装命令，也可轮换 token；轮换在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。再次注册同一节点会替换公钥并断开旧 WSS 连接。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 时拒绝删除。
 
@@ -23,12 +23,27 @@ akastr-agent-auth-v1
 
 Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；只有收到 `hello.accepted`，连接才进入 ready。相同节点的新认证连接会替换旧连接。
 
+## 自动更新检查
+
+`POST /internal/agents/update` 是独立于 WSS envelope 的只读长期合同。请求必须且只能包含 `agent_id`、`agent_version`、`protocol`、32-byte nonce、`sent_at` 和 64-byte Ed25519 signature；时间与主控相差超过五分钟即拒绝。签名文本为以下 UTF-8 行，末尾没有换行，时间保持 Agent 发送的原文：
+
+```text
+akastr-agent-update-check-v1
+<agent_id>
+<agent_version>
+<protocol>
+<nonce>
+<sent_at>
+```
+
+主控使用当前 active identity 验签，并返回严格的 `akastr-agent-update.v1` manifest：`status`、目标 `version`、相同 WSS `protocol`、精确 immutable `binary_url` 和内部 `binary_sha256`。`status` 只有 `current`、`busy` 或 `update_available`；存在 pending/offered/accepted command 时只能返回 `busy`。该接口不接收机器 token、不修改数据库，也不允许降级或跨 WSS 协议更新。
+
 ## Operation
 
 `operation.offer` 包含：
 
 - `command_id`：稳定 UUID，也是执行幂等键与本地 journal key；
-- `command_type`：v0.5.0 runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
+- `command_type`：v0.6.0 runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
 - `payload_version=1` 与对应类型的严格 payload；
 - `not_before` 和 `expires_at`。
 
@@ -65,8 +80,8 @@ Agent 在本地只保留一个 pending transition，收到相同 `observation_id
 ## 安全与兼容性
 
 - 协议固定为 `2026-08-16.v3`，没有版本自动降级，也不接受 v1/v2 字段。
-- v0.5.0 是 Agent release/bootstrap 版本；SOCKS5 capability 只允许 `port`，不接受 v0.4.0 的 `address_source` 或 `advertised_host`。
-- bootstrap/enrollment 使用机器 token，WSS 只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame 或服务端日志。
+- v0.6.0 是 Agent release/bootstrap 版本；SOCKS5 capability 只允许 `port`，不接受旧测试版的 `address_source` 或 `advertised_host`。
+- bootstrap/enrollment 使用机器 token，WSS 与自动更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
 - capability list、journal 和日志不得含密码或脚本输出。
 - Agent 不实现任意命令、远程 shell 或旧 IPChanger HTTP endpoint。
