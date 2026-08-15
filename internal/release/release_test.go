@@ -54,7 +54,7 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 	installer := repositoryFile(t, "scripts", "install.sh")
 	for _, required := range []string{
-		"@AKASTR_AGENT_VERSION@",
+		"AGENT_RELEASE_VERSION='@AKASTR_AGENT_VERSION@'",
 		"@AKASTR_AGENT_BINARY_SHA256@",
 		"AKASTR_AGENT_ENROLLMENT_TOKEN",
 		"AKASTR_AGENT_BOOTSTRAP_ENDPOINT",
@@ -66,6 +66,9 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'",
 		"download_https()",
 		"wget --https-only --tries=3 --timeout=30 -qO",
+		"os_identity=$(",
+		"debian:12|debian:13)",
+		"wget 退出码 $wget_code",
 		"packages='ca-certificates curl wget'",
 	} {
 		if !strings.Contains(installer, required) {
@@ -84,6 +87,8 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"printf 'fail\\nsilent\\nshow-error\\nlocation\\n'",
 		"curl --fail --silent --show-error --location",
 		"wget -qO-",
+		"\nVERSION='@AKASTR_AGENT_VERSION@'",
+		"$RELEASE_BASE_URL/$VERSION/$ASSET",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("installer contains forbidden contract %q", forbidden)

@@ -1,6 +1,6 @@
 # Akastr Agent 安装与使用教程
 
-本文面向手动迁移节点的操作者。v0.3.1 的新装参数全部在 AkastrCloud 后台填写；后台只返回一行命令，VPS 执行后不会再询问节点名称、模式、WSS、ChangeIP、SOCKS5 或 token。
+本文面向手动迁移节点的操作者。v0.3.2 的新装参数全部在 AkastrCloud 后台填写；后台只返回一行命令，VPS 执行后不会再询问节点名称、模式、WSS、ChangeIP、SOCKS5 或 token。
 
 ## 1. 支持范围
 
@@ -65,7 +65,7 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 选择凭据有效期后点击“生成一键安装命令”，复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、token 和版本由后台填写：
 
 ```bash
-wget --https-only --tries=3 --timeout=30 -qO /tmp/akastr-agent-install.sh 'https://github.com/akastrmix/akastr-agent/releases/download/v0.3.1/install.sh' && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_ENROLLMENT_TOKEN='<one-time-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh /tmp/akastr-agent-install.sh --install
+wget --https-only --tries=3 --timeout=30 -qO /tmp/akastr-agent-install.sh 'https://github.com/akastrmix/akastr-agent/releases/download/v0.3.2/install.sh' && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_ENROLLMENT_TOKEN='<one-time-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh /tmp/akastr-agent-install.sh --install
 ```
 
 不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令包含一个短期、一次性的 enrollment token，因此可能进入本机 shell history；它在注册成功后立即失效，过期或吊销后也不能取回配置。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他长期 secret。
@@ -85,7 +85,7 @@ wget --https-only --tries=3 --timeout=30 -qO /tmp/akastr-agent-install.sh 'https
 成功时最后显示：
 
 ```text
-Akastr Agent v0.3.1 已安装并运行。
+Akastr Agent v0.3.2 已安装并运行。
 ```
 
 enrollment 以前失败会删除本次创建的 Agent 配置、状态、release 和 systemd unit；已经由 apt 安装的通用依赖可能保留。enrollment 成功后若 service 启动失败，安装器会保留 identity 与现场，避免把主控中已激活的身份变成不可恢复状态。两种情况都不会停止、删除或修改旧 IPChanger。
@@ -98,7 +98,7 @@ enrollment 以前失败会删除本次创建的 Agent 配置、状态、release 
 /etc/akastr-agent/config.json
 /etc/akastr-agent/identity.json
 /var/lib/akastr-agent/
-/usr/local/lib/akastr-agent/releases/v0.3.1/
+/usr/local/lib/akastr-agent/releases/v0.3.2/
 /usr/local/lib/akastr-agent/current
 /etc/systemd/system/akastr-agent.service
 ```
@@ -118,7 +118,7 @@ sudo /usr/local/lib/akastr-agent/current/akastr-agent capabilities --config /etc
 sudo journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-正确结果是：service 为 `active`、`MainPID` 非 0、版本为 `v0.3.1`、配置输出 `configuration valid`，日志出现 `control connection ready`。capability 只显示已启用能力，不应包含 token、密码或 provider secret。
+正确结果是：service 为 `active`、`MainPID` 非 0、版本为 `v0.3.2`、配置输出 `configuration valid`，日志出现 `control connection ready`。capability 只显示已启用能力，不应包含 token、密码或 provider secret。
 
 再回到后台确认 installation 为“已注册”，版本和类型正确。正式迁移前继续保留旧 IPChanger；仅仅安装成功不等于业务路由已经切换。
 
@@ -143,7 +143,7 @@ sudo systemctl restart akastr-agent.service
 维护操作不进入菜单，也不询问问题。下载目标版本的 `install.sh` 后显式选择操作：
 
 ```bash
-wget --https-only --tries=3 --timeout=30 -qO /tmp/akastr-agent-install.sh 'https://github.com/akastrmix/akastr-agent/releases/download/v0.3.1/install.sh'
+wget --https-only --tries=3 --timeout=30 -qO /tmp/akastr-agent-install.sh 'https://github.com/akastrmix/akastr-agent/releases/download/v0.3.2/install.sh'
 sudo sh /tmp/akastr-agent-install.sh --update
 sudo sh /tmp/akastr-agent-install.sh --status
 ```
@@ -163,6 +163,7 @@ sudo sh /tmp/akastr-agent-install.sh --uninstall --confirm-destroy-local-agent
 | 现象 | 处理 |
 | --- | --- |
 | 拒绝系统或架构 | 只支持 Debian 12/13 amd64；不要绕过检测或使用 ARM asset |
+| 下载失败并显示 `wget 退出码` | `4` 通常表示网络/TLS，`8` 表示服务器返回错误；不要反复消耗 token，先核对版本化 Release 地址 |
 | 缺少 `AKASTR_AGENT_*` | 命令被截断或手工改写；回后台重新生成，不要自行拼装 |
 | bootstrap 返回 403 | token 已用、过期、被吊销或 UUID 不匹配；吊销旧 installation 后重新创建 |
 | bootstrap authentication failed | 密文、token 或 UUID 不匹配；停止操作，不要尝试绕过认证 |

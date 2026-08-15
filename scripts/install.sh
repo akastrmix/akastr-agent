@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-VERSION='@AKASTR_AGENT_VERSION@'
+AGENT_RELEASE_VERSION='@AKASTR_AGENT_VERSION@'
 BINARY_SHA256='@AKASTR_AGENT_BINARY_SHA256@'
 ASSET='akastr-agent-linux-amd64'
 RELEASE_BASE_URL=${AKASTR_RELEASE_BASE_URL:-https://github.com/akastrmix/akastr-agent/releases/download}
@@ -46,11 +46,14 @@ preflight() {
     *) fail '仅支持 x86_64 / amd64；本项目不发布 ARM 版本' ;;
   esac
   [ -r /etc/os-release ] || fail '无法识别操作系统'
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  [ "${ID:-}" = 'debian' ] || fail '当前只支持 Debian 12/13'
-  case "${VERSION_ID:-}" in
-    12|13) ;;
+  os_identity=$(
+    # Keep /etc/os-release variables such as VERSION out of installer state.
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    printf '%s:%s' "${ID:-}" "${VERSION_ID:-}"
+  )
+  case "$os_identity" in
+    debian:12|debian:13) ;;
     *) fail '当前只支持 Debian 12/13' ;;
   esac
   command -v systemctl >/dev/null 2>&1 || fail '主机未使用 systemd'
@@ -71,9 +74,12 @@ download_https() {
     https://*) ;;
     *) fail "$label 下载地址必须使用 HTTPS" ;;
   esac
-  if ! wget --https-only --tries=3 --timeout=30 -qO "$destination" "$url"; then
+  if wget --https-only --tries=3 --timeout=30 -qO "$destination" "$url"; then
+    :
+  else
+    wget_code=$?
     rm -f -- "$destination"
-    fail "$label 下载失败"
+    fail "$label 下载失败（wget 退出码 $wget_code）"
   fi
   [ -s "$destination" ] || {
     rm -f -- "$destination"
@@ -95,7 +101,7 @@ install_packages() {
 
 download_binary() {
   binary_path="$temporary/$ASSET"
-  download_https "$RELEASE_BASE_URL/$VERSION/$ASSET" "$binary_path" 'Agent binary'
+  download_https "$RELEASE_BASE_URL/$AGENT_RELEASE_VERSION/$ASSET" "$binary_path" 'Agent binary'
   actual_sha256=$(sha256sum "$binary_path" | awk '{print $1}')
   [ "$actual_sha256" = "$BINARY_SHA256" ] || fail '安装包自动完整性校验失败'
   chmod 0755 "$binary_path"
@@ -198,7 +204,7 @@ fresh_install() {
   install_packages "$install_mode"
   prepare_ipquality
 
-  release_dir="$RELEASE_ROOT/releases/$VERSION"
+  release_dir="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION"
   fresh_files_created=true
   install -d -m 0700 "$CONFIG_DIR" "$STATE_DIR"
   install -d -m 0755 "$release_dir"
@@ -224,7 +230,7 @@ fresh_install() {
 
   systemctl enable --now akastr-agent.service
   service_is_stable || fail '服务未能稳定运行；旧 IPChanger 未被修改'
-  say "Akastr Agent $VERSION 已安装并运行。"
+  say "Akastr Agent $AGENT_RELEASE_VERSION 已安装并运行。"
   say '请回到 AkastrCloud 确认 installation 已变为已注册，再进行迁移验收。'
 }
 
@@ -232,12 +238,12 @@ update_existing() {
   [ -f "$CONFIG_DIR/config.json" ] || fail '现有安装缺少配置文件'
   [ -x "$RELEASE_ROOT/current/akastr-agent" ] || fail '现有安装缺少当前版本'
   current_version=$($RELEASE_ROOT/current/akastr-agent version)
-  [ "$current_version" != "$VERSION" ] || { say "当前已经是 $VERSION。"; return; }
+  [ "$current_version" != "$AGENT_RELEASE_VERSION" ] || { say "当前已经是 $AGENT_RELEASE_VERSION。"; return; }
   make_temporary
   install_packages target
   download_binary
-  release_dir="$RELEASE_ROOT/releases/$VERSION"
-  [ ! -e "$release_dir" ] || fail "$VERSION 的不可变目录已存在"
+  release_dir="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION"
+  [ ! -e "$release_dir" ] || fail "$AGENT_RELEASE_VERSION 的不可变目录已存在"
   install -d -m 0755 "$release_dir"
   install -m 0755 "$binary_path" "$release_dir/akastr-agent"
   "$release_dir/akastr-agent" check-config --config "$CONFIG_DIR/config.json"
@@ -250,7 +256,7 @@ update_existing() {
     fi
     fail '更新失败，已经恢复上一版本'
   fi
-  say "Akastr Agent 已更新到 $VERSION。"
+  say "Akastr Agent 已更新到 $AGENT_RELEASE_VERSION。"
 }
 
 show_status() {
