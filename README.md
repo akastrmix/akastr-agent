@@ -4,7 +4,7 @@ Akastr Agent 是 AkastrCloud 服务节点上的轻量被控程序。它以单个
 
 > 正式节点必须逐台迁移。安装成功前保留旧 IPChanger；主控验收并切换该节点路由前，也不要停用旧服务。
 
-## v0.3.0 使用模型
+## v0.3.1 使用模型
 
 Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为某个 installation 生成的一行安装命令：
 
@@ -14,7 +14,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为某个
 4. 操作者把命令复制到节点执行，安装器不再询问任何参数；
 5. Agent 通过 HTTPS 取回并在本机解密配置，随后自动完成依赖、enrollment、root-only 文件和 systemd service。
 
-用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不需要手工下载或核对 SHA-256。不要从仓库 raw 地址直接运行模板脚本，也不要使用 `curl | sh`。
+用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不需要手工下载或核对 SHA-256。不要从仓库 raw 地址直接运行模板脚本，也不要把 wget/curl 的网络输出直接通过管道交给 shell。
 
 目标节点参数包括：
 
@@ -44,7 +44,7 @@ AkastrCloud 负责业务编排：
 
 IPQuality 的“每天一次”按 `Asia/Hong_Kong` 日历日计算；超过一次直接读取当天缓存。香港时间 `00:00` 或目标节点观测到 IPv4 改变时，主控开启新的缓存代际。此规则由 AkastrCloud 执行，重装 Agent 不能绕过。
 
-ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令和 HTTP-flow ChangeIP 均不属于 v0.3.0。
+ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令和 HTTP-flow ChangeIP 均不属于 v0.3.1。
 
 ## 文档
 

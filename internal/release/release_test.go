@@ -64,6 +64,9 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"--status)",
 		"--uninstall)",
 		"IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'",
+		"download_https()",
+		"wget --https-only --tries=3 --timeout=30 -qO",
+		"packages='ca-certificates curl wget'",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer missing contract %q", required)
@@ -79,6 +82,8 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"IFS= read",
 		"eval ",
 		"printf 'fail\\nsilent\\nshow-error\\nlocation\\n'",
+		"curl --fail --silent --show-error --location",
+		"wget -qO-",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("installer contains forbidden contract %q", forbidden)

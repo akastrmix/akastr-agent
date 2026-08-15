@@ -9,9 +9,9 @@
 - 目标节点：公网 IP 观察、ChangeIP，以及可选的不含秘密的 SOCKS5 端点描述；
 - 专用 Runner：IPQuality 执行，`max_concurrency=1`。
 
-运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。v0.3.0 的后台引导有意只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
+运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。v0.3.1 的后台引导有意只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
 
-v0.3.0 只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台收集完整配置，把长期 secret 加密为短期密封配置，并生成只含 installation UUID、HTTPS bootstrap endpoint 与一次性 token 的一行命令。Agent 使用 token 派生本地 AES-256-GCM key，验证并解密后生成严格 root-only 文件；主控从不保存 provider plaintext。安装器没有新装 TTY、向导或菜单，维护动作使用显式参数。用户不直接维护 JSON 或 checksum。
+v0.3.1 只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台收集完整配置，把长期 secret 加密为短期密封配置，并生成只含 installation UUID、HTTPS bootstrap endpoint 与一次性 token 的一行命令。Agent 使用 token 派生本地 AES-256-GCM key，验证并解密后生成严格 root-only 文件；主控从不保存 provider plaintext。安装器没有新装 TTY、向导或菜单，维护动作使用显式参数。用户不直接维护 JSON 或 checksum。所有安装期下载都使用 HTTPS-only、三次重试的 wget，文件完整落盘后才会被执行或安装；网络响应不会直接通过管道交给 root shell。
 
 ## 2. 主控边界
 
@@ -47,7 +47,7 @@ internal/features/xraytraffic/
 internal/features/ratelimit/
 ```
 
-v0.3.0 不包含这些目录或空接口。
+v0.3.1 不包含这些目录或空接口。
 
 ## 4. 本地操作状态
 
@@ -61,7 +61,7 @@ v0.3.0 不包含这些目录或空接口。
 
 观察器通过固定 HTTPS 来源 `api.ipify.org` 和 Cloudflare trace 获取公网地址，明确按 IPv4 或 IPv6 建立连接，拒绝重定向、非公网地址和过大响应。
 
-v0.3.0 后台只生成 IPv4 watch：首次成功观察只建立基线，不上报；之后的变化先写入 `ip_state_file`，再发送 `ip.observed`。收到主控的 `ip.observed_ack` 之前，同一事件会在重连后继续重试。配置固定 `observe_ipv6=false`，当前运行时不会生成自然 IPv6 变化事件。
+v0.3.1 后台只生成 IPv4 watch：首次成功观察只建立基线，不上报；之后的变化先写入 `ip_state_file`，再发送 `ip.observed`。收到主控的 `ip.observed_ack` 之前，同一事件会在重连后继续重试。配置固定 `observe_ipv6=false`，当前运行时不会生成自然 IPv6 变化事件。
 
 ChangeIP 成功执行 provider 只代表调用完成。Agent 随后必须观察到不同公网 IPv4 才返回 `ipv4_changed`；反复观察到原地址返回 `ipv4_unchanged`；如果网络切换后一直无法重新观察公网 IPv4，则返回 `ipv4_observe_timed_out`。
 
@@ -69,9 +69,9 @@ ChangeIP 成功执行 provider 只代表调用完成。Agent 随后必须观察�
 
 目标节点的 capability metadata 可以公布地址来源和端口，但绝不包含用户名或密码。Runner 上的凭据位于独立 root-only profile 文件，以 AkastrCloud 的稳定 server key 索引。
 
-v0.3.0 bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd43546c7` 及其 SHA-256。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为当前代际的有效报告。
+v0.3.1 bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd43546c7` 及其 SHA-256。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为当前代际的有效报告。
 
-官方脚本在仅 IPv4 模式下可能已经生成有效报告 URL，却返回非零 Bash 状态。因此 v0.3.0 将“输出中包含有界、有效的 `https://report.check.place/...` URL，且代理 postflight 成功”视为完成；非零退出且没有报告 URL 仍是 `script_failed`。
+官方脚本在仅 IPv4 模式下可能已经生成有效报告 URL，却返回非零 Bash 状态。因此 v0.3.1 将“输出中包含有界、有效的 `https://report.check.place/...` URL，且代理 postflight 成功”视为完成；非零退出且没有报告 URL 仍是 `script_failed`。
 
 通过代理运行不等于直接在目标主机运行：依赖 Runner DNS 或直连网络的脚本检查应在验收时识别，并标记或省略。
 

@@ -54,7 +54,8 @@ preflight() {
     *) fail '当前只支持 Debian 12/13' ;;
   esac
   command -v systemctl >/dev/null 2>&1 || fail '主机未使用 systemd'
-  command -v curl >/dev/null 2>&1 || fail '请先安装 ca-certificates 和 curl'
+  command -v wget >/dev/null 2>&1 || fail '请先安装 ca-certificates、curl 和 wget'
+  command -v curl >/dev/null 2>&1 || fail '请先安装 ca-certificates、curl 和 wget'
 }
 
 make_temporary() {
@@ -62,8 +63,26 @@ make_temporary() {
   chmod 0700 "$temporary"
 }
 
+download_https() {
+  url=$1
+  destination=$2
+  label=$3
+  case "$url" in
+    https://*) ;;
+    *) fail "$label 下载地址必须使用 HTTPS" ;;
+  esac
+  if ! wget --https-only --tries=3 --timeout=30 -qO "$destination" "$url"; then
+    rm -f -- "$destination"
+    fail "$label 下载失败"
+  fi
+  [ -s "$destination" ] || {
+    rm -f -- "$destination"
+    fail "$label 下载结果为空"
+  }
+}
+
 install_packages() {
-  packages='ca-certificates curl'
+  packages='ca-certificates curl wget'
   if [ "$1" = 'runner' ]; then
     packages="$packages bash bc netcat-openbsd dnsutils iproute2"
   fi
@@ -76,8 +95,7 @@ install_packages() {
 
 download_binary() {
   binary_path="$temporary/$ASSET"
-  curl --fail --silent --show-error --location \
-    "$RELEASE_BASE_URL/$VERSION/$ASSET" -o "$binary_path"
+  download_https "$RELEASE_BASE_URL/$VERSION/$ASSET" "$binary_path" 'Agent binary'
   actual_sha256=$(sha256sum "$binary_path" | awk '{print $1}')
   [ "$actual_sha256" = "$BINARY_SHA256" ] || fail '安装包自动完整性校验失败'
   chmod 0755 "$binary_path"
@@ -86,9 +104,10 @@ download_binary() {
 prepare_ipquality() {
   [ "$install_mode" = 'runner' ] || return 0
   ipquality_path="$temporary/ip.sh"
-  curl --fail --silent --show-error --location \
+  download_https \
     "https://raw.githubusercontent.com/xykt/IPQuality/$IPQUALITY_COMMIT/ip.sh" \
-    -o "$ipquality_path"
+    "$ipquality_path" \
+    'IPQuality 脚本'
   ipquality_actual=$(sha256sum "$ipquality_path" | awk '{print $1}')
   [ "$ipquality_actual" = "$IPQUALITY_SHA256" ] || fail 'IPQuality 官方脚本自动完整性校验失败'
   chmod 0755 "$ipquality_path"
