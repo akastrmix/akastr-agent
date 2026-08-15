@@ -74,7 +74,7 @@ download_https() {
     https://*) ;;
     *) fail "$label 下载地址必须使用 HTTPS" ;;
   esac
-  if wget --https-only --tries=3 --timeout=30 -qO "$destination" "$url"; then
+  if wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$destination" "$url"; then
     :
   else
     wget_code=$?

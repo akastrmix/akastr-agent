@@ -76,7 +76,7 @@ jobs:
           test "$(dist/akastr-agent-linux-amd64 version)" = "$RELEASE_TAG"
           bash -n dist/install.sh
           ! grep -Eq '@AKASTR_AGENT_(VERSION|BINARY_SHA256)@' dist/install.sh
-          grep -Fq "wget --https-only --tries=3 --timeout=30 -qO" dist/install.sh
+          grep -Fq "wget --no-hsts --https-only --tries=3 --timeout=30 -qO" dist/install.sh
           ! grep -Fq "curl --fail --silent --show-error --location" dist/install.sh
 
       - name: Publish immutable GitHub release

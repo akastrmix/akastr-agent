@@ -65,7 +65,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"--uninstall)",
 		"IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'",
 		"download_https()",
-		"wget --https-only --tries=3 --timeout=30 -qO",
+		"wget --no-hsts --https-only --tries=3 --timeout=30 -qO",
 		"os_identity=$(",
 		"debian:12|debian:13)",
 		"wget 退出码 $wget_code",
@@ -87,6 +87,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"printf 'fail\\nsilent\\nshow-error\\nlocation\\n'",
 		"curl --fail --silent --show-error --location",
 		"wget -qO-",
+		"wget --https-only --tries=3 --timeout=30 -qO",
 		"\nVERSION='@AKASTR_AGENT_VERSION@'",
 		"$RELEASE_BASE_URL/$VERSION/$ASSET",
 	} {
