@@ -179,6 +179,8 @@ sudo systemctl restart akastr-agent.service
 
 ## 9. 正式迁移与回滚
 
+v0.4.0 不读取测试期 v0.1–v0.3 的配置或一次性 token，也不能从这些版本执行 `--update`。如果机器上装过旧测试 Agent，先用对应旧版本安装器执行带确认参数的卸载，再从后台添加持久节点并全新安装 v0.4.0；这不会修改旧 IPChanger。
+
 每个节点逐台进行：
 
 1. 保留旧 IPChanger，在后台填完整参数、添加持久节点并取得一键命令；
