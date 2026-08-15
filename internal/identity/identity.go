@@ -173,7 +173,7 @@ func Enroll(ctx context.Context, options struct {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Identity{}, errors.New("enrollment response contains trailing JSON")
 	}
-	if !result.OK || result.Protocol != "2026-08-16.v2" || result.AgentID != options.ExpectedAgentID {
+	if !result.OK || result.Protocol != "2026-08-16.v3" || result.AgentID != options.ExpectedAgentID {
 		return Identity{}, errors.New("enrollment response identity or protocol mismatch")
 	}
 	identity := Identity{

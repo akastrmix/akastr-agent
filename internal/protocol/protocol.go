@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "2026-08-16.v2"
+	Version     = "2026-08-16.v3"
 	AuthContext = "akastr-agent-auth-v1"
 	MaxMessage  = 64 * 1024
 )
@@ -62,7 +62,6 @@ type ChangeIPPayload struct {
 type IPQualityPayload struct {
 	TargetServerID string `json:"target_server_id"`
 	ExpectedIPv4   string `json:"expected_ipv4"`
-	ProxyHost      string `json:"proxy_host"`
 	ProxyPort      int    `json:"proxy_port"`
 	ProxyProfileID string `json:"proxy_profile_id"`
 	ScriptVersion  string `json:"script_version"`

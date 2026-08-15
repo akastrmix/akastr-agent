@@ -60,10 +60,8 @@ type ChangeIP struct {
 }
 
 type SOCKS5 struct {
-	Enabled        bool   `json:"enabled"`
-	AddressSource  string `json:"address_source,omitempty"`
-	AdvertisedHost string `json:"advertised_host,omitempty"`
-	Port           int    `json:"port,omitempty"`
+	Enabled bool `json:"enabled"`
+	Port    int  `json:"port,omitempty"`
 }
 
 type Runner struct {
@@ -154,25 +152,13 @@ func (c ChangeIP) validate() error {
 
 func (s SOCKS5) validate() error {
 	if !s.Enabled {
-		if s.AddressSource != "" || s.AdvertisedHost != "" || s.Port != 0 {
+		if s.Port != 0 {
 			return errors.New("disabled SOCKS5 description must not contain configuration")
 		}
 		return nil
 	}
 	if s.Port < 1 || s.Port > 65535 {
 		return errors.New("SOCKS5 port must be between 1 and 65535")
-	}
-	switch s.AddressSource {
-	case "observed_ipv4":
-		if s.AdvertisedHost != "" {
-			return errors.New("observed SOCKS5 address must not contain a static host")
-		}
-	case "static":
-		if strings.TrimSpace(s.AdvertisedHost) == "" || s.AdvertisedHost != strings.TrimSpace(s.AdvertisedHost) || len(s.AdvertisedHost) > 253 || strings.ContainsAny(s.AdvertisedHost, "\r\n\x00") {
-			return errors.New("static SOCKS5 host is invalid")
-		}
-	default:
-		return errors.New("SOCKS5 address_source must be observed_ipv4 or static")
 	}
 	return nil
 }
@@ -209,7 +195,7 @@ func (p Payload) AgentConfig(ipQualityVersion, ipQualitySHA256 string) config.Co
 		case "command":
 			cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Enabled: true, Program: p.Target.ChangeIP.Program, Args: p.Target.ChangeIP.Args, TimeoutSeconds: 60, ObserveTimeoutSeconds: 300}
 		}
-		cfg.Capabilities.SOCKS5 = config.SOCKS5Config{Enabled: p.Target.SOCKS5.Enabled, AddressSource: p.Target.SOCKS5.AddressSource, AdvertisedHost: p.Target.SOCKS5.AdvertisedHost, Port: p.Target.SOCKS5.Port}
+		cfg.Capabilities.SOCKS5 = config.SOCKS5Config{Enabled: p.Target.SOCKS5.Enabled, Port: p.Target.SOCKS5.Port}
 	} else {
 		cfg.Capabilities.IPQualityRunner = config.IPQualityRunnerConfig{Enabled: true, ScriptPath: scriptPath, ProxyProfilesFile: profilesPath, TimeoutSeconds: 900, MaxConcurrency: 1, ScriptVersion: ipQualityVersion, ScriptSHA256: ipQualitySHA256}
 	}

@@ -27,7 +27,7 @@ func TestAuthSigningTextMatchesApprovedWireFormat(t *testing.T) {
 }
 
 func TestDecodeRejectsUnknownEnvelopeFields(t *testing.T) {
-	_, err := Decode([]byte(`{"protocol":"2026-08-16.v2","message_id":"123e4567-e89b-42d3-a456-426614174000","type":"x","sent_at":"2026-08-13T00:00:00Z","body":{},"extra":true}`))
+	_, err := Decode([]byte(`{"protocol":"2026-08-16.v3","message_id":"123e4567-e89b-42d3-a456-426614174000","type":"x","sent_at":"2026-08-13T00:00:00Z","body":{},"extra":true}`))
 	if err == nil {
 		t.Fatal("Decode accepted an unknown envelope field")
 	}

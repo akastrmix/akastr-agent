@@ -102,7 +102,7 @@ func TestFetchAndWriteTargetBootstrap(t *testing.T) {
 		Target: &Target{
 			IPWatchIntervalSeconds: 60,
 			ChangeIP:               ChangeIP{Provider: "http_bearer", URL: "https://provider.test/change", BearerToken: "secret-token"},
-			SOCKS5:                 SOCKS5{Enabled: true, AddressSource: "observed_ipv4", Port: 38138},
+			SOCKS5:                 SOCKS5{Enabled: true, Port: 38138},
 		},
 	}
 	actual, output := fetchFixture(t, payload, nil)

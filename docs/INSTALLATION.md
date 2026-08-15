@@ -1,6 +1,6 @@
 # Akastr Agent 安装与使用教程
 
-本文面向手动迁移节点的操作者。v0.4.0 的新装参数全部在 AkastrCloud 后台填写；后台只返回一行命令，VPS 执行后不会再询问节点名称、模式、WSS、ChangeIP、SOCKS5 或 token。后台中的节点是持久对象：VPS 重装后可以再次取得原安装命令，不必删除后重建。
+本文面向手动迁移节点的操作者。v0.5.0 的新装参数全部在 AkastrCloud 后台填写；后台只返回一行命令，VPS 执行后不会再询问节点名称、模式、WSS、ChangeIP、SOCKS5 或 token。后台中的节点是持久对象：VPS 重装后可以再次取得原安装命令，不必删除后重建。
 
 ## 1. 支持范围
 
@@ -40,17 +40,13 @@ sudo apt-get install --yes ca-certificates curl wget
 
 - 公网 IPv4 检查间隔：10–3600 秒；一般保持 60 秒；
 - ChangeIP：不启用、粘贴服务商完整 `curl` 命令，或固定本机程序；
-- SOCKS5 入口：不公布，或公布地址来源与端口。
+- SOCKS5 入口：不公布，或公布端口。
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于 root-only 的 `/etc/akastr-agent/changeip-curl.conf`。
 
 “固定本机程序”填写可执行文件的绝对路径，例如 `/usr/local/bin/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。它不接受 shell 命令串、`/bin/sh`、`/bin/bash`、`/usr/bin/env` 或 `eval`。主控以后只能触发这组固定 argv，不能远程换程序或参数。
 
-公布 SOCKS5 只描述已有代理，Agent 不安装代理服务，也不保存该代理的用户名和密码：
-
-- 地址随公网 IPv4 变化时选“跟随观测到的公网 IPv4”；
-- 使用 DDNS 或固定入口时选“固定主机名或 IP”；
-- 端口必须为 1–65535。
+公布 SOCKS5 只描述已有代理，Agent 不安装代理服务，也不保存该代理的用户名和密码。只需填写 1–65535 的监听端口；主控始终使用 Agent 最近一次观测到的公网 IPv4，不接受 DDNS、固定主机名或手填 IP。尚未建立公网 IPv4 baseline 时不会派发 IPQuality。
 
 ### IPQuality Runner
 
@@ -65,7 +61,7 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、机器 token 和版本由后台填写：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.4.0/install.sh' && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_MACHINE_TOKEN='<machine-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh "$installer" --install )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.5.0/install.sh' && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_MACHINE_TOKEN='<machine-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh "$installer" --install )
 ```
 
 不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令以 `mktemp` 创建唯一入口文件，并在子 shell 退出时自动删除；wget 使用 `--no-hsts`，不会创建或更新用户级 HSTS 数据库。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证，但可重新下载密封配置并为重装后的主机注册新公钥。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
@@ -87,7 +83,7 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 成功时最后显示：
 
 ```text
-Akastr Agent v0.4.0 已安装并运行。
+Akastr Agent v0.5.0 已安装并运行。
 ```
 
 注册以前失败会删除本次创建的 Agent 配置、状态、release 和 systemd unit；已经由 apt 安装的通用依赖可能保留。注册成功后若 service 启动失败，安装器会保留 identity 与现场。两种情况都不会停止、删除或修改旧 IPChanger。
@@ -100,7 +96,7 @@ Akastr Agent v0.4.0 已安装并运行。
 /etc/akastr-agent/config.json
 /etc/akastr-agent/identity.json
 /var/lib/akastr-agent/
-/usr/local/lib/akastr-agent/releases/v0.4.0/
+/usr/local/lib/akastr-agent/releases/v0.5.0/
 /usr/local/lib/akastr-agent/current
 /etc/systemd/system/akastr-agent.service
 ```
@@ -120,7 +116,7 @@ sudo /usr/local/lib/akastr-agent/current/akastr-agent capabilities --config /etc
 sudo journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-正确结果是：service 为 `active`、`MainPID` 非 0、版本为 `v0.4.0`、配置输出 `configuration valid`，日志出现 `control connection ready`。capability 只显示已启用能力，不应包含 token、密码或 provider secret。
+正确结果是：service 为 `active`、`MainPID` 非 0、版本为 `v0.5.0`、配置输出 `configuration valid`，日志出现 `control connection ready`。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
 
 再回到后台确认节点为“在线”，版本和类型正确。正式迁移前继续保留旧 IPChanger；仅仅安装成功不等于业务路由已经切换。
 
@@ -145,8 +141,8 @@ sudo systemctl restart akastr-agent.service
 维护操作不进入菜单，也不询问问题。下载目标版本的 `install.sh` 后显式选择操作：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.4.0/install.sh' && sudo sh "$installer" --update )
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.4.0/install.sh' && sudo sh "$installer" --status )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.5.0/install.sh' && sudo sh "$installer" --update )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.5.0/install.sh' && sudo sh "$installer" --status )
 ```
 
 `--update` 只更新 binary，保留 identity、配置、secret 和状态。它先验证新 binary 能读取现有配置，再原子切换 `current` 并重启；新服务不能稳定运行时自动恢复旧 symlink。当前已是同版本时直接报告，不重复写入。
@@ -154,7 +150,7 @@ sudo systemctl restart akastr-agent.service
 永久卸载必须使用显式销毁参数：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.4.0/install.sh' && sudo sh "$installer" --uninstall --confirm-destroy-local-agent )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.5.0/install.sh' && sudo sh "$installer" --uninstall --confirm-destroy-local-agent )
 ```
 
 卸载会停止服务并永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；它不会自动删除后台节点。只有完成业务回滚并确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
@@ -179,7 +175,7 @@ sudo systemctl restart akastr-agent.service
 
 ## 9. 正式迁移与回滚
 
-v0.4.0 不读取测试期 v0.1–v0.3 的配置或一次性 token，也不能从这些版本执行 `--update`。如果机器上装过旧测试 Agent，先用对应旧版本安装器执行带确认参数的卸载，再从后台添加持久节点并全新安装 v0.4.0；这不会修改旧 IPChanger。
+v0.5.0 不读取测试期 v0.1–v0.4 的旧 SOCKS5 地址字段、旧配置或一次性 token，也不能从这些版本执行 `--update`。如果机器上装过旧测试 Agent，先用对应旧版本安装器执行带确认参数的卸载，再从后台添加持久节点并全新安装 v0.5.0；这不会修改旧 IPChanger。
 
 每个节点逐台进行：
 

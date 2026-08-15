@@ -40,11 +40,22 @@ func TestLoadRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsSOCKS5SecretFields(t *testing.T) {
-	input := strings.Replace(validConfig, `"socks5":{"enabled":false}`, `"socks5":{"enabled":true,"address_source":"observed_ipv4","port":1080,"password":"secret"}`, 1)
+func TestLoadRejectsRemovedSOCKS5AddressFields(t *testing.T) {
+	input := strings.Replace(validConfig, `"socks5":{"enabled":false}`, `"socks5":{"enabled":true,"address_source":"observed_ipv4","port":1080}`, 1)
 	_, err := Load(writeConfig(t, input))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
-		t.Fatalf("Load() error = %v, want unknown password field", err)
+		t.Fatalf("Load() error = %v, want removed address_source to be rejected", err)
+	}
+}
+
+func TestLoadAcceptsSOCKS5PortOnly(t *testing.T) {
+	input := strings.Replace(validConfig, `"socks5":{"enabled":false}`, `"socks5":{"enabled":true,"port":1080}`, 1)
+	cfg, err := Load(writeConfig(t, input))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Capabilities.SOCKS5.Enabled || cfg.Capabilities.SOCKS5.Port != 1080 {
+		t.Fatalf("Load() returned SOCKS5 config %#v", cfg.Capabilities.SOCKS5)
 	}
 }
 

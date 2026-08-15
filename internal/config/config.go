@@ -59,10 +59,8 @@ type ChangeIPConfig struct {
 }
 
 type SOCKS5Config struct {
-	Enabled        bool   `json:"enabled"`
-	AddressSource  string `json:"address_source"`
-	AdvertisedHost string `json:"advertised_host"`
-	Port           int    `json:"port"`
+	Enabled bool `json:"enabled"`
+	Port    int  `json:"port"`
 }
 
 type IPQualityRunnerConfig struct {
@@ -184,18 +182,6 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 		enabled++
 		if capabilities.SOCKS5.Port < 1 || capabilities.SOCKS5.Port > 65535 {
 			return errors.New("capabilities.socks5.port must be between 1 and 65535")
-		}
-		switch capabilities.SOCKS5.AddressSource {
-		case "observed_ipv4":
-			if capabilities.SOCKS5.AdvertisedHost != "" {
-				return errors.New("capabilities.socks5.advertised_host must be empty when address_source is observed_ipv4")
-			}
-		case "static":
-			if strings.TrimSpace(capabilities.SOCKS5.AdvertisedHost) == "" {
-				return errors.New("capabilities.socks5.advertised_host is required when address_source is static")
-			}
-		default:
-			return errors.New("capabilities.socks5.address_source must be observed_ipv4 or static")
 		}
 	}
 	if capabilities.IPQualityRunner.Enabled {

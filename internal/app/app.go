@@ -46,11 +46,7 @@ func buildCapabilities(cfg config.CapabilitiesConfig) (*capability.Registry, err
 	}
 	if cfg.SOCKS5.Enabled {
 		properties := map[string]string{
-			"address_source": cfg.SOCKS5.AddressSource,
-			"port":           strconv.Itoa(cfg.SOCKS5.Port),
-		}
-		if cfg.SOCKS5.AddressSource == "static" {
-			properties["advertised_host"] = cfg.SOCKS5.AdvertisedHost
+			"port": strconv.Itoa(cfg.SOCKS5.Port),
 		}
 		descriptors = append(descriptors, capability.Descriptor{
 			Name:       "proxy.socks5",

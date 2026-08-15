@@ -75,7 +75,7 @@ func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) pr
 		return h.failure("script_version_mismatch", "", "", "")
 	}
 	run := h.provider.Run(ctx, script.Request{
-		ProxyHost: payload.ProxyHost, ProxyPort: payload.ProxyPort,
+		ProxyPort:      payload.ProxyPort,
 		ProxyProfileID: payload.ProxyProfileID, ExpectedIPv4: payload.ExpectedIPv4,
 	})
 	result := map[string]any{

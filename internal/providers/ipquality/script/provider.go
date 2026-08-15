@@ -42,7 +42,6 @@ type Provider struct {
 }
 
 type Request struct {
-	ProxyHost      string
 	ProxyPort      int
 	ProxyProfileID string
 	ExpectedIPv4   string
@@ -92,13 +91,14 @@ func (p *Provider) Run(ctx context.Context, request Request) Result {
 	if !found {
 		return Result{Code: "proxy_profile_not_found", CheckedAt: checkedAt}
 	}
-	if request.ProxyPort < 1 || request.ProxyPort > 65535 || strings.TrimSpace(request.ProxyHost) == "" {
+	expected, err := netip.ParseAddr(request.ExpectedIPv4)
+	if err != nil || !expected.Is4() || !expected.IsGlobalUnicast() || request.ProxyPort < 1 || request.ProxyPort > 65535 {
 		return Result{Code: "proxy_endpoint_invalid", CheckedAt: checkedAt}
 	}
 	if err := p.verifyScript(); err != nil {
 		return Result{Code: "script_checksum_mismatch", CheckedAt: checkedAt}
 	}
-	proxyAddress := net.JoinHostPort(request.ProxyHost, fmt.Sprint(request.ProxyPort))
+	proxyAddress := net.JoinHostPort(expected.String(), fmt.Sprint(request.ProxyPort))
 	before, err := observeProxyIPv4(ctx, proxyAddress, profile)
 	if err != nil {
 		return Result{Code: "proxy_preflight_failed", CheckedAt: checkedAt}

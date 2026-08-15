@@ -9,7 +9,7 @@ import (
 func TestBuildCapabilitiesOmitsSecretsAndLocalPaths(t *testing.T) {
 	registry, err := buildCapabilities(config.CapabilitiesConfig{
 		ChangeIP: config.ChangeIPConfig{Enabled: true, Program: "/bin/bash", Args: []string{"/root/changeip.sh"}},
-		SOCKS5:   config.SOCKS5Config{Enabled: true, AddressSource: "observed_ipv4", Port: 1080},
+		SOCKS5:   config.SOCKS5Config{Enabled: true, Port: 1080},
 		IPQualityRunner: config.IPQualityRunnerConfig{
 			Enabled: true, ScriptPath: "/opt/ipquality/ip.sh", ProxyProfilesFile: "/etc/proxies.json", MaxConcurrency: 1, ScriptVersion: "v2026.08.13",
 		},
@@ -27,5 +27,14 @@ func TestBuildCapabilitiesOmitsSecretsAndLocalPaths(t *testing.T) {
 				t.Fatalf("capability leaked local path: %#v", descriptor)
 			}
 		}
+	}
+	var socks5Properties map[string]string
+	for _, descriptor := range listed {
+		if descriptor.Name == "proxy.socks5" {
+			socks5Properties = descriptor.Properties
+		}
+	}
+	if len(socks5Properties) != 1 || socks5Properties["port"] != "1080" {
+		t.Fatalf("SOCKS5 capability properties = %#v, want port only", socks5Properties)
 	}
 }

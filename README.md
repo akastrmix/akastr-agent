@@ -4,7 +4,7 @@ Akastr Agent 是 AkastrCloud 服务节点上的轻量被控程序。它以单个
 
 > 正式节点必须逐台迁移。安装成功前保留旧 IPChanger；主控验收并切换该节点路由前，也不要停用旧服务。
 
-## v0.4.0 使用模型
+## v0.5.0 使用模型
 
 Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久节点生成的一行安装命令：
 
@@ -21,7 +21,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 
 - 公网 IPv4 定时观察；
 - HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；
-- 不含凭据的 SOCKS5 地址来源和端口描述。
+- 不含凭据的 SOCKS5 端口描述；代理地址始终使用 Agent 观测到的公网 IPv4。
 
 Runner 可配置 1–128 个以 server key 索引的 SOCKS5 credential profile。安装器固定下载官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) commit `0ee5f192fed70c04615852efba0e4b8bd43546c7`，自动校验并把并发严格固定为 `max_concurrency=1`。
 
@@ -45,7 +45,7 @@ AkastrCloud 负责业务编排：
 
 IPQuality 的“每天一次”按 `Asia/Hong_Kong` 日历日计算；超过一次直接读取当天缓存。香港时间 `00:00` 或目标节点观测到 IPv4 改变时，主控开启新的缓存代际。此规则由 AkastrCloud 执行，重装 Agent 不能绕过。
 
-ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令和 HTTP-flow ChangeIP 均不属于 v0.4.0。
+ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令和 HTTP-flow ChangeIP 均不属于 v0.5.0。
 
 ## 文档
 
