@@ -19,7 +19,6 @@ type Handler struct {
 	observer       ipwatch.AddressObserver
 	provider       commandProvider
 	observeTimeout time.Duration
-	pollInterval   time.Duration
 }
 
 type commandProvider interface {
@@ -29,7 +28,7 @@ type commandProvider interface {
 func New(engine *operation.Engine, observer ipwatch.AddressObserver, provider commandProvider, observeTimeout time.Duration) *Handler {
 	return &Handler{
 		engine: engine, observer: observer, provider: provider,
-		observeTimeout: observeTimeout, pollInterval: 5 * time.Second,
+		observeTimeout: observeTimeout,
 	}
 }
 
@@ -75,7 +74,9 @@ func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) pr
 	if err := decodeExact(offer.Payload, &payload); err != nil {
 		return failure("payload_invalid", nil, nil, time.Now().UTC())
 	}
-	beforeObservation, err := h.observer.Observe(ctx, ipwatch.IPv4)
+	observeContext, cancelObserve := context.WithTimeout(ctx, h.observeTimeout)
+	beforeObservation, err := h.observer.Observe(observeContext, ipwatch.IPv4)
+	cancelObserve()
 	if err != nil {
 		return failure("ipv4_observe_failed", nil, nil, time.Now().UTC())
 	}
@@ -93,30 +94,10 @@ func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) pr
 		result.Outcome = outcome
 		return result
 	}
-	deadline := time.Now().Add(h.observeTimeout)
-	observedAfterChange := false
-	for time.Now().Before(deadline) {
-		observation, observeError := h.observer.Observe(ctx, ipwatch.IPv4)
-		if observeError == nil {
-			observedAfterChange = true
-			after := observation.Address.String()
-			if after != before {
-				return protocol.ExecutionResult{
-					Outcome: "succeeded", Code: "ipv4_changed",
-					Result: changeResult(&before, &after, observation.ObservedAt),
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			return failure("cancelled", &before, &before, time.Now().UTC())
-		case <-time.After(h.pollInterval):
-		}
+	return protocol.ExecutionResult{
+		Outcome: "succeeded", Code: "change_triggered",
+		Result: changeResult(&before, nil, providerResult.FinishedAt),
 	}
-	if !observedAfterChange {
-		return failure("ipv4_observe_timed_out", &before, nil, time.Now().UTC())
-	}
-	return failure("ipv4_unchanged", &before, &before, time.Now().UTC())
 }
 
 func failure(code string, oldIPv4, newIPv4 *string, observedAt time.Time) protocol.ExecutionResult {

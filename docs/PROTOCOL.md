@@ -4,7 +4,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 
 ## Enrollment 与身份认证
 
-管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 provider 配置，并生成 v0.8.2 一键命令。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本机认证解密并生成 root-only 文件。随后 `akastr-agent enroll` 每次生成新的 Ed25519 keypair，通过 HTTPS 发送机器 token、raw 32-byte public key、Agent version 和不含秘密的 capability list。注册成功后节点删除本机 token 副本，主控保留加密 bootstrap，供同一节点重装；private key 从不发送给主控。主控在该节点存在 pending、offered 或 accepted command 时以 `agent_node_busy` 拒绝注册；注册成功会替换公钥并断开旧 WSS。
+管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 provider 配置，并生成 v0.8.3 一键命令。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本机认证解密并生成 root-only 文件。随后 `akastr-agent enroll` 每次生成新的 Ed25519 keypair，通过 HTTPS 发送机器 token、raw 32-byte public key、Agent version 和不含秘密的 capability list。注册成功后节点删除本机 token 副本，主控保留加密 bootstrap，供同一节点重装；private key 从不发送给主控。主控在该节点存在 pending、offered 或 accepted command 时以 `agent_node_busy` 拒绝注册；注册成功会替换公钥并断开旧 WSS。
 
 机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。管理员可审计地重新显示安装命令，也可轮换 token；轮换在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。再次注册同一节点会替换公钥并断开旧 WSS 连接。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 时拒绝删除。
 
@@ -43,7 +43,7 @@ akastr-agent-update-check-v1
 `operation.offer` 包含：
 
 - `command_id`：稳定 UUID，也是执行幂等键与本地 journal key；
-- `command_type`：v0.8.2 runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
+- `command_type`：v0.8.3 runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
 - `payload_version=1` 与对应类型的严格 payload；
 - `not_before` 和 `expires_at`。
 
@@ -55,7 +55,7 @@ Agent 只有在当前时间已达到 `not_before`、尚未到 `expires_at` 且�
 
 payload 只包含 `expected_ipv4`。Agent 在调用 provider 前观察当前公网 IPv4：不匹配时返回 `stale_expected_ipv4`，不执行 provider。provider 使用本机配置中的固定 `program` 与 `args`，其 stdout/stderr 不进入协议或日志。
 
-provider 零退出并不等于换 IP 成功。之后观察到新地址才返回 `ipv4_changed`；反复看到旧地址返回 `ipv4_unchanged`；始终无法重新观察则返回 `ipv4_observe_timed_out`。其他稳定 code 包括 `start_failed`、`exited_nonzero`、`timed_out`、`cancelled`、`local_conflict` 和状态恢复相关错误。
+provider 零退出返回成功终态 `change_triggered`，其中只有触发前 IPv4；它不宣称地址已经变化。常驻 IPv4 monitor 是唯一的变化观察器，后续以 `ip.observed` 让 AkastrCloud 在业务 session 内收敛成功或超时。其他稳定 code 包括 `stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero`、`timed_out`、`cancelled`、`local_conflict` 和状态恢复相关错误。
 
 ### `ipquality.execute`
 
@@ -80,7 +80,7 @@ Agent 在本地只保留一个 pending transition，收到相同 `observation_id
 ## 安全与兼容性
 
 - 协议固定为 `2026-08-16.v3`，没有版本自动降级，也不接受 v1/v2 字段。
-- v0.8.2 是 Agent release/bootstrap 版本；SOCKS5 capability 只允许 `port`，不接受 `address_source` 或 `advertised_host`。
+- v0.8.3 是 Agent release/bootstrap 版本；SOCKS5 capability 只允许 `port`，不接受 `address_source` 或 `advertised_host`。
 - bootstrap/enrollment 使用机器 token，WSS 与自动更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
 - capability list、journal 和日志不得含密码或脚本输出。

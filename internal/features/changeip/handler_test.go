@@ -1,10 +1,8 @@
 package changeip
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/netip"
 	"testing"
 	"time"
@@ -22,9 +20,11 @@ type observerStep struct {
 type fakeObserver struct {
 	steps []observerStep
 	index int
+	calls int
 }
 
 func (o *fakeObserver) Observe(context.Context, ipwatch.Family) (ipwatch.Observation, error) {
+	o.calls++
 	index := o.index
 	if index < len(o.steps)-1 {
 		o.index++
@@ -44,28 +44,20 @@ func (fakeProvider) Run(context.Context) changecommand.Result {
 	return changecommand.Result{Code: changecommand.CodeCompleted, FinishedAt: time.Now().UTC()}
 }
 
-func TestPostChangeObservationTimeoutIsNotReportedAsUnchanged(t *testing.T) {
+func TestCompletedProviderReturnsTriggeredWithoutASecondObservation(t *testing.T) {
+	observer := &fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}}
 	handler := &Handler{
-		observer: &fakeObserver{steps: []observerStep{
-			{address: "8.8.8.8"}, {err: errors.New("network unavailable")},
-		}},
-		provider: fakeProvider{}, observeTimeout: 3 * time.Millisecond, pollInterval: time.Millisecond,
+		observer: observer, provider: fakeProvider{}, observeTimeout: time.Second,
 	}
 	result := handler.execute(context.Background(), offerFor("8.8.8.8"))
-	encoded, _ := json.Marshal(result.Result)
-	if result.Code != "ipv4_observe_timed_out" || !bytes.Contains(encoded, []byte(`"new_ipv4":null`)) {
+	oldIPv4, oldOk := result.Result["old_ipv4"].(*string)
+	newIPv4, newOk := result.Result["new_ipv4"].(*string)
+	if result.Outcome != "succeeded" || result.Code != "change_triggered" ||
+		!oldOk || oldIPv4 == nil || *oldIPv4 != "8.8.8.8" || !newOk || newIPv4 != nil {
 		t.Fatalf("execute() = %#v", result)
 	}
-}
-
-func TestPostChangeObservedOldAddressIsReportedAsUnchanged(t *testing.T) {
-	handler := &Handler{
-		observer: &fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}},
-		provider: fakeProvider{}, observeTimeout: 3 * time.Millisecond, pollInterval: time.Millisecond,
-	}
-	result := handler.execute(context.Background(), offerFor("8.8.8.8"))
-	if result.Code != "ipv4_unchanged" {
-		t.Fatalf("execute() = %#v", result)
+	if observer.calls != 1 {
+		t.Fatalf("observer calls = %d, want exactly one preflight observation", observer.calls)
 	}
 }
 
