@@ -17,19 +17,16 @@ import (
 
 const maxBinaryBytes = 32 * 1024 * 1024
 
-var ErrOperationActive = errors.New("Agent operation became active before update switch")
-
 type CommandRunner interface {
 	Output(context.Context, string, ...string) (string, error)
 }
 
 type ApplyOptions struct {
-	Manifest        Manifest
-	ConfigPath      string
-	ReleaseRoot     string
-	HTTPClient      *http.Client
-	Runner          CommandRunner
-	OperationActive func() (bool, error)
+	Manifest    Manifest
+	ConfigPath  string
+	ReleaseRoot string
+	HTTPClient  *http.Client
+	Runner      CommandRunner
 }
 
 func Apply(ctx context.Context, options ApplyOptions) error {
@@ -97,24 +94,12 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 	}
 
 	currentLink := filepath.Join(releaseRoot, "current")
-	previousTarget, err := safeCurrentTarget(currentLink, releasesRoot)
+	_, err = safeCurrentTarget(currentLink, releasesRoot)
 	if err != nil {
 		if createdRelease {
 			_ = os.RemoveAll(targetRelease)
 		}
 		return err
-	}
-	if options.OperationActive != nil {
-		active, err := options.OperationActive()
-		if err != nil || active {
-			if createdRelease {
-				_ = os.RemoveAll(targetRelease)
-			}
-			if err != nil {
-				return fmt.Errorf("recheck active Agent operation: %w", err)
-			}
-			return ErrOperationActive
-		}
 	}
 	if err := replaceSymlink(currentLink, targetRelease); err != nil {
 		if createdRelease {
@@ -123,7 +108,7 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 		return err
 	}
 
-	pruneOldReleases(releasesRoot, targetRelease, previousTarget)
+	pruneOldReleases(releasesRoot, targetRelease)
 	return nil
 }
 
@@ -240,14 +225,14 @@ func replaceSymlink(path, target string) error {
 	return nil
 }
 
-func pruneOldReleases(releasesRoot, current, previous string) {
+func pruneOldReleases(releasesRoot, current string) {
 	entries, err := os.ReadDir(releasesRoot)
 	if err != nil {
 		return
 	}
 	for _, entry := range entries {
 		path := filepath.Join(releasesRoot, entry.Name())
-		if path == current || path == previous || !semanticVersion.MatchString(entry.Name()) {
+		if path == current || !semanticVersion.MatchString(entry.Name()) {
 			continue
 		}
 		info, err := entry.Info()

@@ -150,17 +150,29 @@ func Enroll(ctx context.Context, options struct {
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
+	identity := Identity{
+		SchemaVersion: SchemaVersion,
+		AgentID:       options.ExpectedAgentID,
+		PublicKey:     base64.RawURLEncoding.EncodeToString(publicKey),
+		PrivateKey:    base64.RawURLEncoding.EncodeToString(privateKey),
+	}
+	if err := state.NewJSONFile(options.IdentityFile).Save(identity); err != nil {
+		return Identity{}, fmt.Errorf("persist pending identity: %w", err)
+	}
 	client := options.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
-	response, err := client.Do(request)
+	strictClient := *client
+	strictClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := strictClient.Do(request)
 	if err != nil {
 		return Identity{}, fmt.Errorf("enroll identity: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		_ = os.Remove(options.IdentityFile)
 		return Identity{}, fmt.Errorf("enroll identity: server returned HTTP %d", response.StatusCode)
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 4097))
@@ -175,15 +187,6 @@ func Enroll(ctx context.Context, options struct {
 	}
 	if !result.OK || result.Protocol != "2026-08-16.v3" || result.AgentID != options.ExpectedAgentID {
 		return Identity{}, errors.New("enrollment response identity or protocol mismatch")
-	}
-	identity := Identity{
-		SchemaVersion: SchemaVersion,
-		AgentID:       result.AgentID,
-		PublicKey:     base64.RawURLEncoding.EncodeToString(publicKey),
-		PrivateKey:    base64.RawURLEncoding.EncodeToString(privateKey),
-	}
-	if err := state.NewJSONFile(options.IdentityFile).Save(identity); err != nil {
-		return Identity{}, fmt.Errorf("persist identity: %w", err)
 	}
 	return identity, nil
 }

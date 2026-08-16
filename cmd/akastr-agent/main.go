@@ -19,6 +19,9 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
+	"github.com/akastrmix/akastr-agent/internal/lifecycle"
+	"github.com/akastrmix/akastr-agent/internal/operation"
+	"github.com/akastrmix/akastr-agent/internal/systemdnotify"
 	transportws "github.com/akastrmix/akastr-agent/internal/transport/ws"
 )
 
@@ -33,7 +36,7 @@ func main() {
 
 func run(arguments []string, output io.Writer) error {
 	if len(arguments) == 0 {
-		return errors.New("expected one of: bootstrap, run, enroll, check-config, check-identity, capabilities, version")
+		return errors.New("expected one of: bootstrap, run, enroll, check-config, check-idle, capabilities, version")
 	}
 	switch arguments[0] {
 	case "version":
@@ -67,27 +70,7 @@ func run(arguments []string, output io.Writer) error {
 		}
 		_, err = fmt.Fprintf(output, "bootstrap_mode=%s\n", payload.Mode)
 		return err
-	case "check-identity":
-		flags := flag.NewFlagSet("check-identity", flag.ContinueOnError)
-		flags.SetOutput(io.Discard)
-		identityPath := flags.String("identity", "/etc/akastr-agent/identity.json", "root-only identity file")
-		agentID := flags.String("agent-id", "", "expected persistent node UUID")
-		if err := flags.Parse(arguments[1:]); err != nil {
-			return err
-		}
-		if flags.NArg() != 0 || *agentID == "" {
-			return errors.New("check-identity requires exactly --agent-id")
-		}
-		credentials, err := identity.Load(*identityPath)
-		if err != nil {
-			return err
-		}
-		if credentials.AgentID != *agentID {
-			return errors.New("identity belongs to a different persistent node")
-		}
-		_, err = fmt.Fprintln(output, "identity valid")
-		return err
-	case "run", "enroll", "check-config", "capabilities":
+	case "run", "enroll", "check-config", "check-idle", "capabilities":
 		flags := flag.NewFlagSet(arguments[0], flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
 		configPath := flags.String("config", "/etc/akastr-agent/config.json", "configuration file")
@@ -106,6 +89,13 @@ func run(arguments []string, output io.Writer) error {
 				return fmt.Errorf("validate runtime dependencies: %w", err)
 			}
 			_, err := fmt.Fprintln(output, "configuration valid")
+			return err
+		}
+		if arguments[0] == "check-idle" {
+			if err := checkIdle(model.Config.StateFile, model.Config.RecentOperationLimit); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(output, "Agent is idle")
 			return err
 		}
 		if arguments[0] == "enroll" {
@@ -146,6 +136,7 @@ func run(arguments []string, output io.Writer) error {
 				return err
 			}
 			logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+			lifecycleGate := lifecycle.New()
 			var observations transportws.ObservationSource
 			if monitor := runtime.IPMonitor(); monitor != nil {
 				observations = monitor
@@ -157,11 +148,14 @@ func run(arguments []string, output io.Writer) error {
 				Capabilities []capability.Descriptor
 				Executor     transportws.Executor
 				Observations transportws.ObservationSource
+				Lifecycle    *lifecycle.Gate
+				OnReady      func() error
 				Logger       *slog.Logger
 			}{
 				Endpoint: model.Config.Control.Endpoint, Identity: credentials,
 				Version: version, Capabilities: model.Capabilities.List(),
-				Executor: runtime, Observations: observations, Logger: logger,
+				Executor: runtime, Observations: observations,
+				Lifecycle: lifecycleGate, OnReady: systemdnotify.Ready, Logger: logger,
 			})
 			if err != nil {
 				return err
@@ -170,13 +164,12 @@ func run(arguments []string, output io.Writer) error {
 			defer stop()
 			go func() {
 				err := autoupdate.RunLoop(ctx, autoupdate.LoopOptions{
-					ControlEndpoint:      model.Config.Control.Endpoint,
-					CurrentVersion:       version,
-					Credentials:          credentials,
-					ConfigPath:           *configPath,
-					ReleaseRoot:          "/usr/local/lib/akastr-agent",
-					StateFile:            model.Config.StateFile,
-					RecentOperationLimit: model.Config.RecentOperationLimit,
+					ControlEndpoint: model.Config.Control.Endpoint,
+					CurrentVersion:  version,
+					Credentials:     credentials,
+					ConfigPath:      *configPath,
+					ReleaseRoot:     "/usr/local/lib/akastr-agent",
+					Lifecycle:       lifecycleGate,
 					Reexec: func(binary string) error {
 						return reexecAgent(binary, *configPath)
 					},
@@ -198,4 +191,15 @@ func run(arguments []string, output io.Writer) error {
 	default:
 		return fmt.Errorf("unknown command %q", arguments[0])
 	}
+}
+
+func checkIdle(stateFile string, recentLimit int) error {
+	engine, err := operation.Open(operation.Options{StateFile: stateFile, RecentLimit: recentLimit})
+	if err != nil {
+		return err
+	}
+	if len(engine.Snapshot().Active) != 0 {
+		return errors.New("an Agent operation is active")
+	}
+	return nil
 }

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/identity"
-	"github.com/akastrmix/akastr-agent/internal/operation"
+	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 )
 
 const CheckInterval = 6 * time.Hour
@@ -18,24 +18,23 @@ type Checker interface {
 }
 
 type LoopOptions struct {
-	ControlEndpoint      string
-	CurrentVersion       string
-	Credentials          identity.Identity
-	ConfigPath           string
-	ReleaseRoot          string
-	StateFile            string
-	RecentOperationLimit int
-	Checker              Checker
-	Ticks                <-chan time.Time
-	Apply                func(context.Context, ApplyOptions) error
-	Reexec               func(string) error
-	Logger               *slog.Logger
+	ControlEndpoint string
+	CurrentVersion  string
+	Credentials     identity.Identity
+	ConfigPath      string
+	ReleaseRoot     string
+	Lifecycle       *lifecycle.Gate
+	Checker         Checker
+	Ticks           <-chan time.Time
+	Apply           func(context.Context, ApplyOptions) error
+	Reexec          func(string) error
+	Logger          *slog.Logger
 }
 
 func RunLoop(ctx context.Context, options LoopOptions) error {
 	if options.ControlEndpoint == "" || options.CurrentVersion == "" ||
-		options.ConfigPath == "" || options.ReleaseRoot == "" || options.StateFile == "" ||
-		options.RecentOperationLimit < 1 || options.Reexec == nil {
+		options.ConfigPath == "" || options.ReleaseRoot == "" ||
+		options.Lifecycle == nil || options.Reexec == nil {
 		return errors.New("automatic update loop options are incomplete")
 	}
 	checker := options.Checker
@@ -76,36 +75,26 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 				cancel()
 				continue
 			}
-			active := func() (bool, error) {
-				engine, err := operation.Open(operation.Options{
-					StateFile: options.StateFile, RecentLimit: options.RecentOperationLimit,
-				})
-				if err != nil {
-					return false, err
-				}
-				return len(engine.Snapshot().Active) != 0, nil
-			}
-			isActive, err := active()
-			if err != nil || isActive {
+			lease, acquired := options.Lifecycle.TryUpdate()
+			if !acquired {
 				cancel()
 				continue
 			}
 			err = apply(checkContext, ApplyOptions{
 				Manifest: manifest, ConfigPath: options.ConfigPath, ReleaseRoot: options.ReleaseRoot,
-				OperationActive: active,
 			})
 			cancel()
-			if errors.Is(err, ErrOperationActive) {
-				continue
-			}
 			if err != nil {
+				lease.Release()
 				logger.Warn("automatic update apply failed", "code", "update_apply_failed")
 				continue
 			}
 			binary := filepath.Join(
 				options.ReleaseRoot, "releases", manifest.Version, "akastr-agent",
 			)
-			if err := options.Reexec(binary); err != nil {
+			reexecError := options.Reexec(binary)
+			lease.Release()
+			if reexecError != nil {
 				logger.Error("automatic update process replacement failed", "code", "update_reexec_failed")
 			}
 		}

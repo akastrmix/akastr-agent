@@ -2,45 +2,28 @@ package main
 
 import (
 	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/akastrmix/akastr-agent/internal/operation"
 )
 
-func TestCheckIdentityAcceptsOnlyTheExpectedPersistentNode(t *testing.T) {
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+func TestCheckIdleRejectsAnActiveOperation(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "operations.json")
+	engine, err := operation.Open(operation.Options{StateFile: statePath, RecentLimit: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
-	identityPath := filepath.Join(t.TempDir(), "identity.json")
-	contents, err := json.Marshal(map[string]any{
-		"schema_version": 1,
-		"agent_id":       "123e4567-e89b-42d3-a456-426614174000",
-		"public_key":     base64.RawURLEncoding.EncodeToString(publicKey),
-		"private_key":    base64.RawURLEncoding.EncodeToString(privateKey),
-	})
-	if err != nil {
+	if err := checkIdle(statePath, 16); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(identityPath, contents, 0o600); err != nil {
+	if _, err := engine.Begin("active-command", "changeip", "target-network"); err != nil {
 		t.Fatal(err)
 	}
-	if err := run([]string{
-		"check-identity", "--identity", identityPath,
-		"--agent-id", "123e4567-e89b-42d3-a456-426614174000",
-	}, &bytes.Buffer{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := run([]string{
-		"check-identity", "--identity", identityPath,
-		"--agent-id", "123e4567-e89b-42d3-a456-426614174001",
-	}, &bytes.Buffer{}); err == nil {
-		t.Fatal("identity for another persistent node was accepted")
+	if err := checkIdle(statePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
+		t.Fatalf("checkIdle error = %v, want active operation rejection", err)
 	}
 }
 

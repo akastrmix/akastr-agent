@@ -3,13 +3,12 @@ package autoupdate
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/identity"
-	"github.com/akastrmix/akastr-agent/internal/operation"
+	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
@@ -22,10 +21,6 @@ func (checker loopChecker) Check(
 }
 
 func TestRunLoopAppliesOnlyOnATickAndReexecsTheApprovedRelease(t *testing.T) {
-	stateFile := filepath.Join(t.TempDir(), "operations.json")
-	if _, err := operation.Open(operation.Options{StateFile: stateFile, RecentLimit: 16}); err != nil {
-		t.Fatal(err)
-	}
 	ticks := make(chan time.Time, 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	applied := make(chan struct{}, 1)
@@ -37,7 +32,7 @@ func TestRunLoopAppliesOnlyOnATickAndReexecsTheApprovedRelease(t *testing.T) {
 			CurrentVersion:  "v0.7.0", Credentials: identity.Identity{},
 			ConfigPath:  "/etc/akastr-agent/config.json",
 			ReleaseRoot: "/usr/local/lib/akastr-agent",
-			StateFile:   stateFile, RecentOperationLimit: 16,
+			Lifecycle:   lifecycle.New(),
 			Checker: loopChecker{manifest: Manifest{
 				Schema: Schema, Status: "update_available", Version: "v0.7.1",
 				Protocol:     protocol.Version,
@@ -84,14 +79,12 @@ func TestRunLoopAppliesOnlyOnATickAndReexecsTheApprovedRelease(t *testing.T) {
 }
 
 func TestRunLoopDefersWhenAnOperationIsActive(t *testing.T) {
-	stateFile := filepath.Join(t.TempDir(), "operations.json")
-	engine, err := operation.Open(operation.Options{StateFile: stateFile, RecentLimit: 16})
-	if err != nil {
-		t.Fatal(err)
+	gate := lifecycle.New()
+	operationLease, ok := gate.TryOperation()
+	if !ok {
+		t.Fatal("operation lease was rejected")
 	}
-	if _, err := engine.Begin("active-command", "changeip", "target-network"); err != nil {
-		t.Fatal(err)
-	}
+	defer operationLease.Release()
 	ticks := make(chan time.Time, 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -102,7 +95,7 @@ func TestRunLoopDefersWhenAnOperationIsActive(t *testing.T) {
 			CurrentVersion:  "v0.7.0", Credentials: identity.Identity{},
 			ConfigPath:  "/etc/akastr-agent/config.json",
 			ReleaseRoot: "/usr/local/lib/akastr-agent",
-			StateFile:   stateFile, RecentOperationLimit: 16,
+			Lifecycle:   gate,
 			Checker: loopChecker{manifest: Manifest{
 				Schema: Schema, Status: "update_available", Version: "v0.7.1",
 				Protocol:     protocol.Version,
@@ -121,8 +114,5 @@ func TestRunLoopDefersWhenAnOperationIsActive(t *testing.T) {
 	case <-applied:
 		t.Fatal("active operation did not defer the update")
 	case <-time.After(100 * time.Millisecond):
-	}
-	if _, err := os.Stat(stateFile); err != nil {
-		t.Fatal(err)
 	}
 }

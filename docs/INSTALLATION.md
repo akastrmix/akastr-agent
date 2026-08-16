@@ -1,6 +1,6 @@
 # Akastr Agent 安装与使用教程
 
-本文面向手动迁移节点的操作者。v0.7.0 的参数全部在 AkastrCloud 后台填写；后台只返回一行命令，VPS 执行后不会再询问节点名称、模式、WSS、ChangeIP、SOCKS5 或 token。后台中的节点是持久对象：同一命令既可用于空白 VPS，也可事务式覆盖旧测试、残缺或同节点现有 Agent，不必先卸载。
+本文面向手动迁移节点的操作者。v0.8.0 的参数全部在 AkastrCloud 后台填写；后台只返回一行命令，VPS 执行后不会再询问节点名称、模式、WSS、ChangeIP、SOCKS5 或 token。后台中的节点是持久对象：同一命令既可用于空白 VPS，也可覆盖残缺或同节点现有 Agent，不必先卸载。
 
 ## 1. 支持范围
 
@@ -61,12 +61,12 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、机器 token 和版本由后台填写：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.7.0/install.sh' && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_MACHINE_TOKEN='<machine-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh "$installer" --install )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.8.0/install.sh' && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_MACHINE_TOKEN='<machine-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh "$installer" --install )
 ```
 
 不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令以 `mktemp` 创建唯一入口文件，并在子 shell 退出时自动删除；wget 使用 `--no-hsts`，不会创建或更新用户级 HSTS 数据库。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证，但可重新下载密封配置并为重装后的主机注册新公钥。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
-以后需要修复、覆盖或重装时，在列表中点击“安装命令”即可重新显示同一条命令。它不是“仅限首次安装”：新 binary、bootstrap 和依赖全部验证成功后，安装器才停止旧 Agent，并暂存 Agent 自己的配置、状态、release 与 unit；同一节点保留 identity 和操作幂等状态，成功后删除备份，失败则恢复原安装与启停状态。它不会碰旧 IPChanger。怀疑命令泄露时点击“轮换密钥”，旧命令立即失效；删除节点只用于永久移除。
+以后需要修复、覆盖或重装时，在列表中点击“安装命令”即可重新显示同一条命令。它不是“仅限首次安装”：新 binary、bootstrap、依赖和本地空闲状态全部验证成功后，安装器才停止旧 Agent，并暂存 Agent 自己的配置、状态、release 与 unit。每次安装都会注册全新的 identity，不保留旧 private key 或旧 operation state。主控有未完成 command 时拒绝重装，避免切断正在执行或等待确认的操作。它不会碰旧 IPChanger。怀疑命令泄露时点击“轮换密钥”，旧命令立即失效；删除节点只用于永久移除。
 
 安装过程完全非交互。它会：
 
@@ -76,18 +76,18 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 4. 使用节点 UUID 与机器 token 通过 HTTPS 取得持久密封配置；
 5. 在本机以 AES-256-GCM 验证并解密，生成 root-only 配置与 secret 文件；
 6. Runner 下载并自动校验固定 commit 的 IPQuality 脚本；
-7. 运行 Agent 自身的 `check-config`；
-8. 完成注册并删除安装过程中的本机机器 token 副本；主控继续保留加密配置，供日后重装；
-9. 把 Agent systemd 命名空间收敛为唯一的 `akastr-agent.service`，启动并连续检查服务稳定性；
-10. 新服务稳定后提交安装事务；失败则恢复原 Agent。
+7. 严格停止全部 Agent unit，任何 unit 未进入 inactive 都会中止，不移动 Agent 文件；
+8. 停止后读取稳定的 operation journal；有 active 操作就恢复原 unit 并中止；
+9. 运行 `check-config`，生成新 identity 并完成注册，再删除本机机器 token 副本；
+10. 把 Agent systemd 命名空间收敛为唯一的 `akastr-agent.service`；服务只有完成 WSS 认证和 hello 后才向 systemd 报告 ready。
 
 成功时最后显示：
 
 ```text
-Akastr Agent v0.7.0 installed successfully.
+Akastr Agent v0.8.0 installed successfully.
 ```
 
-切换前失败不会停止现有 Agent。切换后任一步失败都会删除本次新路径并恢复事务备份、原 unit 与原启停状态；已经由 apt 安装的通用依赖可能保留。空白机器若在首次 enrollment 后失败，可直接重跑同一命令重新注册。任何路径都不会停止、删除或修改旧 IPChanger。
+新公钥注册前的失败会恢复事务备份、原 unit 与原启停状态；已经由 apt 安装的通用依赖可能保留。注册请求可能已经改变主控公钥后进入不可回退点：安装器不会恢复已失效的旧 identity，而是保留新安装供排障；直接重跑同一条命令会再次完整验证并注册新 identity。任何路径都不会停止、删除或修改旧 IPChanger。
 
 ## 4. 文件与权限
 
@@ -97,7 +97,7 @@ Akastr Agent v0.7.0 installed successfully.
 /etc/akastr-agent/config.json
 /etc/akastr-agent/identity.json
 /var/lib/akastr-agent/
-/usr/local/lib/akastr-agent/releases/v0.7.0/
+/usr/local/lib/akastr-agent/releases/v0.8.0/
 /usr/local/lib/akastr-agent/current
 /etc/systemd/system/akastr-agent.service
 ```
@@ -117,7 +117,7 @@ sudo /usr/local/lib/akastr-agent/current/akastr-agent capabilities --config /etc
 sudo journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-正确结果是：系统中只有 `akastr-agent.service`，其状态为 `active`、`MainPID` 非 0、版本为 `v0.7.0`、配置输出 `configuration valid`，日志出现 `control connection ready`。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
+正确结果是：系统中只有 `akastr-agent.service`，其状态为 `active`、`MainPID` 非 0、版本为 `v0.8.0`、配置输出 `configuration valid`，日志出现 `control connection ready`。因为 service 使用 `Type=notify`，`active` 已经代表 WSS auth 与 hello 完成，不只是进程存活。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
 
 再回到后台确认节点为“在线”，版本和类型正确。正式迁移前继续保留旧 IPChanger；仅仅安装成功不等于业务路由已经切换。
 
@@ -139,25 +139,24 @@ sudo systemctl restart akastr-agent.service
 
 ## 7. 更新、状态与卸载
 
-维护操作不进入菜单，也不询问问题。下载目标版本的 `install.sh` 后显式选择操作：
-
-```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.7.0/install.sh' && sudo sh "$installer" --update )
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.7.0/install.sh' && sudo sh "$installer" --status )
-```
-
-正常情况下不需要手动更新：唯一的 Agent 主进程每六小时检查一次 AkastrCloud 已批准版本。主控有未完成命令或本机有 active operation 时只延期；下载、版本、内部完整性或当前配置任一验证失败都不会切换。通过验证后 Agent 原子切换 `current`，并以同一 PID 重执行新 binary。可在主 service 日志中查看稳定更新错误码：
+正常情况下不需要手动更新：唯一的 Agent 主进程每六小时检查一次 AkastrCloud 已批准版本。主控有未完成命令时返回 `busy`；Agent 看到可用版本后，必须先取得与 command 共用的进程级更新 lease。执行中的 command 会阻止更新，更新持锁期间不会接受新 command。下载、版本、内部完整性或当前配置任一验证失败都不会切换。通过验证后 Agent 原子切换 `current`、删除旧 release，并以同一 PID 重执行新 binary。可在主 service 日志中查看稳定更新错误码：
 
 ```bash
 sudo journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-`--update` 是自动更新不可用时的人工恢复入口，保留 identity、配置、secret 和状态。它先验证新 binary 能读取现有配置，再把 systemd 命名空间收敛为唯一主 service、原子切换 `current` 并重启；新服务不能稳定运行时恢复旧 symlink 与原 unit 状态。主进程内的自动切换不做重执行后的 systemd 健康回退，previous 仅保留供人工恢复。
+项目没有 `--update`、previous release 或本地回退 CLI。自动更新失败时当前进程通常继续运行；如果 `current` 已切换但原位执行失败，systemd 会从唯一的 current 重启。需要人工修复时，维护者先让 AkastrCloud 批准修复版本，或由操作者回后台复制当前节点的一键命令并重新运行 `--install`。这会重新下载完整配置、确认双端空闲并重新注册 identity。
+
+安装器的 `--status` 只读取 systemd 状态，不需要机器 token：
+
+```bash
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.8.0/install.sh' && sudo sh "$installer" --status )
+```
 
 永久卸载必须使用显式销毁参数：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.7.0/install.sh' && sudo sh "$installer" --uninstall --confirm-destroy-local-agent )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.8.0/install.sh' && sudo sh "$installer" --uninstall --confirm-destroy-local-agent )
 ```
 
 卸载会停止服务并永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；它不会自动删除后台节点。只有完成业务回滚并确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
@@ -178,14 +177,16 @@ sudo journalctl -u akastr-agent.service -n 100 --no-pager
 | `proxy_profile_not_found` | Runner 未配置该目标 server key；删除后按完整 profile 重新添加 Runner 节点 |
 | `proxy_preflight_failed` / `proxy_postflight_failed` | 检查目标 SOCKS5 host、端口、凭据和代理稳定性，不要打印密码 |
 | `runner_busy` | Runner 单执行槽正忙，应由主控排队 |
+| enrollment 返回 `agent_node_busy` / HTTP 409 | 主控仍有 pending、offered 或 accepted command；等待其终结后重新运行同一安装命令 |
+| service 启动超时 | WSS auth 或 hello 未完成；查看唯一主 service 日志，修复主控、网络或 identity 问题后重跑同一安装命令 |
 | service 反复重启 | 查看 `systemctl show`、`journalctl` 并运行 `check-config`；不要删除 state 逃避错误 |
 | 日志出现 `update_check_failed` | 主控或网络暂时不可用；当前版本继续运行，下一个六小时周期重试 |
 | 日志出现 `update_apply_failed` | 下载、版本、配置或内部完整性验证失败；当前版本不受影响，不要改地址或跳过校验 |
-| 日志出现 `update_reexec_failed` | symlink 已切换但进程替换失败；保留日志与 previous，并使用当前版本安装器执行 `--update` |
+| 日志出现 `update_reexec_failed` | current 已切换但进程替换失败；保留日志，等待 systemd 从 current 重启；仍失败则重跑后台一键安装命令 |
 
 ## 9. 正式迁移与回滚
 
-不要从测试期配置拼接新安装，也不要运行旧版本 `--update`。直接在后台添加或打开当前持久节点，复制 v0.7.0 一键命令执行；`--install` 会事务式替换旧测试、残缺或当前 Agent，并让 systemd 最终只保留一个主 service。若现有 identity 属于同一持久节点，会保留 identity 与 operation state；否则按当前后台节点重新注册。整个过程不会修改旧 IPChanger。
+不要从测试期配置拼接新安装，也不要运行旧安装器。直接在后台添加或打开当前持久节点，复制 v0.8.0 一键命令执行；`--install` 会替换残缺或当前 Agent，并让 systemd 最终只保留一个主 service。每次安装都丢弃旧 identity/state，并按当前后台节点重新注册；本机或主控有未完成操作时会在替换公钥前拒绝。整个过程不会修改旧 IPChanger。
 
 每个节点逐台进行：
 

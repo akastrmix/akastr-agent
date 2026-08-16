@@ -3,7 +3,6 @@ package autoupdate
 import (
 	"context"
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,7 +39,7 @@ func (runner *fakeRunner) Output(_ context.Context, name string, arguments ...st
 	return "", fmt.Errorf("unexpected output: %s %v", name, arguments)
 }
 
-func TestApplyAtomicallySwitchesAndRetainsOnlyCurrentAndPrevious(t *testing.T) {
+func TestApplyAtomicallySwitchesAndRetainsOnlyCurrent(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("symlink release activation is Linux-only")
 	}
@@ -64,38 +63,11 @@ func TestApplyAtomicallySwitchesAndRetainsOnlyCurrentAndPrevious(t *testing.T) {
 	if current != filepath.Join(root, "releases", "v0.7.1") {
 		t.Fatalf("unexpected activation current=%s", current)
 	}
-	if _, err := os.Stat(previous); err != nil {
-		t.Fatal("previous release was not retained")
+	if _, err := os.Stat(previous); !os.IsNotExist(err) {
+		t.Fatal("previous release was retained")
 	}
 	if _, err := os.Stat(filepath.Join(root, "releases", "v0.5.0")); !os.IsNotExist(err) {
 		t.Fatal("stale third release was not removed")
-	}
-}
-
-func TestApplyDefersWhenOperationBecomesActiveBeforeSwitch(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("symlink release activation is Linux-only")
-	}
-	root, previous := releaseFixture(t)
-	binary := "future-agent-binary"
-	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
-	runner := &fakeRunner{}
-	err := Apply(t.Context(), ApplyOptions{
-		Manifest: manifestForApply(checksum), ConfigPath: filepath.Join(root, "config.json"),
-		ReleaseRoot:     root,
-		HTTPClient:      &http.Client{Transport: responseTransport{body: binary}},
-		Runner:          runner,
-		OperationActive: func() (bool, error) { return true, nil },
-	})
-	if !errors.Is(err, ErrOperationActive) {
-		t.Fatalf("expected active-operation deferral, got %v", err)
-	}
-	current, resolveError := filepath.EvalSymlinks(filepath.Join(root, "current"))
-	if resolveError != nil || current != previous {
-		t.Fatalf("active deferral changed release current=%s error=%v", current, resolveError)
-	}
-	if _, err := os.Stat(filepath.Join(root, "releases", "v0.7.1")); !os.IsNotExist(err) {
-		t.Fatal("deferred target release was not removed")
 	}
 }
 

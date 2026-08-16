@@ -4,7 +4,7 @@ Akastr Agent 是 AkastrCloud 服务节点上的轻量被控程序。它以单个
 
 > 正式节点必须逐台迁移。安装成功前保留旧 IPChanger；主控验收并切换该节点路由前，也不要停用旧服务。
 
-## v0.7.0 使用模型
+## v0.8.0 使用模型
 
 Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久节点生成的一行安装命令：
 
@@ -13,7 +13,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 3. 后台创建长期机器 token，并用它加密节点配置；安装命令不直接包含 ChangeIP 或 SOCKS5 secret；
 4. 操作者把命令复制到节点执行，安装器不再询问任何参数；
 5. Agent 通过 HTTPS 取回并在本机解密配置，随后自动完成依赖、注册、root-only 文件和 systemd service；
-6. 同一个节点可以反复执行同一条命令；安装器会事务式替换残缺或旧测试 Agent，同一节点保留 identity 与操作状态，失败则恢复原安装；主动轮换 token 后旧命令立即失效；
+6. 同一个节点可以反复执行同一条命令；每次安装都会确认本机和主控都没有未完成操作，再为该节点生成并注册全新的 identity；注册前的本地失败恢复原安装，注册完成后只保留新安装并通过重跑同一命令修复；主动轮换 token 后旧命令立即失效；
 7. 唯一的 `akastr-agent.service` 主进程每六小时检查一次 AkastrCloud 已批准的同协议版本；通过全部切换前验证后原子替换自身并继续运行。
 
 用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不需要手工下载或核对 SHA-256。不要从仓库 raw 地址直接运行模板脚本，也不要把 wget/curl 的网络输出直接通过管道交给 shell。
@@ -46,7 +46,7 @@ AkastrCloud 负责业务编排：
 
 IPQuality 的“每天一次”按 `Asia/Hong_Kong` 日历日计算；超过一次直接读取当天缓存。香港时间 `00:00` 或目标节点观测到 IPv4 改变时，主控开启新的缓存代际。此规则由 AkastrCloud 执行，重装 Agent 不能绕过。
 
-ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令和 HTTP-flow ChangeIP 均不属于 v0.7.0。
+ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令和 HTTP-flow ChangeIP 均不属于 v0.8.0。
 
 ## 文档
 
@@ -62,7 +62,8 @@ docs/                   架构、协议和安装教程
 internal/app/           应用组装
 internal/capability/    不含秘密的能力注册表
 internal/config/        严格 JSON 配置
-internal/operation/     本地互斥与有界操作日志
+internal/operation/     有界操作日志和能力内互斥
+internal/lifecycle/     command 与自动更新的进程级互斥
 internal/state/         原子状态文件
 internal/features/      节点能力实现
 internal/providers/     固定本地 provider
@@ -110,6 +111,6 @@ akastr-agent-linux-amd64
 install.sh
 ```
 
-`install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件以 `--install`、`--update`、`--status` 和显式确认的 `--uninstall` 处理生命周期。
+`install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件只提供可重复的 `--install`、只读 `--status` 和显式确认的 `--uninstall`。
 
 GitHub Release 与节点自动更新仍是两项独立操作。Release 成功不会触发节点；只有 AkastrCloud 的生产 release 显式固定相同 WSS 协议、版本、下载地址和内部 digest 后，主进程的六小时循环才会看到该版本。WSS/auth/config 的破坏性版本继续走维护 Gate，不自动跨协议升级。

@@ -77,7 +77,11 @@ func (r *Runtime) IPMonitor() *ipwatch.Monitor {
 }
 
 func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
-	if time.Now().After(offer.ExpiresAt) {
+	now := time.Now()
+	if now.Before(offer.NotBefore) {
+		return unsupportedResult(offer.CommandType, "offer_not_ready")
+	}
+	if !now.Before(offer.ExpiresAt) {
 		return unsupportedResult(offer.CommandType, "offer_expired")
 	}
 	switch offer.CommandType {

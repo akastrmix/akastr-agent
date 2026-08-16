@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -28,6 +29,36 @@ func testToken(t *testing.T, directory string) (string, []byte, string) {
 		t.Fatal(err)
 	}
 	return token, raw, filePath
+}
+
+func TestFetchRejectsHTTPRedirects(t *testing.T) {
+	root := t.TempDir()
+	_, _, tokenFile := testToken(t, root)
+	outputDir := filepath.Join(root, "output")
+	if err := os.Mkdir(outputDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var redirectedRequests atomic.Int32
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/redirected" {
+			redirectedRequests.Add(1)
+			response.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(response, request, "/redirected", http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+	_, err := FetchAndWrite(context.Background(), FetchOptions{
+		Endpoint: server.URL + "/internal/agents/bootstrap", AgentID: testAgentID,
+		TokenFile: tokenFile, HTTPClient: server.Client(), OutputDir: outputDir,
+		IPQVersion: IPQualityVersion, IPQSHA256: IPQualitySHA256,
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
+		t.Fatalf("redirect error = %v, want HTTP 307 rejection", err)
+	}
+	if redirectedRequests.Load() != 0 {
+		t.Fatal("bootstrap client followed a redirect")
+	}
 }
 
 func encryptedEnvelope(t *testing.T, token []byte, payload Payload) []byte {

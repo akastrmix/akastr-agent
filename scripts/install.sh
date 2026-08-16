@@ -18,7 +18,8 @@ temporary=''
 transaction_started=false
 backup_complete=false
 transaction_complete=false
-preserve_identity=false
+units_captured=false
+enrollment_irreversible=false
 
 CONFIG_BACKUP="/etc/akastr-agent.install-backup.$$"
 STATE_BACKUP="/var/lib/akastr-agent.install-backup.$$"
@@ -30,11 +31,18 @@ fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
   if [ "$transaction_started" = true ] && [ "$transaction_complete" != true ]; then
-    remove_agent_units
-    rollback_directory "$CONFIG_BACKUP" "$CONFIG_DIR"
-    rollback_directory "$STATE_BACKUP" "$STATE_DIR"
-    rollback_directory "$RELEASE_BACKUP" "$RELEASE_ROOT"
-    restore_agent_units
+    if [ "$enrollment_irreversible" = true ]; then
+      rm -f -- "$CONFIG_DIR/machine-token"
+      rm -rf -- "$CONFIG_BACKUP" "$STATE_BACKUP" "$RELEASE_BACKUP" "$UNITS_BACKUP"
+    else
+      if [ "$units_captured" = true ]; then
+        remove_agent_units
+        rollback_directory "$CONFIG_BACKUP" "$CONFIG_DIR"
+        rollback_directory "$STATE_BACKUP" "$STATE_DIR"
+        rollback_directory "$RELEASE_BACKUP" "$RELEASE_ROOT"
+      fi
+      restore_agent_units
+    fi
     transaction_complete=true
   fi
   if [ -n "$temporary" ] && [ -d "$temporary" ]; then
@@ -92,11 +100,21 @@ capture_agent_units() {
       if systemctl is-active --quiet "$unit_name" 2>/dev/null; then
         printf '%s\n' "$unit_name" >> "$UNITS_BACKUP/active"
       fi
-      systemctl disable --now "$unit_name" >/dev/null 2>&1 || true
+      systemctl disable "$unit_name" >/dev/null
+      systemctl stop "$unit_name" >/dev/null
+      systemctl reset-failed "$unit_name" >/dev/null 2>&1 || true
+      unit_state=$(systemctl is-active "$unit_name" 2>/dev/null || true)
+      [ "$unit_state" = 'inactive' ] || fail "Agent systemd unit did not stop: $unit_name"
+    fi
+  done
+  for unit_path in "$SYSTEMD_ROOT"/akastr-agent*.service "$SYSTEMD_ROOT"/akastr-agent*.timer; do
+    if [ -e "$unit_path" ] || [ -L "$unit_path" ]; then
+      unit_name=$(basename "$unit_path")
       mv -- "$unit_path" "$UNITS_BACKUP/files/$unit_name"
     fi
   done
   systemctl daemon-reload
+  units_captured=true
 }
 
 restore_agent_units() {
@@ -201,16 +219,6 @@ prepare_ipquality() {
   chmod 0755 "$ipquality_path"
 }
 
-service_is_stable() {
-  attempt=0
-  while [ "$attempt" -lt 5 ]; do
-    sleep 1
-    [ "$(systemctl is-active akastr-agent.service 2>/dev/null || true)" = 'active' ] || return 1
-    [ "$(systemctl show akastr-agent.service --property=MainPID --value)" != '0' ] || return 1
-    attempt=$((attempt + 1))
-  done
-}
-
 write_service_unit() {
   cat > "$SERVICE_FILE" <<'UNIT'
 [Unit]
@@ -219,10 +227,12 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/local/lib/akastr-agent/current/akastr-agent run --config /etc/akastr-agent/config.json
 Restart=always
 RestartSec=5s
+TimeoutStartSec=45s
 TimeoutStopSec=30s
 UMask=0077
 NoNewPrivileges=true
@@ -281,20 +291,9 @@ fresh_install() {
   install_packages "$install_mode"
   prepare_ipquality
 
-  if [ -f "$CONFIG_DIR/identity.json" ] && [ ! -L "$CONFIG_DIR/identity.json" ] && \
-    "$binary_path" check-identity \
-      --identity "$CONFIG_DIR/identity.json" --agent-id "$agent_id" >/dev/null 2>&1; then
-    preserve_identity=true
-    if [ -e "$STATE_DIR" ] || [ -L "$STATE_DIR" ]; then
-      [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ] || fail 'the local state directory is unsafe'
-      if find "$STATE_DIR" -type l -print -quit | grep -q .; then
-        fail 'the local state directory contains a symbolic link'
-      fi
-    fi
-  fi
-
   transaction_started=true
   capture_agent_units
+  "$binary_path" check-idle --config "$bootstrap_dir/config.json"
   backup_existing "$CONFIG_DIR" "$CONFIG_BACKUP"
   backup_existing "$STATE_DIR" "$STATE_BACKUP"
   backup_existing "$RELEASE_ROOT" "$RELEASE_BACKUP"
@@ -314,65 +313,26 @@ fresh_install() {
     install -d -m 0755 "$RELEASE_ROOT/ipquality"
     install -m 0755 "$ipquality_path" "$RELEASE_ROOT/ipquality/ip.sh"
   fi
-  if [ "$preserve_identity" = true ]; then
-    install -m 0600 "$CONFIG_BACKUP/identity.json" "$CONFIG_DIR/identity.json"
-    if [ -d "$STATE_BACKUP" ] && [ ! -L "$STATE_BACKUP" ]; then
-      cp -a "$STATE_BACKUP/." "$STATE_DIR/"
-    fi
-  fi
   ln -sfn "$release_dir" "$RELEASE_ROOT/current"
 
   "$RELEASE_ROOT/current/akastr-agent" check-config --config "$CONFIG_DIR/config.json"
   write_service_unit
-  if [ "$preserve_identity" != true ]; then
-    "$RELEASE_ROOT/current/akastr-agent" enroll --config "$CONFIG_DIR/config.json" \
-      || fail 'enrollment failed; the previous Agent installation will be restored'
+  if "$RELEASE_ROOT/current/akastr-agent" enroll --config "$CONFIG_DIR/config.json"; then
+    enrollment_irreversible=true
+  elif [ -f "$CONFIG_DIR/identity.json" ] && [ ! -L "$CONFIG_DIR/identity.json" ]; then
+    enrollment_irreversible=true
+    fail 'enrollment outcome is uncertain; rerun the one-click install command'
+  else
+    fail 'enrollment was rejected; the original Agent installation will be restored'
   fi
   rm -f -- "$CONFIG_DIR/machine-token" "$token_file"
 
   systemctl enable --now akastr-agent.service
-  service_is_stable || fail 'the Agent service did not become stable'
+  systemctl is-active --quiet akastr-agent.service \
+    || fail 'the Agent service did not reach control-plane readiness'
 
   transaction_complete=true
   rm -rf -- "$CONFIG_BACKUP" "$STATE_BACKUP" "$RELEASE_BACKUP"
-  rm -rf -- "$UNITS_BACKUP"
-  say "Akastr Agent $AGENT_RELEASE_VERSION installed successfully."
-}
-
-update_existing() {
-  [ -f "$CONFIG_DIR/config.json" ] || fail 'the existing installation has no configuration file'
-  [ -x "$RELEASE_ROOT/current/akastr-agent" ] || fail 'the existing installation has no current binary'
-  current_version=$($RELEASE_ROOT/current/akastr-agent version)
-  if [ "$current_version" = "$AGENT_RELEASE_VERSION" ]; then
-    transaction_started=true
-    capture_agent_units
-    write_service_unit
-    systemctl enable --now akastr-agent.service
-    service_is_stable || fail 'the Agent service did not become stable'
-    transaction_complete=true
-    rm -rf -- "$UNITS_BACKUP"
-    say "Akastr Agent $AGENT_RELEASE_VERSION installed successfully."
-    return
-  fi
-  make_temporary
-  install_packages target
-  download_binary
-  "$binary_path" check-config --config "$CONFIG_DIR/config.json"
-  previous=$(readlink -f "$RELEASE_ROOT/current")
-  transaction_started=true
-  capture_agent_units
-  release_dir="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION"
-  [ ! -e "$release_dir" ] || fail "immutable release $AGENT_RELEASE_VERSION already exists"
-  install -d -m 0755 "$release_dir"
-  install -m 0755 "$binary_path" "$release_dir/akastr-agent"
-  write_service_unit
-  ln -sfn "$release_dir" "$RELEASE_ROOT/current"
-  if ! systemctl enable --now akastr-agent.service || ! service_is_stable; then
-    ln -sfn "$previous" "$RELEASE_ROOT/current"
-    rm -rf -- "$release_dir"
-    fail 'the update failed; the previous release will be restored'
-  fi
-  transaction_complete=true
   rm -rf -- "$UNITS_BACKUP"
   say "Akastr Agent $AGENT_RELEASE_VERSION installed successfully."
 }
@@ -398,10 +358,6 @@ case "$operation" in
     [ "$#" -eq 1 ] || fail '--install accepts no additional arguments'
     fresh_install
     ;;
-  --update)
-    [ "$#" -eq 1 ] || fail '--update accepts no additional arguments'
-    update_existing
-    ;;
   --status)
     [ "$#" -eq 1 ] || fail '--status accepts no additional arguments'
     show_status
@@ -411,6 +367,6 @@ case "$operation" in
     uninstall_existing "$@"
     ;;
   *)
-    fail 'usage: install.sh --install | --update | --status | --uninstall --confirm-destroy-local-agent'
+    fail 'usage: install.sh --install | --status | --uninstall --confirm-destroy-local-agent'
     ;;
 esac

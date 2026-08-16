@@ -15,6 +15,7 @@ import (
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
+	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/coder/websocket"
 )
@@ -35,13 +36,20 @@ type Client struct {
 	capabilities []capability.Descriptor
 	executor     Executor
 	observations ObservationSource
+	lifecycle    *lifecycle.Gate
+	onReady      func() error
 	logger       *slog.Logger
 
 	mu        sync.Mutex
 	active    *session
-	running   map[string]struct{}
-	pending   map[string]protocol.OperationOffer
+	running   map[string]*lifecycle.Lease
+	pending   map[string]pendingOperation
 	completed map[string]protocol.ExecutionResult
+}
+
+type pendingOperation struct {
+	offer protocol.OperationOffer
+	lease *lifecycle.Lease
 }
 
 type session struct {
@@ -56,6 +64,8 @@ func New(options struct {
 	Capabilities []capability.Descriptor
 	Executor     Executor
 	Observations ObservationSource
+	Lifecycle    *lifecycle.Gate
+	OnReady      func() error
 	Logger       *slog.Logger
 }) (*Client, error) {
 	if options.Executor == nil {
@@ -63,6 +73,9 @@ func New(options struct {
 	}
 	if options.Observations != nil && isNilObservationSource(options.Observations) {
 		return nil, errors.New("WSS observation source contains a nil implementation")
+	}
+	if options.Lifecycle == nil {
+		return nil, errors.New("Agent lifecycle gate is required")
 	}
 	if options.Logger == nil {
 		options.Logger = slog.Default()
@@ -77,8 +90,9 @@ func New(options struct {
 	return &Client{
 		endpoint: options.Endpoint, identity: options.Identity, version: options.Version,
 		capabilities: append([]capability.Descriptor(nil), options.Capabilities...),
-		executor:     options.Executor, observations: options.Observations, logger: options.Logger,
-		running: make(map[string]struct{}), pending: make(map[string]protocol.OperationOffer),
+		executor:     options.Executor, observations: options.Observations,
+		lifecycle: options.Lifecycle, onReady: options.OnReady, logger: options.Logger,
+		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
 		completed: make(map[string]protocol.ExecutionResult),
 	}, nil
 }
@@ -94,13 +108,35 @@ func isNilObservationSource(source ObservationSource) bool {
 }
 
 func (c *Client) Run(ctx context.Context) error {
-	if c.observations != nil {
-		go func() {
-			if err := c.observations.Run(ctx, c.publishObservation); err != nil && ctx.Err() == nil {
-				c.logger.Error("IP observation monitor stopped", "code", "ip_monitor_failed")
-			}
-		}()
+	if c.observations == nil {
+		return c.runControlLoop(ctx)
 	}
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	monitorDone := make(chan error, 1)
+	controlDone := make(chan error, 1)
+	go func() { monitorDone <- c.observations.Run(runContext, c.publishObservation) }()
+	go func() { controlDone <- c.runControlLoop(runContext) }()
+	select {
+	case err := <-monitorDone:
+		cancel()
+		<-controlDone
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		c.logger.Error("IP observation monitor stopped", "code", "ip_monitor_failed")
+		if err == nil {
+			return errors.New("IP observation monitor stopped unexpectedly")
+		}
+		return fmt.Errorf("IP observation monitor failed: %w", err)
+	case err := <-controlDone:
+		cancel()
+		<-monitorDone
+		return err
+	}
+}
+
+func (c *Client) runControlLoop(ctx context.Context) error {
 	backoff := time.Second
 	for ctx.Err() == nil {
 		err := c.runSession(ctx)
@@ -143,8 +179,16 @@ func (c *Client) runSession(ctx context.Context) error {
 	if err := c.authenticate(ctx, session); err != nil {
 		return err
 	}
+	if c.onReady != nil {
+		if err := c.onReady(); err != nil {
+			return fmt.Errorf("notify service readiness: %w", err)
+		}
+	}
 	c.setActive(session)
-	defer c.clearActive(session)
+	defer func() {
+		c.clearActive(session)
+		c.releasePending()
+	}()
 	c.logger.Info("control connection ready")
 	for {
 		messageType, data, err := connection.Read(ctx)
@@ -252,8 +296,10 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 }
 
 func (c *Client) acceptOffer(ctx context.Context, session *session, offer protocol.OperationOffer) error {
+	now := time.Now()
 	if !protocol.ValidUUID(offer.CommandID) || offer.PayloadVersion != 1 ||
-		!offer.ExpiresAt.After(offer.NotBefore) || len(offer.Payload) == 0 {
+		!offer.ExpiresAt.After(offer.NotBefore) || now.Before(offer.NotBefore) ||
+		!now.Before(offer.ExpiresAt) || len(offer.Payload) == 0 {
 		return errors.New("operation offer is invalid")
 	}
 	c.mu.Lock()
@@ -268,41 +314,68 @@ func (c *Client) acceptOffer(ctx context.Context, session *session, offer protoc
 		c.mu.Unlock()
 		return session.write(ctx, "operation.accepted", protocol.CommandIDBody{CommandID: offer.CommandID})
 	}
-	c.pending[offer.CommandID] = offer
+	if _, found := c.pending[offer.CommandID]; found {
+		c.mu.Unlock()
+		return session.write(ctx, "operation.accepted", protocol.CommandIDBody{CommandID: offer.CommandID})
+	}
+	lease, acquired := c.lifecycle.TryOperation()
+	if !acquired {
+		c.mu.Unlock()
+		return errors.New("automatic update is in progress")
+	}
+	c.pending[offer.CommandID] = pendingOperation{offer: offer, lease: lease}
 	c.mu.Unlock()
 	return session.write(ctx, "operation.accepted", protocol.CommandIDBody{CommandID: offer.CommandID})
 }
 
 func (c *Client) handleAcceptedAck(ctx context.Context, ack protocol.AcceptedAckBody) {
 	c.mu.Lock()
-	offer, found := c.pending[ack.CommandID]
+	pending, found := c.pending[ack.CommandID]
 	delete(c.pending, ack.CommandID)
-	if !ack.Accepted || !found || time.Now().After(offer.ExpiresAt) {
+	if !found {
 		c.mu.Unlock()
+		return
+	}
+	if !ack.Accepted || time.Now().Before(pending.offer.NotBefore) || !time.Now().Before(pending.offer.ExpiresAt) {
+		c.mu.Unlock()
+		pending.lease.Release()
 		return
 	}
 	if _, running := c.running[ack.CommandID]; running {
 		c.mu.Unlock()
+		pending.lease.Release()
 		return
 	}
-	c.running[ack.CommandID] = struct{}{}
+	c.running[ack.CommandID] = pending.lease
 	c.mu.Unlock()
-	go c.execute(ctx, offer)
+	go c.execute(ctx, pending.offer)
 }
 
 func (c *Client) execute(ctx context.Context, offer protocol.OperationOffer) {
 	result := c.executor.Execute(ctx, offer)
 	c.mu.Lock()
+	lease := c.running[offer.CommandID]
 	delete(c.running, offer.CommandID)
 	c.completed[offer.CommandID] = result
 	active := c.active
 	c.mu.Unlock()
+	lease.Release()
 	if active != nil {
 		writeContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := active.write(writeContext, "operation.result", resultBody(offer.CommandID, result)); err != nil {
 			c.logger.Warn("operation result awaits reconnect", "command_id", offer.CommandID, "code", result.Code)
 		}
+	}
+}
+
+func (c *Client) releasePending() {
+	c.mu.Lock()
+	pending := c.pending
+	c.pending = make(map[string]pendingOperation)
+	c.mu.Unlock()
+	for _, operation := range pending {
+		operation.lease.Release()
 	}
 }
 

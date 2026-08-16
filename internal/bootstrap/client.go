@@ -69,7 +69,9 @@ func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
-	response, err := client.Do(request)
+	strictClient := *client
+	strictClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := strictClient.Do(request)
 	if err != nil {
 		return Payload{}, fmt.Errorf("fetch bootstrap: %w", err)
 	}

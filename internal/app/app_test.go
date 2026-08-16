@@ -2,8 +2,10 @@ package app
 
 import (
 	"testing"
+	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/config"
+	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 func TestBuildCapabilitiesOmitsSecretsAndLocalPaths(t *testing.T) {
@@ -36,5 +38,17 @@ func TestBuildCapabilitiesOmitsSecretsAndLocalPaths(t *testing.T) {
 	}
 	if len(socks5Properties) != 1 || socks5Properties["port"] != "1080" {
 		t.Fatalf("SOCKS5 capability properties = %#v, want port only", socks5Properties)
+	}
+}
+
+func TestRuntimeRejectsOfferBeforeNotBefore(t *testing.T) {
+	runtime := &Runtime{}
+	result := runtime.Execute(t.Context(), protocol.OperationOffer{
+		CommandType: "changeip.execute",
+		NotBefore:   time.Now().Add(time.Minute),
+		ExpiresAt:   time.Now().Add(2 * time.Minute),
+	})
+	if result.Code != "offer_not_ready" {
+		t.Fatalf("result code = %q, want offer_not_ready", result.Code)
 	}
 }
