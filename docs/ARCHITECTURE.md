@@ -11,7 +11,7 @@
 
 运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。v0.8.0 的后台引导有意只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
 
-v0.8.0 只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。操作者可以重复执行同一安装命令：安装器先验证新 binary、密封配置和依赖，随后严格停止全部 Agent unit；确认进程已停止后才读取稳定的 operation state，存在 active 记录就恢复原 unit 并中止，否则暂存 Agent 自有路径并为该节点注册全新的 Ed25519 identity。主控存在 pending、offered 或 accepted command 时拒绝重新注册。安装事务把 `akastr-agent*` systemd 命名空间收敛为唯一主 service，不按旧版本或旧 unit 名称分支。轮换 token 会重新加密 bootstrap 并让旧命令立即失效。安装器没有 TTY、向导或菜单，用户不直接维护 JSON 或 checksum。所有安装期下载都使用 HTTPS-only、三次重试且禁用持久 HSTS 数据库的 wget，文件完整落盘后才会被执行或安装；网络响应不会直接通过管道交给 root shell。
+v0.8.0 只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。安装命令只供 root shell 直接执行，不调用或依赖 `sudo`。操作者可以重复执行同一安装命令：安装器先验证新 binary、密封配置和依赖，随后严格停止全部 Agent unit；确认进程已停止后才读取稳定的 operation state，存在 active 记录就恢复原 unit 并中止，否则暂存 Agent 自有路径并为该节点注册全新的 Ed25519 identity。主控存在 pending、offered 或 accepted command 时拒绝重新注册。安装事务把 `akastr-agent*` systemd 命名空间收敛为唯一主 service，不按旧版本或旧 unit 名称分支。轮换 token 会重新加密 bootstrap 并让旧命令立即失效。安装器没有 TTY、向导或菜单，用户不直接维护 JSON 或 checksum。所有安装期下载都使用 HTTPS-only、三次重试且禁用持久 HSTS 数据库的 wget，文件完整落盘后才会被执行或安装；网络响应不会直接通过管道交给 root shell。
 
 ## 2. 主控边界
 

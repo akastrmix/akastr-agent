@@ -141,7 +141,7 @@ require_uuid() {
 }
 
 preflight() {
-  [ "$(id -u)" -eq 0 ] || fail 'run the installer with sudo'
+  [ "$(id -u)" -eq 0 ] || fail 'run the installer as root'
   case "$(uname -m)" in
     x86_64|amd64) ;;
     *) fail 'only x86_64 / amd64 is supported' ;;
