@@ -69,6 +69,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"--status)",
 		"--uninstall)",
 		"IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'",
+		"IPQUALITY_SHA256='9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb'",
 		"download_https()",
 		"wget --no-hsts --https-only --tries=3 --timeout=30 -qO",
 		"os_identity=$(",
@@ -122,5 +123,27 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("installer contains forbidden contract %q", forbidden)
 		}
+	}
+}
+
+func TestReleaseVerifiesPinnedIPQualityRawBytes(t *testing.T) {
+	const expected = "9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb"
+	model := repositoryFile(t, "internal", "bootstrap", "model.go")
+	verifier := repositoryFile(t, "scripts", "verify-ipquality-source.sh")
+	workflow := repositoryFile(t, ".github", "workflows", "release.yml")
+	if !strings.Contains(model, `IPQualitySHA256  = "`+expected+`"`) {
+		t.Fatal("bootstrap runtime checksum does not match the pinned raw IPQuality source")
+	}
+	for _, required := range []string{
+		"raw.githubusercontent.com/xykt/IPQuality/$commit/ip.sh",
+		"sha256sum \"$temporary\"",
+		"[ \"$actual\" = \"$expected\" ]",
+	} {
+		if !strings.Contains(verifier, required) {
+			t.Fatalf("IPQuality source verifier missing contract %q", required)
+		}
+	}
+	if !strings.Contains(workflow, "bash scripts/verify-ipquality-source.sh") {
+		t.Fatal("release workflow must verify the pinned IPQuality raw bytes before publishing")
 	}
 }

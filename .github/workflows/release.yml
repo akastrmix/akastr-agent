@@ -60,6 +60,8 @@ jobs:
           go build ./cmd/akastr-agent
           bash -n scripts/install.sh
           bash -n scripts/build-release.sh
+          bash -n scripts/verify-ipquality-source.sh
+          bash scripts/verify-ipquality-source.sh
 
       - name: Build release assets
         shell: bash

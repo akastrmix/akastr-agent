@@ -16,7 +16,7 @@ const SchemaVersion = 2
 const (
 	IPQualityCommit  = "0ee5f192fed70c04615852efba0e4b8bd43546c7"
 	IPQualityVersion = "0ee5f192fed7"
-	IPQualitySHA256  = "69cb11be5ff0853cb02a2ce038a6572f9792428601e2e74febe004fbd4391730"
+	IPQualitySHA256  = "9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb"
 )
 
 const (
