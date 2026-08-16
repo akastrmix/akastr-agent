@@ -25,7 +25,7 @@ const maxOutputBytes = 2 * 1024 * 1024
 
 var reportURLPattern = regexp.MustCompile(`(?i)https://report\.check\.place/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]+`)
 
-var requiredCommands = []string{"/bin/bash", "jq", "curl", "bc", "nc", "dig", "ip"}
+var requiredCommands = []string{"/bin/bash", "bc", "curl", "dig", "ip", "jq", "nc"}
 
 type Config struct {
 	ScriptPath        string

@@ -75,7 +75,10 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"os_identity=$(",
 		"debian:12|debian:13)",
 		"wget exit code $wget_code",
-		"packages='ca-certificates curl wget'",
+		"BASE_PACKAGES='ca-certificates curl wget'",
+		"RUNNER_PACKAGES='bash bc dnsutils iproute2 jq netcat-openbsd'",
+		"RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'",
+		"command -v \"$command\"",
 		"backup_existing \"$CONFIG_DIR\" \"$CONFIG_BACKUP\"",
 		"check-idle --config \"$bootstrap_dir/config.json\"",
 		"capture_agent_units",
@@ -145,5 +148,35 @@ func TestReleaseVerifiesPinnedIPQualityRawBytes(t *testing.T) {
 	}
 	if !strings.Contains(workflow, "bash scripts/verify-ipquality-source.sh") {
 		t.Fatal("release workflow must verify the pinned IPQuality raw bytes before publishing")
+	}
+}
+
+func TestRunnerDependencyContractIsVerifiedOnEverySupportedDebian(t *testing.T) {
+	provider := repositoryFile(t, "internal", "providers", "ipquality", "script", "provider.go")
+	verifier := repositoryFile(t, "scripts", "verify-debian-runtime-dependencies.sh")
+	ci := repositoryFile(t, ".github", "workflows", "ci.yml")
+	release := repositoryFile(t, ".github", "workflows", "release.yml")
+	if !strings.Contains(provider, `var requiredCommands = []string{"/bin/bash", "bc", "curl", "dig", "ip", "jq", "nc"}`) {
+		t.Fatal("IPQuality runtime command contract changed without updating the installer dependency gate")
+	}
+	for _, required := range []string{
+		"apt-get install -y --no-install-recommends $base_packages $runner_packages",
+		"command -v \"$command\"",
+		"debian:12|debian:13)",
+	} {
+		if !strings.Contains(verifier, required) {
+			t.Fatalf("Debian dependency verifier missing contract %q", required)
+		}
+	}
+	for name, workflow := range map[string]string{"CI": ci, "release": release} {
+		for _, required := range []string{
+			"for version in 12 13",
+			`"debian:${version}-slim"`,
+			"sh scripts/verify-debian-runtime-dependencies.sh",
+		} {
+			if !strings.Contains(workflow, required) {
+				t.Fatalf("%s workflow missing runtime dependency Gate %q", name, required)
+			}
+		}
 	}
 }

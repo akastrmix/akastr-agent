@@ -7,6 +7,9 @@ ASSET='akastr-agent-linux-amd64'
 RELEASE_BASE_URL=${AKASTR_RELEASE_BASE_URL:-https://github.com/akastrmix/akastr-agent/releases/download}
 IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'
 IPQUALITY_SHA256='9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb'
+BASE_PACKAGES='ca-certificates curl wget'
+RUNNER_PACKAGES='bash bc dnsutils iproute2 jq netcat-openbsd'
+RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'
 
 CONFIG_DIR=/etc/akastr-agent
 STATE_DIR=/var/lib/akastr-agent
@@ -189,14 +192,20 @@ download_https() {
 }
 
 install_packages() {
-  packages='ca-certificates curl wget'
+  packages=$BASE_PACKAGES
   if [ "$1" = 'runner' ]; then
-    packages="$packages bash bc netcat-openbsd dnsutils iproute2"
+    packages="$packages $RUNNER_PACKAGES"
   fi
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   # shellcheck disable=SC2086
   apt-get install -y --no-install-recommends $packages
+  if [ "$1" = 'runner' ]; then
+    for command in $RUNNER_COMMANDS; do
+      command -v "$command" >/dev/null 2>&1 \
+        || fail "Runner dependency command is unavailable after package installation: $command"
+    done
+  fi
 }
 
 download_binary() {

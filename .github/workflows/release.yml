@@ -61,7 +61,20 @@ jobs:
           bash -n scripts/install.sh
           bash -n scripts/build-release.sh
           bash -n scripts/verify-ipquality-source.sh
+          bash -n scripts/verify-debian-runtime-dependencies.sh
           bash scripts/verify-ipquality-source.sh
+
+      - name: Verify Debian runtime dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          for version in 12 13; do
+            docker run --rm \
+              --volume "$PWD:/source:ro" \
+              --workdir /source \
+              "debian:${version}-slim" \
+              sh scripts/verify-debian-runtime-dependencies.sh
+          done
 
       - name: Build release assets
         shell: bash

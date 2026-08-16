@@ -17,5 +17,9 @@ actual=$(sha256sum "$temporary" | awk '{print $1}')
   echo "IPQuality source checksum mismatch: expected $expected, got $actual" >&2
   exit 1
 }
+grep -Fq '$usesudo $install_command jq curl bc netcat-openbsd dnsutils iproute2' "$temporary" || {
+  echo 'IPQuality Debian dependency contract changed' >&2
+  exit 1
+}
 
 echo "ipquality_source_ok commit=$commit sha256=$actual"
