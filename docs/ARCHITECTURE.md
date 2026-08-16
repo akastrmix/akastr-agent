@@ -2,16 +2,16 @@
 
 ## 1. 进程模型
 
-每个安装实例长期只运行一个由 systemd 管理的 `akastr-agent` 主进程。独立的 `akastr-agent-update.timer` 每六小时短暂启动一次 oneshot updater；主进程主动连接 AkastrCloud 的 WSS 控制端点，不对外开放通用管理 HTTP 服务。实例只公布本机 root 所有配置中明确启用的能力。
+每个安装实例只存在一个 `akastr-agent.service` 和一个 Go 主进程。主进程主动连接 AkastrCloud 的 WSS 控制端点，并在内部每六小时检查一次主控批准的更新；节点没有额外 updater service、timer 或常驻辅助进程，也不开放通用管理 HTTP 服务。实例只公布本机 root 所有配置中明确启用的能力。
 
 同一个二进制支持两种部署形态：
 
 - 目标节点：公网 IP 观察、ChangeIP，以及可选的不含秘密的 SOCKS5 端点描述；
 - 专用 Runner：IPQuality 执行，`max_concurrency=1`。
 
-运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。v0.6.0 的后台引导有意只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
+运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。v0.7.0 的后台引导有意只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
 
-v0.6.0 只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。操作者可以重复执行同一安装命令：安装器在验证新 binary 与密封配置后才停止旧 Agent，并事务式备份全部 Agent 自有路径；同一节点保留已验证的 identity 和本地操作状态，其他旧测试或残缺安装直接重建；成功后删除备份，失败则恢复原目录、unit 和启停状态。它不读取或转换旧配置字段。轮换 token 会重新加密 bootstrap 并让旧命令立即失效。安装器没有 TTY、向导或菜单，用户不直接维护 JSON 或 checksum。所有安装期下载都使用 HTTPS-only、三次重试且禁用持久 HSTS 数据库的 wget，文件完整落盘后才会被执行或安装；网络响应不会直接通过管道交给 root shell。
+v0.7.0 只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。操作者可以重复执行同一安装命令：安装器在验证新 binary 与密封配置后才停止旧 Agent，并事务式备份全部 Agent 自有路径；同一节点保留已验证的 identity 和本地操作状态，其他旧测试或残缺安装直接重建；成功后删除备份，失败则恢复原目录、unit 和启停状态。安装事务把 `akastr-agent*` systemd 命名空间收敛为唯一主 service，不按旧版本或旧 unit 名称分支。轮换 token 会重新加密 bootstrap 并让旧命令立即失效。安装器没有 TTY、向导或菜单，用户不直接维护 JSON 或 checksum。所有安装期下载都使用 HTTPS-only、三次重试且禁用持久 HSTS 数据库的 wget，文件完整落盘后才会被执行或安装；网络响应不会直接通过管道交给 root shell。
 
 ## 2. 主控边界
 
@@ -24,7 +24,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 相同目标、香港日历日及 IPv4 代际的请求合并为一次真实执行，之后返回缓存报告。香港时间跨日或观测到 IPv4 改变时，主控创建新的缓存代际。
 
-持久节点认证、SOCKS5 地址收口和事务安装/受控自动更新分别以 `2026-08-16/agent-persistent-node-bootstrap-v1`、`2026-08-16/agent-observed-ip-socks5-only-v1` 和 `2026-08-16/agent-transactional-install-controlled-autoupdate-v1` 获批。协议 `2026-08-16.v3` 使用有效期 15 秒的服务端 nonce，以及绑定上下文、以换行分隔的 Ed25519 签名文本。机器 token 只用于 HTTPS bootstrap 和注册；WSS 与只读更新检查使用当前公钥身份。offer、accept、终态结果、结果确认和自然 IPv4 观察均使用稳定 UUID。消息按至少一次投递，本地日志和数据库唯一约束共同保证执行与结果幂等。
+持久节点认证、SOCKS5 地址收口和单 service 更新模型分别以 `2026-08-16/agent-persistent-node-bootstrap-v1`、`2026-08-16/agent-observed-ip-socks5-only-v1` 和 `2026-08-16/agent-single-systemd-service-v1` 获批。协议 `2026-08-16.v3` 使用有效期 15 秒的服务端 nonce，以及绑定上下文、以换行分隔的 Ed25519 签名文本。机器 token 只用于 HTTPS bootstrap 和注册；WSS 与只读更新检查使用当前公钥身份。offer、accept、终态结果、结果确认和自然 IPv4 观察均使用稳定 UUID。消息按至少一次投递，本地日志和数据库唯一约束共同保证执行与结果幂等。
 
 ## 3. 包职责
 
@@ -37,7 +37,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 - `internal/providers/ipquality/script`：通过秘密 SOCKS5 profile 执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/bootstrap`：下载持久密封配置，以节点 UUID 作为 AAD 完成认证解密，并生成 root-only 运行文件。
-- `internal/autoupdate`：签名请求 Cloud 批准清单，只接受同一 WSS 协议的前向语义版本，完成有界下载、内部 digest 校验、不可变 release 切换、健康采样和回退。
+- `internal/autoupdate`：主进程内六小时循环，签名请求 Cloud 批准清单，只接受同一 WSS 协议的前向语义版本，并完成有界下载、内部 digest 校验和不可变 release 切换。
 - `internal/app`：组合配置、executor 与运行时入口。
 
 只有在行为得到批准后，预留能力才会成为同级包，例如：
@@ -48,7 +48,7 @@ internal/features/xraytraffic/
 internal/features/ratelimit/
 ```
 
-v0.6.0 不包含这些目录或空接口。
+v0.7.0 不包含这些目录或空接口。
 
 ## 4. 本地操作状态
 
@@ -62,7 +62,7 @@ v0.6.0 不包含这些目录或空接口。
 
 观察器通过固定 HTTPS 来源 `api.ipify.org` 和 Cloudflare trace 获取公网地址，明确按 IPv4 或 IPv6 建立连接，拒绝重定向、非公网地址和过大响应。
 
-v0.6.0 后台只生成 IPv4 watch：首次成功观察只建立基线，不上报；之后的变化先写入 `ip_state_file`，再发送 `ip.observed`。收到主控的 `ip.observed_ack` 之前，同一事件会在重连后继续重试。配置固定 `observe_ipv6=false`，当前运行时不会生成自然 IPv6 变化事件。
+v0.7.0 后台只生成 IPv4 watch：首次成功观察只建立基线，不上报；之后的变化先写入 `ip_state_file`，再发送 `ip.observed`。收到主控的 `ip.observed_ack` 之前，同一事件会在重连后继续重试。配置固定 `observe_ipv6=false`，当前运行时不会生成自然 IPv6 变化事件。
 
 ChangeIP 成功执行 provider 只代表调用完成。Agent 随后必须观察到不同公网 IPv4 才返回 `ipv4_changed`；反复观察到原地址返回 `ipv4_unchanged`；如果网络切换后一直无法重新观察公网 IPv4，则返回 `ipv4_observe_timed_out`。
 
@@ -70,19 +70,19 @@ ChangeIP 成功执行 provider 只代表调用完成。Agent 随后必须观察�
 
 目标节点的 capability metadata 只公布端口，不包含地址来源、主机名、用户名或密码。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 上的凭据位于独立 root-only profile 文件，以 AkastrCloud 的稳定 server key 索引。
 
-v0.6.0 bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd43546c7` 及其 SHA-256。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为当前代际的有效报告。
+v0.7.0 bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd43546c7` 及其 SHA-256。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为当前代际的有效报告。
 
-官方脚本在仅 IPv4 模式下可能已经生成有效报告 URL，却返回非零 Bash 状态。因此 v0.6.0 将“输出中包含有界、有效的 `https://report.check.place/...` URL，且代理 postflight 成功”视为完成；非零退出且没有报告 URL 仍是 `script_failed`。
+官方脚本在仅 IPv4 模式下可能已经生成有效报告 URL，却返回非零 Bash 状态。因此 v0.7.0 将“输出中包含有界、有效的 `https://report.check.place/...` URL，且代理 postflight 成功”视为完成；非零退出且没有报告 URL 仍是 `script_failed`。
 
 通过代理运行不等于直接在目标主机运行：依赖 Runner DNS 或直连网络的脚本检查应在验收时识别，并标记或省略。
 
 ## 7. 事务安装与自动更新
 
-后台的一键命令是期望安装状态，不是“仅限空白机器”的初始化器。安装器先在临时目录完成 bootstrap、binary、依赖和 Runner 脚本验证，再停止 Agent；随后把配置、状态、release root 和三个 systemd unit 移到有界事务备份。同一 `agent_id` 的有效 identity 与无符号链接的 operation state 会复制到新安装，不重新注册或丢失幂等证据；其他安装使用机器 token 重新注册。新服务连续五次稳定后才提交事务，任何失败都恢复原目录与原启停状态。旧 IPChanger 不在这些路径内，始终不受影响。
+后台的一键命令是期望安装状态，不是“仅限空白机器”的初始化器。安装器先在临时目录完成 bootstrap、binary、依赖和 Runner 脚本验证，再停止 Agent；随后把配置、状态、release root 与 Agent systemd 命名空间移到有界事务备份，并只写 `akastr-agent.service`。同一 `agent_id` 的有效 identity 与无符号链接的 operation state 会复制到新安装，不重新注册或丢失幂等证据；其他安装使用机器 token 重新注册。新服务连续五次稳定后才提交事务，任何失败都恢复原目录与原启停状态。旧 IPChanger 不在这些路径内，始终不受影响。
 
-自动更新不由 GitHub `latest` 驱动。timer 使用当前 Ed25519 identity 向 `POST /internal/agents/update` 发起带时间和 nonce 的签名只读检查；AkastrCloud 只有在目标版本已经随生产 release 固定、WSS 协议相同且节点没有未完成 command 时才返回 `update_available`。updater 还会在切换前读取本地 operation state；有 active 记录时延期。它只接受精确 GitHub immutable asset URL、前向 `vMAJOR.MINOR.PATCH` 和主控返回的内部 SHA-256，最大下载 32 MiB。新 binary 必须报告目标版本并通过当前 `check-config`，之后才原子切换 `current`；服务不稳定时恢复 previous，成功后仅保留 current 与 previous。
+自动更新不由 GitHub `latest` 驱动。主进程的六小时循环使用当前 Ed25519 identity 向 `POST /internal/agents/update` 发起带时间和 nonce 的签名只读检查；AkastrCloud 只有在目标版本已经随生产 release 固定、WSS 协议相同且节点没有未完成 command 时才返回 `update_available`。切换前还会两次读取本地 operation state；有 active 记录时延期。它只接受精确 GitHub immutable asset URL、前向 `vMAJOR.MINOR.PATCH` 和主控返回的内部 SHA-256，最大下载 32 MiB。新 binary 必须报告目标版本并通过当前 `check-config`，之后才原子切换 `current` 并以相同 PID 重执行新 binary；只保留 current 与 previous。
 
-主 Agent 仍保持 `ProtectSystem=strict` 且只写状态目录。写 release root 的能力只授予短命的 updater oneshot。WSS/auth/config 的破坏性版本不会进入当前协议通道，继续走人工维护 Gate。
+唯一主 service 保持 `ProtectSystem=strict`，但明确允许写状态目录与 Agent release root。单 service 模型不再提供独立权限域，也不在重执行后进行五次 systemd 健康采样或自动回退；切换前验证仍完整，previous 保留供人工恢复。一键覆盖安装仍有独立事务回退。WSS/auth/config 的破坏性版本不会进入当前协议通道，继续走人工维护 Gate。
 
 ## 8. 迁移边界
 

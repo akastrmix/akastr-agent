@@ -20,7 +20,6 @@ const maxBinaryBytes = 32 * 1024 * 1024
 var ErrOperationActive = errors.New("Agent operation became active before update switch")
 
 type CommandRunner interface {
-	Run(context.Context, string, ...string) error
 	Output(context.Context, string, ...string) (string, error)
 }
 
@@ -30,7 +29,6 @@ type ApplyOptions struct {
 	ReleaseRoot     string
 	HTTPClient      *http.Client
 	Runner          CommandRunner
-	Sleep           func(time.Duration)
 	OperationActive func() (bool, error)
 }
 
@@ -59,11 +57,6 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 	if runner == nil {
 		runner = systemRunner{}
 	}
-	sleep := options.Sleep
-	if sleep == nil {
-		sleep = time.Sleep
-	}
-
 	staging, err := os.MkdirTemp(releasesRoot, ".update-")
 	if err != nil {
 		return fmt.Errorf("create Agent update staging directory: %w", err)
@@ -130,26 +123,6 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 		return err
 	}
 
-	restartError := runner.Run(ctx, "systemctl", "restart", "akastr-agent.service")
-	if restartError == nil {
-		restartError = waitForStableService(ctx, runner, sleep)
-	}
-	if restartError != nil {
-		rollbackError := replaceSymlink(currentLink, previousTarget)
-		if rollbackError == nil {
-			rollbackError = runner.Run(ctx, "systemctl", "restart", "akastr-agent.service")
-		}
-		if rollbackError == nil {
-			rollbackError = waitForStableService(ctx, runner, sleep)
-		}
-		if createdRelease {
-			_ = os.RemoveAll(targetRelease)
-		}
-		if rollbackError != nil {
-			return errors.New("Agent update and automatic rollback both failed")
-		}
-		return errors.New("Agent update failed and the previous release was restored")
-	}
 	pruneOldReleases(releasesRoot, targetRelease, previousTarget)
 	return nil
 }
@@ -267,26 +240,6 @@ func replaceSymlink(path, target string) error {
 	return nil
 }
 
-func waitForStableService(ctx context.Context, runner CommandRunner, sleep func(time.Duration)) error {
-	for attempt := 0; attempt < 5; attempt++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		sleep(time.Second)
-		active, err := runner.Output(ctx, "systemctl", "is-active", "akastr-agent.service")
-		if err != nil || strings.TrimSpace(active) != "active" {
-			return errors.New("Agent service is not active after update")
-		}
-		pid, err := runner.Output(ctx, "systemctl", "show", "akastr-agent.service", "--property=MainPID", "--value")
-		if err != nil || strings.TrimSpace(pid) == "" || strings.TrimSpace(pid) == "0" {
-			return errors.New("Agent service has no main process after update")
-		}
-	}
-	return nil
-}
-
 func pruneOldReleases(releasesRoot, current, previous string) {
 	entries, err := os.ReadDir(releasesRoot)
 	if err != nil {
@@ -317,10 +270,6 @@ func bytesEqual(left, right []byte) bool {
 }
 
 type systemRunner struct{}
-
-func (systemRunner) Run(ctx context.Context, name string, arguments ...string) error {
-	return exec.CommandContext(ctx, name, arguments...).Run()
-}
 
 func (systemRunner) Output(ctx context.Context, name string, arguments ...string) (string, error) {
 	output, err := exec.CommandContext(ctx, name, arguments...).Output()

@@ -41,7 +41,7 @@ func TestClientAuthenticatesAndValidatesApprovedManifest(t *testing.T) {
 			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if check.AgentID != credentials.AgentID || check.AgentVersion != "v0.6.0" ||
+		if check.AgentID != credentials.AgentID || check.AgentVersion != "v0.7.0" ||
 			check.Protocol != protocol.Version || check.SentAt != now.Format(time.RFC3339Nano) {
 			t.Errorf("unexpected signed check: %+v", check)
 		}
@@ -51,9 +51,9 @@ func TestClientAuthenticatesAndValidatesApprovedManifest(t *testing.T) {
 		}
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(Manifest{
-			Schema: Schema, Status: "update_available", Version: "v0.6.1",
+			Schema: Schema, Status: "update_available", Version: "v0.7.1",
 			Protocol:     protocol.Version,
-			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v0.6.1/akastr-agent-linux-amd64",
+			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v0.7.1/akastr-agent-linux-amd64",
 			BinarySHA256: strings.Repeat("a", 64),
 		})
 	}))
@@ -62,34 +62,34 @@ func TestClientAuthenticatesAndValidatesApprovedManifest(t *testing.T) {
 	manifest, err := (Client{
 		HTTPClient: server.Client(), Now: func() time.Time { return now },
 		Random: strings.NewReader(strings.Repeat("n", 32)),
-	}).Check(t.Context(), controlEndpoint, "v0.6.0", credentials)
+	}).Check(t.Context(), controlEndpoint, "v0.7.0", credentials)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if manifest.Status != "update_available" || manifest.Version != "v0.6.1" {
+	if manifest.Status != "update_available" || manifest.Version != "v0.7.1" {
 		t.Fatalf("unexpected manifest: %+v", manifest)
 	}
 }
 
 func TestManifestRejectsDowngradeAndUnapprovedAsset(t *testing.T) {
 	base := Manifest{
-		Schema: Schema, Status: "update_available", Version: "v0.6.1",
+		Schema: Schema, Status: "update_available", Version: "v0.7.1",
 		Protocol:     protocol.Version,
-		BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v0.6.1/akastr-agent-linux-amd64",
+		BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v0.7.1/akastr-agent-linux-amd64",
 		BinarySHA256: strings.Repeat("b", 64),
 	}
-	if err := base.Validate("v0.6.0"); err != nil {
+	if err := base.Validate("v0.7.0"); err != nil {
 		t.Fatal(err)
 	}
 	downgrade := base
-	downgrade.Version = "v0.5.9"
-	downgrade.BinaryURL = "https://github.com/akastrmix/akastr-agent/releases/download/v0.5.9/akastr-agent-linux-amd64"
-	if err := downgrade.Validate("v0.6.0"); err == nil {
+	downgrade.Version = "v0.6.9"
+	downgrade.BinaryURL = "https://github.com/akastrmix/akastr-agent/releases/download/v0.6.9/akastr-agent-linux-amd64"
+	if err := downgrade.Validate("v0.7.0"); err == nil {
 		t.Fatal("downgrade was accepted")
 	}
 	malicious := base
 	malicious.BinaryURL = "https://example.com/agent"
-	if err := malicious.Validate("v0.6.0"); err == nil {
+	if err := malicious.Validate("v0.7.0"); err == nil {
 		t.Fatal("unapproved binary URL was accepted")
 	}
 }

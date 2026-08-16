@@ -1,6 +1,6 @@
 # Akastr Agent 安装与使用教程
 
-本文面向手动迁移节点的操作者。v0.6.0 的参数全部在 AkastrCloud 后台填写；后台只返回一行命令，VPS 执行后不会再询问节点名称、模式、WSS、ChangeIP、SOCKS5 或 token。后台中的节点是持久对象：同一命令既可用于空白 VPS，也可事务式覆盖旧测试、残缺或同节点现有 Agent，不必先卸载。
+本文面向手动迁移节点的操作者。v0.7.0 的参数全部在 AkastrCloud 后台填写；后台只返回一行命令，VPS 执行后不会再询问节点名称、模式、WSS、ChangeIP、SOCKS5 或 token。后台中的节点是持久对象：同一命令既可用于空白 VPS，也可事务式覆盖旧测试、残缺或同节点现有 Agent，不必先卸载。
 
 ## 1. 支持范围
 
@@ -61,7 +61,7 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、机器 token 和版本由后台填写：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.6.0/install.sh' && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_MACHINE_TOKEN='<machine-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh "$installer" --install )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.7.0/install.sh' && sudo env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_MACHINE_TOKEN='<machine-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh "$installer" --install )
 ```
 
 不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令以 `mktemp` 创建唯一入口文件，并在子 shell 退出时自动删除；wget 使用 `--no-hsts`，不会创建或更新用户级 HSTS 数据库。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证，但可重新下载密封配置并为重装后的主机注册新公钥。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
@@ -78,13 +78,13 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 6. Runner 下载并自动校验固定 commit 的 IPQuality 脚本；
 7. 运行 Agent 自身的 `check-config`；
 8. 完成注册并删除安装过程中的本机机器 token 副本；主控继续保留加密配置，供日后重装；
-9. 写入加固的主服务、自动更新 oneshot 与六小时 timer，启动并连续检查服务稳定性；
+9. 把 Agent systemd 命名空间收敛为唯一的 `akastr-agent.service`，启动并连续检查服务稳定性；
 10. 新服务稳定后提交安装事务；失败则恢复原 Agent。
 
 成功时最后显示：
 
 ```text
-Akastr Agent v0.6.0 已安装并运行。
+Akastr Agent v0.7.0 installed successfully.
 ```
 
 切换前失败不会停止现有 Agent。切换后任一步失败都会删除本次新路径并恢复事务备份、原 unit 与原启停状态；已经由 apt 安装的通用依赖可能保留。空白机器若在首次 enrollment 后失败，可直接重跑同一命令重新注册。任何路径都不会停止、删除或修改旧 IPChanger。
@@ -97,14 +97,12 @@ Akastr Agent v0.6.0 已安装并运行。
 /etc/akastr-agent/config.json
 /etc/akastr-agent/identity.json
 /var/lib/akastr-agent/
-/usr/local/lib/akastr-agent/releases/v0.6.0/
+/usr/local/lib/akastr-agent/releases/v0.7.0/
 /usr/local/lib/akastr-agent/current
 /etc/systemd/system/akastr-agent.service
-/etc/systemd/system/akastr-agent-update.service
-/etc/systemd/system/akastr-agent-update.timer
 ```
 
-HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/etc/akastr-agent/proxy-profiles.json` 与 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。配置与 secret 文件权限为 `0600`，配置和状态目录为 root-only。主进程只写 `/var/lib/akastr-agent`；只有短命的 updater oneshot 可以写 release root。
+HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/etc/akastr-agent/proxy-profiles.json` 与 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。配置与 secret 文件权限为 `0600`，配置和状态目录为 root-only。唯一主进程可以写 `/var/lib/akastr-agent` 与自己的 release root，其他系统目录仍由 `ProtectSystem=strict` 保护。
 
 ## 5. 安装后验收
 
@@ -113,15 +111,13 @@ HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/et
 ```bash
 sudo systemctl is-active akastr-agent.service
 sudo systemctl show akastr-agent.service --property=MainPID,ActiveState,SubState,NRestarts
-sudo systemctl is-active akastr-agent-update.timer
-sudo systemctl list-timers akastr-agent-update.timer --no-pager
 sudo /usr/local/lib/akastr-agent/current/akastr-agent version
 sudo /usr/local/lib/akastr-agent/current/akastr-agent check-config --config /etc/akastr-agent/config.json
 sudo /usr/local/lib/akastr-agent/current/akastr-agent capabilities --config /etc/akastr-agent/config.json
 sudo journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-正确结果是：service 与 update timer 均为 `active`、`MainPID` 非 0、版本为 `v0.6.0`、配置输出 `configuration valid`，日志出现 `control connection ready`，timer 有下一次时间。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
+正确结果是：系统中只有 `akastr-agent.service`，其状态为 `active`、`MainPID` 非 0、版本为 `v0.7.0`、配置输出 `configuration valid`，日志出现 `control connection ready`。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
 
 再回到后台确认节点为“在线”，版本和类型正确。正式迁移前继续保留旧 IPChanger；仅仅安装成功不等于业务路由已经切换。
 
@@ -146,24 +142,22 @@ sudo systemctl restart akastr-agent.service
 维护操作不进入菜单，也不询问问题。下载目标版本的 `install.sh` 后显式选择操作：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.6.0/install.sh' && sudo sh "$installer" --update )
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.6.0/install.sh' && sudo sh "$installer" --status )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.7.0/install.sh' && sudo sh "$installer" --update )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.7.0/install.sh' && sudo sh "$installer" --status )
 ```
 
-正常情况下不需要手动更新：`akastr-agent-update.timer` 每六小时检查一次 AkastrCloud 已批准版本，并加入最多 10 分钟随机延迟。主控有未完成命令或本机有 active operation 时只延期；下载、版本、内部完整性或当前配置任一验证失败都不会切换。切换后服务连续五次检查不稳定时自动恢复 previous。可用下面的命令检查最近一次结果：
+正常情况下不需要手动更新：唯一的 Agent 主进程每六小时检查一次 AkastrCloud 已批准版本。主控有未完成命令或本机有 active operation 时只延期；下载、版本、内部完整性或当前配置任一验证失败都不会切换。通过验证后 Agent 原子切换 `current`，并以同一 PID 重执行新 binary。可在主 service 日志中查看稳定更新错误码：
 
 ```bash
-sudo systemctl list-timers akastr-agent-update.timer --no-pager
-sudo systemctl status akastr-agent-update.service --no-pager
-sudo journalctl -u akastr-agent-update.service -n 100 --no-pager
+sudo journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-`--update` 是自动更新不可用时的人工恢复入口，只更新 binary 与当前 updater unit，保留 identity、配置、secret 和状态。它先验证新 binary 能读取现有配置，再原子切换 `current` 并重启；新服务不能稳定运行时自动恢复旧 symlink。当前已是同版本时只确保 timer 已启用，不重复写入。
+`--update` 是自动更新不可用时的人工恢复入口，保留 identity、配置、secret 和状态。它先验证新 binary 能读取现有配置，再把 systemd 命名空间收敛为唯一主 service、原子切换 `current` 并重启；新服务不能稳定运行时恢复旧 symlink 与原 unit 状态。主进程内的自动切换不做重执行后的 systemd 健康回退，previous 仅保留供人工恢复。
 
 永久卸载必须使用显式销毁参数：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.6.0/install.sh' && sudo sh "$installer" --uninstall --confirm-destroy-local-agent )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/v0.7.0/install.sh' && sudo sh "$installer" --uninstall --confirm-destroy-local-agent )
 ```
 
 卸载会停止服务并永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；它不会自动删除后台节点。只有完成业务回滚并确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
@@ -173,7 +167,7 @@ sudo journalctl -u akastr-agent-update.service -n 100 --no-pager
 | 现象 | 处理 |
 | --- | --- |
 | 拒绝系统或架构 | 只支持 Debian 12/13 amd64；不要绕过检测或使用 ARM asset |
-| 下载失败并显示 `wget 退出码` | `4` 通常表示网络/TLS，`8` 表示服务器返回错误；不要反复消耗 token，先核对版本化 Release 地址 |
+| 下载失败并显示 `wget exit code` | `4` 通常表示网络/TLS，`8` 表示服务器返回错误；不要反复消耗 token，先核对版本化 Release 地址 |
 | 缺少 `AKASTR_AGENT_*` | 命令被截断或手工改写；回后台重新生成，不要自行拼装 |
 | bootstrap 返回 403 | 机器 token 已轮换、节点已删除或 UUID 不匹配；回后台重新取得当前命令 |
 | bootstrap authentication failed | 密文、token 或 UUID 不匹配；停止操作，不要尝试绕过认证 |
@@ -185,13 +179,13 @@ sudo journalctl -u akastr-agent-update.service -n 100 --no-pager
 | `proxy_preflight_failed` / `proxy_postflight_failed` | 检查目标 SOCKS5 host、端口、凭据和代理稳定性，不要打印密码 |
 | `runner_busy` | Runner 单执行槽正忙，应由主控排队 |
 | service 反复重启 | 查看 `systemctl show`、`journalctl` 并运行 `check-config`；不要删除 state 逃避错误 |
-| update 显示 `deferred_busy` / `deferred_active` | 节点有未完成主控命令或本机操作；无需处理，下一个六小时周期重试 |
-| update 下载或校验失败 | 当前版本不受影响；检查 GitHub 连通性与 updater journal，不要改地址或跳过内部校验 |
-| update 显示已自动恢复 | 新服务未稳定；保留现场日志与 previous，不要反复手工切换软链接 |
+| 日志出现 `update_check_failed` | 主控或网络暂时不可用；当前版本继续运行，下一个六小时周期重试 |
+| 日志出现 `update_apply_failed` | 下载、版本、配置或内部完整性验证失败；当前版本不受影响，不要改地址或跳过校验 |
+| 日志出现 `update_reexec_failed` | symlink 已切换但进程替换失败；保留日志与 previous，并使用当前版本安装器执行 `--update` |
 
 ## 9. 正式迁移与回滚
 
-不要从测试期配置拼接新安装，也不要运行旧版本 `--update`。直接在后台添加或打开当前持久节点，复制 v0.6.0 一键命令执行；`--install` 会事务式替换旧测试、残缺或当前 Agent。若现有 identity 属于同一持久节点，会保留 identity 与 operation state；否则按当前后台节点重新注册。整个过程不会修改旧 IPChanger。
+不要从测试期配置拼接新安装，也不要运行旧版本 `--update`。直接在后台添加或打开当前持久节点，复制 v0.7.0 一键命令执行；`--install` 会事务式替换旧测试、残缺或当前 Agent，并让 systemd 最终只保留一个主 service。若现有 identity 属于同一持久节点，会保留 identity 与 operation state；否则按当前后台节点重新注册。整个过程不会修改旧 IPChanger。
 
 每个节点逐台进行：
 
@@ -214,4 +208,4 @@ git push origin vX.Y.Z
 
 GitHub Actions 会从这个已存在的标签重新验证源码，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`，核对 binary 的 Linux amd64 架构、内嵌版本、资产集合和脚本语法，然后自动创建 GitHub Release。任一步失败都不会发布；已经存在的 Release 不允许由工作流覆盖或替换。
 
-新版本会得到独立的 `releases/download/vX.Y.Z/...` 地址。Release 发布本身不会更新节点；维护者还必须在一次批准的 AkastrCloud 发布中固定目标版本、相同 WSS 协议、精确 immutable binary URL 与内部完整性值。只有该 Cloud release 上线后，六小时 timer 才会收到 `update_available`，系统从不跟随 GitHub `latest`。这些发布动作都不会创建节点或触发 ChangeIP/IPQuality。
+新版本会得到独立的 `releases/download/vX.Y.Z/...` 地址。Release 发布本身不会更新节点；维护者还必须在一次批准的 AkastrCloud 发布中固定目标版本、相同 WSS 协议、精确 immutable binary URL 与内部完整性值。只有该 Cloud release 上线后，主进程的六小时循环才会收到 `update_available`，系统从不跟随 GitHub `latest`。这些发布动作都不会创建节点或触发 ChangeIP/IPQuality。

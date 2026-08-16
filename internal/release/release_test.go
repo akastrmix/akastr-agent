@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 func repositoryFile(t *testing.T, parts ...string) string {
@@ -53,6 +54,11 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 
 func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 	installer := repositoryFile(t, "scripts", "install.sh")
+	for _, character := range installer {
+		if unicode.Is(unicode.Han, character) {
+			t.Fatal("installer contains non-English user-facing text")
+		}
+	}
 	for _, required := range []string{
 		"AGENT_RELEASE_VERSION='@AKASTR_AGENT_VERSION@'",
 		"@AKASTR_AGENT_BINARY_SHA256@",
@@ -68,15 +74,15 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"wget --no-hsts --https-only --tries=3 --timeout=30 -qO",
 		"os_identity=$(",
 		"debian:12|debian:13)",
-		"wget 退出码 $wget_code",
+		"wget exit code $wget_code",
 		"packages='ca-certificates curl wget'",
 		"backup_existing \"$CONFIG_DIR\" \"$CONFIG_BACKUP\"",
 		"check-identity \\",
-		"akastr-agent-update.service",
-		"akastr-agent-update.timer",
-		"OnCalendar=*-*-* 00/6:00:00",
-		"RandomizedDelaySec=10m",
-		"self-update --config /etc/akastr-agent/config.json",
+		"capture_agent_units",
+		"$SYSTEMD_ROOT\"/akastr-agent*.service",
+		"$SYSTEMD_ROOT\"/akastr-agent*.timer",
+		"ReadWritePaths=/var/lib/akastr-agent /usr/local/lib/akastr-agent",
+		"Akastr Agent $AGENT_RELEASE_VERSION installed successfully.",
 		"rollback_directory \"$CONFIG_BACKUP\" \"$CONFIG_DIR\"",
 	} {
 		if !strings.Contains(installer, required) {
@@ -101,6 +107,12 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"$CONFIG_DIR 已存在；请先核对现有安装",
 		"$STATE_DIR 已存在；请先核对现有安装",
 		"$RELEASE_ROOT 已存在；请先核对现有安装",
+		"akastr-agent-update",
+		"self-update",
+		"OnCalendar=",
+		"RandomizedDelaySec=",
+		"已安装",
+		"自动更新",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("installer contains forbidden contract %q", forbidden)
