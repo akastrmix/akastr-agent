@@ -4,7 +4,7 @@
 
 - Akastr Agent is a new project. Do not copy the old IPChanger runtime or preserve its HTTP contract as a compatibility layer.
 - AkastrCloud remains the control plane and the only business source of truth. Telegram, eligibility, daily IPQuality policy, queues, cache metadata, and user delivery do not belong in this repository.
-- The old IPChanger repository remains read-only during migration. It may be archived only after all production nodes have cut over and rollback evidence is no longer required.
+- The retired IPChanger repository is archived history. Never use it as a deployment, recovery, or compatibility source.
 - The runtime is a single Go process managed by systemd. Prefer the Go standard library and add dependencies only when they have a concrete runtime purpose.
 - The Agent only executes typed, preconfigured operations. Never add a remote shell, arbitrary command payload, terminal, generic host monitoring, generic offline alerting, or Telegram channel delivery.
 

@@ -79,14 +79,12 @@ v0.8.3 bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0
 
 ## 7. 事务安装与自动更新
 
-后台的一键命令是期望安装状态，不是“仅限空白机器”的初始化器。安装器先在临时目录完成 bootstrap、binary、依赖和 Runner 脚本验证；随后严格停止全部 Agent unit，确认均为 inactive，再检查稳定的 operation journal。存在 active 记录就恢复原 unit 并中止；空闲时才把配置、状态和 release root 移到有界事务备份，并只写 `akastr-agent.service`。每次 `--install` 都使用机器 token 重新注册公钥，不复制旧 identity 或 state。主控在同一节点存在未完成 command 时拒绝注册；明确拒绝发生在公钥替换前，因此安装器恢复原目录和启停状态。注册请求可能已经改变主控公钥时，安装进入不可回退点：不再恢复旧 identity，失败后重跑同一安装命令 fix-forward。旧 IPChanger 不在这些路径内，始终不受影响。
+后台的一键命令是期望安装状态，不是“仅限空白机器”的初始化器。安装器先在临时目录完成 bootstrap、binary、依赖和 Runner 脚本验证；随后严格停止全部 Agent unit，确认均为 inactive，再检查稳定的 operation journal。存在 active 记录就恢复原 unit 并中止；空闲时才把配置、状态和 release root 移到有界事务备份，并只写 `akastr-agent.service`。每次 `--install` 都使用机器 token 重新注册公钥，不复制旧 identity 或 state。主控在同一节点存在未完成 command 时拒绝注册；明确拒绝发生在公钥替换前，因此安装器恢复原目录和启停状态。注册请求可能已经改变主控公钥时，安装进入不可回退点：不再恢复旧 identity，失败后重跑同一安装命令 fix-forward。
 
 自动更新不由 GitHub `latest` 驱动。主进程的六小时循环使用当前 Ed25519 identity 向 `POST /internal/agents/update` 发起带时间和 nonce 的签名只读检查；AkastrCloud 只有在目标版本已经随生产 release 固定、WSS 协议相同且节点没有未完成 command 时才返回 `update_available`。看到可用 manifest 后，更新必须取得进程级 exclusive lease；Agent 从发送 `operation.accepted` 前到 executor 已持久化终态期间持有 operation lease，两者使用同一个生命周期门，因此不存在“检查完空闲后又接单”的间隙。更新持锁完成下载、校验、`current` 切换和原位执行；持锁时收到 offer 会断开本次会话而不接受，主控保留并在重连后重发。更新只接受精确 GitHub immutable asset URL、前向 `vMAJOR.MINOR.PATCH` 和主控返回的内部 SHA-256，最大下载 32 MiB。新 binary 必须报告目标版本并通过当前 `check-config`，切换成功后只保留 current。
 
 唯一主 service 使用 `Type=notify`，只有 WSS 完成 auth、hello 并收到 `hello.accepted` 后才向 systemd 报告 ready；安装器不再把短暂存活的 PID 当成功。service 保持 `ProtectSystem=strict`，但明确允许写状态目录与 Agent release root。项目不保留 previous release、手工 `--update` 或回退 CLI；更新故障由 AkastrCloud 批准修复版本，或由操作者重新运行后台的一键 `--install`。WSS/auth/config 的破坏性版本不会进入当前协议通道，继续走人工维护 Gate。
 
-## 8. 迁移边界
+## 8. 节点接入边界
 
-六个旧 IPChanger 实例的 HTTP endpoint 和事件 callback 会一直保留，直到对应节点逐台完成 WSS 迁移以及回滚、观察 Gate。Akastr Agent 不模拟旧 HTTP contract；分阶段期间由 AkastrCloud 同时持有两套 integration，这是部署职责，不是 Agent 兼容层。
-
-操作者必须从 AkastrCloud 后台生成完整的一键命令，按 [安装与使用教程](INSTALLATION.md) 逐台迁移；不得因 Agent release 或管理页面已经就绪就提前停用旧服务。
+操作者必须从 AkastrCloud 后台生成完整的一键命令，按 [安装与使用教程](INSTALLATION.md) 接入或重装。Agent 不模拟已退役的 HTTP 控制面；未接入或离线的节点由主控安全拒绝操作。

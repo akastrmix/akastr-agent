@@ -66,7 +66,7 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 
 不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令以 `mktemp` 创建唯一入口文件，并在子 shell 退出时自动删除；wget 使用 `--no-hsts`，不会创建或更新用户级 HSTS 数据库。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证，但可重新下载密封配置并为重装后的主机注册新公钥。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
-以后需要修复、覆盖或重装时，在列表中点击“安装命令”即可重新显示同一条命令。它不是“仅限首次安装”：新 binary、bootstrap、依赖和本地空闲状态全部验证成功后，安装器才停止旧 Agent，并暂存 Agent 自己的配置、状态、release 与 unit。每次安装都会注册全新的 identity，不保留旧 private key 或旧 operation state。主控有未完成 command 时拒绝重装，避免切断正在执行或等待确认的操作。它不会碰旧 IPChanger。怀疑命令泄露时点击“轮换密钥”，旧命令立即失效；删除节点只用于永久移除。
+以后需要修复、覆盖或重装时，在列表中点击“安装命令”即可重新显示同一条命令。它不是“仅限首次安装”：新 binary、bootstrap、依赖和本地空闲状态全部验证成功后，安装器才停止旧 Agent，并暂存 Agent 自己的配置、状态、release 与 unit。每次安装都会注册全新的 identity，不保留旧 private key 或旧 operation state。主控有未完成 command 时拒绝重装，避免切断正在执行或等待确认的操作。怀疑命令泄露时点击“轮换密钥”，旧命令立即失效；删除节点只用于永久移除。
 
 安装过程完全非交互。它会：
 
@@ -87,7 +87,7 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 Akastr Agent v0.8.3 installed successfully.
 ```
 
-新公钥注册前的失败会恢复事务备份、原 unit 与原启停状态；已经由 apt 安装的通用依赖可能保留。注册请求可能已经改变主控公钥后进入不可回退点：安装器不会恢复已失效的旧 identity，而是保留新安装供排障；直接重跑同一条命令会再次完整验证并注册新 identity。任何路径都不会停止、删除或修改旧 IPChanger。
+新公钥注册前的失败会恢复事务备份、原 unit 与原启停状态；已经由 apt 安装的通用依赖可能保留。注册请求可能已经改变主控公钥后进入不可回退点：安装器不会恢复已失效的旧 identity，而是保留新安装供排障；直接重跑同一条命令会再次完整验证并注册新 identity。
 
 ## 4. 文件与权限
 
@@ -119,7 +119,7 @@ journalctl -u akastr-agent.service -n 100 --no-pager
 
 正确结果是：系统中只有 `akastr-agent.service`，其状态为 `active`、`MainPID` 非 0、版本为 `v0.8.3`、配置输出 `configuration valid`，日志出现 `control connection ready`。因为 service 使用 `Type=notify`，`active` 已经代表 WSS auth 与 hello 完成，不只是进程存活。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
 
-再回到后台确认节点为“在线”，版本和类型正确。正式迁移前继续保留旧 IPChanger；仅仅安装成功不等于业务路由已经切换。
+再回到后台确认节点为“在线”，版本和类型正确；只有在线且 capability 完整的节点才能接收业务操作。
 
 ## 6. 日常使用
 
@@ -183,19 +183,9 @@ journalctl -u akastr-agent.service -n 100 --no-pager
 | 日志出现 `update_apply_failed` | 下载、版本、配置或内部完整性验证失败；当前版本不受影响，不要改地址或跳过校验 |
 | 日志出现 `update_reexec_failed` | current 已切换但进程替换失败；保留日志，等待 systemd 从 current 重启；仍失败则重跑后台一键安装命令 |
 
-## 9. 正式迁移与回滚
+## 9. 节点接入或重装
 
-不要从测试期配置拼接新安装，也不要运行旧安装器。直接在后台添加或打开当前持久节点，复制 v0.8.3 一键命令执行；`--install` 会替换残缺或当前 Agent，并让 systemd 最终只保留一个主 service。每次安装都丢弃旧 identity/state，并按当前后台节点重新注册；本机或主控有未完成操作时会在替换公钥前拒绝。整个过程不会修改旧 IPChanger。
-
-每个节点逐台进行：
-
-1. 保留旧 IPChanger，在后台填完整参数、添加持久节点并取得一键命令；
-2. 安装并完成上面的 service、WSS、capability 与 baseline 验收；
-3. 由主控只把该节点的新 command 路由切到 Agent，避免两套执行端同时换 IP；
-4. 在批准窗口验证 ChangeIP、自然 IPv4 私聊、WSS 重连幂等，以及需要时的 IPQuality 排队与缓存；
-5. 通过观察和回滚 Gate 后才停用旧实例。
-
-回滚时先阻止新 command，保留 Agent identity/state/journal，再恢复 AkastrCloud 到旧 integration 并验证旧路径。不能仅停止 Agent 就宣称业务回滚，也不能在观察期直接卸载。
+不要从旧配置拼接安装命令。直接在后台添加或打开当前持久节点，复制 v0.8.3 一键命令执行；`--install` 会替换残缺或当前 Agent，并让 systemd 最终只保留一个主 service。每次安装都丢弃旧 identity/state，并按当前后台节点重新注册；本机或主控有未完成操作时会在替换公钥前拒绝。完成 service、WSS、capability 与 baseline 验收后即可由主控使用。
 
 ## 10. 维护者发布新版本
 
