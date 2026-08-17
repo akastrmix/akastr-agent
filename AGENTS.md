@@ -6,6 +6,8 @@
 
 - Akastr Agent 是 AkastrCloud 服务节点上的唯一受控运行时，不提供 HTTP 控制面或兼容接口。
 - AkastrCloud 始终是主控，也是唯一的业务事实来源。Telegram、使用资格、IPQuality 每日限次策略、队列、缓存元数据和用户消息投递均不属于本仓库。
+- AkastrCloud 由独立仓库 `akastrmix/AkastrCloud` 维护；跨仓库任务通过 `$local-project-paths` 解析本地位置，不在源码中写死机器路径。
+- 修改 bootstrap、enrollment、WSS 认证、capability、operation、IPv4 event 或自动更新契约时，必须同时读取双方 `AGENTS.md` 并验证两边实现。wire contract 以本仓库 `docs/PROTOCOL.md` 为权威；Cloud HTTP 路由、持久状态和业务语义以 AkastrCloud 对应权威文档为准。
 - 运行时是一个由 systemd 管理的 Go 单进程。优先使用 Go 标准库；只有第三方依赖具备明确的运行时用途时才可引入。
 - Agent 只能执行预先配置、具有明确类型的操作。不得加入远程 shell、任意命令载荷、终端、通用主机监控、通用离线告警或 Telegram channel 投递。
 
