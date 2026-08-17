@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"net/netip"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/operation"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
 )
@@ -124,6 +126,38 @@ func TestProviderOutcomeControlsReconciliationWithoutRetry(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestActiveJournalRecoveryNeverRunsProviderAgain(t *testing.T) {
+	engine, err := operation.Open(operation.Options{
+		StateFile: filepath.Join(t.TempDir(), "operations.json"), RecentLimit: 16,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer := offerFor("8.8.8.8")
+	if _, err := engine.Begin(offer.CommandID, "changeip.execute", "target-network"); err != nil {
+		t.Fatal(err)
+	}
+	provider := &countingProvider{}
+	handler := New(engine, nil, provider, nil, time.Second)
+	result := handler.Execute(t.Context(), offer)
+	if result.Outcome != "failed" || result.Code != "interrupted_unknown" {
+		t.Fatalf("Execute() = %#v", result)
+	}
+	if provider.calls != 0 {
+		t.Fatalf("provider calls = %d, want 0", provider.calls)
+	}
+	if _, active := engine.Active(offer.CommandID); active {
+		t.Fatal("active journal was not released")
+	}
+}
+
+type countingProvider struct{ calls int }
+
+func (p *countingProvider) Run(context.Context) changeprovider.Result {
+	p.calls++
+	return changeprovider.Result{}
 }
 
 func offerFor(expectedIPv4 string) protocol.OperationOffer {

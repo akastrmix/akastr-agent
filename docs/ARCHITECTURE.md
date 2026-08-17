@@ -49,11 +49,11 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 日志只保存 operation ID、kind、exclusive group、时间、状态和稳定终态 code，不保存 payload、SOCKS5 凭据、脚本输出、客户信息或 Telegram 标识。
 
-终态记录只包含重发所需的有界安全结果。进程重启后，遗留的 active 记录继续占用互斥组；相同 command 再次到达时，它会被标记为 `interrupted_unknown`，不会猜测成功，也不会重新执行，然后释放互斥组。未知或损坏的状态 schema 会使启动失败，不会被静默重置。
+终态记录只包含重发所需的有界安全结果。进程重启后，遗留的 active 记录继续占用互斥组；Cloud 保留已 accepted command 并在重连后重发相同 offer，即使原执行窗口已结束，Agent 也只对本地相同 command/type 进入恢复。它会被标记为 `interrupted_unknown` 或继续既有 ChangeIP 核对，不会重新执行 provider，然后释放互斥组；recent 终态直接重放。未知过期 command 和未知或损坏的状态 schema都会被拒绝，不会被静默重置。
 
 ## 5. 公网 IP 观察
 
-观察器通过固定 HTTPS 来源 `api.ipify.org` 和 Cloudflare trace 获取公网地址，明确按 IPv4 或 IPv6 建立连接，拒绝重定向、非公网地址和过大响应。
+观察器通过固定 HTTPS 来源 `api.ipify.org` 和 Cloudflare trace 获取公网地址，明确按 IPv4 或 IPv6 建立连接，拒绝重定向、非公网地址和过大响应。IPv4 的非公网范围包括 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 
 后台只生成 IPv4 watch：首次成功观察只建立基线，不上报；之后的变化先写入 `ip_state_file`，再发送 `ip.observed`。收到主控的 `ip.observed_ack` 之前，同一事件会在重连后继续重试。配置固定 `observe_ipv6=false`，运行时不生成自然 IPv6 变化事件。观察器发生不可恢复的状态错误时，整个 Agent 退出并由 systemd 重启，不会留下 WSS 在线但停止观察的半失效进程。
 

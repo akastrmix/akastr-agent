@@ -16,9 +16,10 @@ import (
 )
 
 type Runtime struct {
-	changeIP  *changefeature.Handler
-	ipQuality *ipqualityrunner.Handler
-	ipMonitor *ipwatch.Monitor
+	operations *operation.Engine
+	changeIP   *changefeature.Handler
+	ipQuality  *ipqualityrunner.Handler
+	ipMonitor  *ipwatch.Monitor
 }
 
 func BuildRuntime(model *Model) (*Runtime, error) {
@@ -28,7 +29,7 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	runtime := &Runtime{}
+	runtime := &Runtime{operations: engine}
 	var observer *ipwatch.Observer
 	if model.Config.Capabilities.ChangeIP.Enabled || model.Config.Capabilities.IPWatch.Enabled {
 		observer, err = ipwatch.New(10*time.Second, "Akastr-Agent")
@@ -82,6 +83,19 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 	return runtime, nil
 }
 
+func (r *Runtime) KnownOperation(commandID, commandType string) bool {
+	if r.operations == nil {
+		return false
+	}
+	if record, found := r.operations.Active(commandID); found {
+		return record.Kind == commandType
+	}
+	if record, found := r.operations.Recent(commandID); found {
+		return record.Kind == commandType
+	}
+	return false
+}
+
 func (r *Runtime) IPMonitor() *ipwatch.Monitor {
 	return r.ipMonitor
 }
@@ -91,7 +105,7 @@ func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) pr
 	if now.Before(offer.NotBefore) {
 		return unsupportedResult(offer.CommandType, "offer_not_ready")
 	}
-	if !now.Before(offer.ExpiresAt) {
+	if !now.Before(offer.ExpiresAt) && !r.KnownOperation(offer.CommandID, offer.CommandType) {
 		return unsupportedResult(offer.CommandType, "offer_expired")
 	}
 	switch offer.CommandType {

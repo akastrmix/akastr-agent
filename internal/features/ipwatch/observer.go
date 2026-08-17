@@ -10,6 +10,8 @@ import (
 	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/akastrmix/akastr-agent/internal/netpolicy"
 )
 
 const maxResponseBytes = 4096
@@ -133,7 +135,8 @@ func (o *Observer) fetch(ctx context.Context, client *http.Client, candidate sou
 	if (family == IPv4 && !address.Is4()) || (family == IPv6 && !address.Is6()) {
 		return netip.Addr{}, fmt.Errorf("response contains IPv%d instead of IPv%d", address.BitLen(), family)
 	}
-	if !address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast() {
+	if (family == IPv4 && !netpolicy.IsPublicIPv4(address)) ||
+		(family == IPv6 && (!address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast())) {
 		return netip.Addr{}, errors.New("response contains a non-public IP address")
 	}
 	return address, nil

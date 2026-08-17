@@ -47,7 +47,9 @@ akastr-agent-update-check-v1
 - `payload_version=1` 与对应类型的严格 payload；
 - `not_before` 和 `expires_at`。
 
-Agent 只有在当前时间已达到 `not_before`、尚未到 `expires_at` 且进程级更新 lease 空闲时，才先取得 operation lease 并回复 `operation.accepted`。只有主控再发送 `operation.accepted_ack` 且 `accepted=true`，Agent 才持久化 running 状态并调用本地已配置 provider。终态先持久化，再释放 operation lease 并通过 `operation.result` 发送；AkastrCloud 只接受数据库状态已经是 `accepted` 的首个终态，在数据库事务和下游事件接纳成功后发送 `operation.result_ack`。终态重放仍按原 command ID 幂等接纳。
+Agent 只有在当前时间已达到 `not_before`、尚未到 `expires_at` 且进程级更新 lease 空闲时，才接受从未在本地出现的新 command。只有主控再发送 `operation.accepted_ack` 且 `accepted=true`，Agent 才持久化 running 状态并调用本地已配置 provider。终态先持久化，再释放 operation lease 并通过 `operation.result` 发送；AkastrCloud 只接受数据库状态已经是 `accepted` 的首个终态，在数据库事务和下游事件接纳成功后发送 `operation.result_ack`。
+
+已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时主控继续发送相同 offer；Agent 仅在本地 active/recent journal 中存在相同 command ID 和类型时允许越过该截止时间。active 记录收敛为 `interrupted_unknown` 或已有 ChangeIP 核对状态，recent 记录重放原终态，provider 都不会再次执行。从未在本地出现的过期 command 始终拒绝。
 
 断线后 offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件、凭据或任意 URL。
 
@@ -69,7 +71,7 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 本地 relay 只监听 `127.0.0.1` 的随机端口，并使用 profile 中的凭据连接上游 SOCKS5。脚本结束后 Runner 再做 postflight；代理地址改变、预期 IPv4 过期、checksum 不一致或找不到 profile 都会失败。
 
-有效 `https://report.check.place/...` URL 加成功 postflight 是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
+只有精确来源 `https://report.check.place/...`、无用户信息和显式端口的 URL 加成功 postflight 才是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
 
 ## ChangeIP 与 IPv4 核对
 
@@ -90,5 +92,6 @@ Agent 在本地只保留一个待确认 IPv4 事件。`ip.observed` 由相同 `o
 - bootstrap/enrollment 使用机器 token，WSS 与自动更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
 - capability list、journal 和日志不得含密码或脚本输出。
+- 公网 IPv4 字段拒绝 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 - Agent 不实现任意命令、远程 shell 或 HTTP 控制端点。
 - 修改认证、消息字段、持久 payload 或发布边界时，必须与 AkastrCloud 侧按 ADR 0024 一并批准和实现。

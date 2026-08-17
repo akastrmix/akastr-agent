@@ -17,11 +17,18 @@ import (
 
 type recordingExecutor struct {
 	executed chan string
+	known    map[string]string
 }
 
 type blockingExecutor struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+func (e *blockingExecutor) KnownOperation(string, string) bool { return false }
+
+func (e *recordingExecutor) KnownOperation(commandID, commandType string) bool {
+	return e.known[commandID] == commandType
 }
 
 func (e *blockingExecutor) Execute(context.Context, protocol.OperationOffer) protocol.ExecutionResult {
@@ -159,5 +166,18 @@ func TestAcceptedAckGatesExecution(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("accepted command was not executed")
+	}
+}
+
+func TestExpiredOfferWindowAllowsOnlyKnownRecovery(t *testing.T) {
+	now := time.Now()
+	offer := protocol.OperationOffer{
+		NotBefore: now.Add(-2 * time.Minute), ExpiresAt: now.Add(-time.Minute),
+	}
+	if offerWindowAllows(offer, now, false) {
+		t.Fatal("unknown expired command was accepted")
+	}
+	if !offerWindowAllows(offer, now, true) {
+		t.Fatal("known expired command was not admitted for recovery")
 	}
 }

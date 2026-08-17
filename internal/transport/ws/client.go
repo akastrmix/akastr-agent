@@ -22,6 +22,7 @@ import (
 
 type Executor interface {
 	Execute(context.Context, protocol.OperationOffer) protocol.ExecutionResult
+	KnownOperation(commandID, commandType string) bool
 }
 
 type ObservationSource interface {
@@ -49,8 +50,9 @@ type Client struct {
 }
 
 type pendingOperation struct {
-	offer protocol.OperationOffer
-	lease *lifecycle.Lease
+	offer    protocol.OperationOffer
+	lease    *lifecycle.Lease
+	recovery bool
 }
 
 type session struct {
@@ -321,9 +323,9 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 
 func (c *Client) acceptOffer(ctx context.Context, session *session, offer protocol.OperationOffer) error {
 	now := time.Now()
+	recovery := c.executor.KnownOperation(offer.CommandID, offer.CommandType)
 	if !protocol.ValidUUID(offer.CommandID) || offer.PayloadVersion != 1 ||
-		!offer.ExpiresAt.After(offer.NotBefore) || now.Before(offer.NotBefore) ||
-		!now.Before(offer.ExpiresAt) || len(offer.Payload) == 0 {
+		!offerWindowAllows(offer, now, recovery) || len(offer.Payload) == 0 {
 		return errors.New("operation offer is invalid")
 	}
 	c.mu.Lock()
@@ -347,9 +349,14 @@ func (c *Client) acceptOffer(ctx context.Context, session *session, offer protoc
 		c.mu.Unlock()
 		return errors.New("automatic update is in progress")
 	}
-	c.pending[offer.CommandID] = pendingOperation{offer: offer, lease: lease}
+	c.pending[offer.CommandID] = pendingOperation{offer: offer, lease: lease, recovery: recovery}
 	c.mu.Unlock()
 	return session.write(ctx, "operation.accepted", protocol.CommandIDBody{CommandID: offer.CommandID})
+}
+
+func offerWindowAllows(offer protocol.OperationOffer, now time.Time, recovery bool) bool {
+	return offer.ExpiresAt.After(offer.NotBefore) && !now.Before(offer.NotBefore) &&
+		(now.Before(offer.ExpiresAt) || recovery)
 }
 
 func (c *Client) handleAcceptedAck(ctx context.Context, ack protocol.AcceptedAckBody) {
@@ -360,7 +367,7 @@ func (c *Client) handleAcceptedAck(ctx context.Context, ack protocol.AcceptedAck
 		c.mu.Unlock()
 		return
 	}
-	if !ack.Accepted || time.Now().Before(pending.offer.NotBefore) || !time.Now().Before(pending.offer.ExpiresAt) {
+	if !ack.Accepted || !offerWindowAllows(pending.offer, time.Now(), pending.recovery) {
 		c.mu.Unlock()
 		pending.lease.Release()
 		return

@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/netpolicy"
 	xproxy "golang.org/x/net/proxy"
 )
 
@@ -92,7 +93,7 @@ func (p *Provider) Run(ctx context.Context, request Request) Result {
 		return Result{Code: "proxy_profile_not_found", CheckedAt: checkedAt}
 	}
 	expected, err := netip.ParseAddr(request.ExpectedIPv4)
-	if err != nil || !expected.Is4() || !expected.IsGlobalUnicast() || request.ProxyPort < 1 || request.ProxyPort > 65535 {
+	if err != nil || !netpolicy.IsPublicIPv4(expected) || request.ProxyPort < 1 || request.ProxyPort > 65535 {
 		return Result{Code: "proxy_endpoint_invalid", CheckedAt: checkedAt}
 	}
 	if err := p.verifyScript(); err != nil {
@@ -217,7 +218,7 @@ func observeProxyIPv4(ctx context.Context, address string, profile Profile) (str
 		return "", err
 	}
 	addressValue, err := netip.ParseAddr(strings.TrimSpace(string(body)))
-	if err != nil || !addressValue.Is4() || !addressValue.IsGlobalUnicast() || addressValue.IsPrivate() {
+	if err != nil || !netpolicy.IsPublicIPv4(addressValue) {
 		return "", errors.New("proxy returned invalid public IPv4")
 	}
 	return addressValue.String(), nil
