@@ -2,18 +2,18 @@
 
 Akastr Agent 是 AkastrCloud 服务节点上的轻量被控程序。它以单个 Go 进程运行，由节点主动建立出站 WSS 连接；主控只能调用节点本地预先配置、带类型的能力，不能下发任意命令或打开远程终端。
 
-> 正式节点操作只走 Akastr Agent；未接入或暂停的节点不会回退到旧控制面。
+> 节点操作只走 Akastr Agent；未接入、离线或暂停的节点会被主控安全拒绝操作。
 
-## v0.8.3 使用模型
+## 使用模型
 
 Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久节点生成的一行安装命令：
 
 1. 管理员在后台创建目标节点或 IPQuality Runner；
 2. 管理员在后台填写节点、ChangeIP、SOCKS5 或 Runner profile 的全部参数；
 3. 后台创建长期机器 token，并用它加密节点配置；安装命令不直接包含 ChangeIP 或 SOCKS5 secret；
-4. 操作者把命令复制到节点执行，安装器不再询问任何参数；
+4. 操作者把命令复制到节点执行，安装器全程非交互；
 5. Agent 通过 HTTPS 取回并在本机解密配置，随后自动完成依赖、注册、root-only 文件和 systemd service；
-6. 同一个节点可以反复执行同一条命令；每次安装都会确认本机和主控都没有未完成操作，再为该节点生成并注册全新的 identity；注册前的本地失败恢复原安装，注册完成后只保留新安装并通过重跑同一命令修复；主动轮换 token 后旧命令立即失效；
+6. 同一个节点可以反复执行同一条命令；每次安装都会确认本机和主控都没有未完成操作，再为该节点生成并注册全新的 identity；注册前的本地失败会保持既有安装可用，注册完成后的问题通过重跑同一命令修复；主动轮换 token 后原命令立即失效；
 7. 唯一的 `akastr-agent.service` 主进程每六小时检查一次 AkastrCloud 已批准的同协议版本；通过全部切换前验证后原子替换自身并继续运行。
 
 用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不需要手工下载或核对 SHA-256。不要从仓库 raw 地址直接运行模板脚本，也不要把 wget/curl 的网络输出直接通过管道交给 shell。
@@ -26,7 +26,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 
 Runner 可配置 1–128 个以 server key 索引的 SOCKS5 credential profile。安装器固定下载官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) commit `0ee5f192fed70c04615852efba0e4b8bd43546c7`，自动校验并把并发严格固定为 `max_concurrency=1`。
 
-完整步骤、更新、卸载和迁移边界见 [安装与使用教程](docs/INSTALLATION.md)。
+完整步骤、更新、卸载和故障处理见 [安装与使用教程](docs/INSTALLATION.md)。
 
 ## 职责边界
 
@@ -46,7 +46,7 @@ AkastrCloud 负责业务编排：
 
 IPQuality 的“每天一次”按 `Asia/Hong_Kong` 日历日计算；超过一次直接读取当天缓存。香港时间 `00:00` 或目标节点观测到 IPv4 改变时，主控开启新的缓存代际。此规则由 AkastrCloud 执行，重装 Agent 不能绕过。
 
-ChangeIP provider 零退出只表示触发成功；唯一的常驻 IPv4 monitor 负责上报实际变化，由 AkastrCloud 在 45 分钟 session 内收敛终态。ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令和 HTTP-flow ChangeIP 均不属于 v0.8.3。
+ChangeIP provider 零退出只表示触发成功；唯一的常驻 IPv4 monitor 负责上报实际变化，由 AkastrCloud 在 45 分钟 session 内收敛终态。ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令或 HTTP-flow ChangeIP。
 
 ## 文档
 
@@ -75,7 +75,7 @@ internal/transport/ws/  带认证和重连的控制连接
 scripts/                release 构建与非交互安装模板
 ```
 
-未来能力会作为 `internal/features/` 或 `internal/providers/` 下职责单一的同级包加入；仓库不会提前创建空实现。
+新增能力必须作为 `internal/features/` 或 `internal/providers/` 下职责单一的同级包加入；仓库不为未实现能力创建空接口。
 
 ## 本地开发
 
@@ -94,7 +94,7 @@ git tag -a vX.Y.Z -m "Akastr Agent vX.Y.Z"
 git push origin vX.Y.Z
 ```
 
-标签必须严格符合 `vX.Y.Z`。发布工作流会再次运行完整验证，只构建 Linux amd64 binary 与该版本 `install.sh`，验证版本、架构和资产集合后，自动创建 GitHub Release。构建或验证失败时不会创建 Release，也不会覆盖已经发布的同名版本；因此旧下载地址始终不可变，新版本下载地址在工作流成功后自动可用。
+标签必须严格符合 `vX.Y.Z`。发布工作流会再次运行完整验证，只构建 Linux amd64 binary 与该版本 `install.sh`，验证版本、架构和资产集合后，自动创建 GitHub Release。构建或验证失败时不会创建 Release，也不会覆盖已经发布的同名版本；每个已发布下载地址保持不可变。
 
 本地排查发布构建时可以运行：
 

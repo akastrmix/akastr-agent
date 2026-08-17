@@ -2,28 +2,27 @@
 
 ## 产品边界
 
-- Akastr Agent 是一个全新项目。不要复制旧 IPChanger 运行时，也不要以兼容层形式保留它的 HTTP 契约。
+- Akastr Agent 是 AkastrCloud 服务节点上的唯一受控运行时，不提供 HTTP 控制面或兼容接口。
 - AkastrCloud 始终是主控，也是唯一的业务事实来源。Telegram、使用资格、IPQuality 每日限次策略、队列、缓存元数据和用户消息投递均不属于本仓库。
-- 已退役的 IPChanger 仓库只作为归档历史保留。不得将其用于部署、恢复或兼容实现。
 - 运行时是一个由 systemd 管理的 Go 单进程。优先使用 Go 标准库；只有第三方依赖具备明确的运行时用途时才可引入。
 - Agent 只能执行预先配置、具有明确类型的操作。不得加入远程 shell、任意命令载荷、终端、通用主机监控、通用离线告警或 Telegram channel 投递。
 
-## 当前能力与预留能力
+## 能力边界
 
-首版能力：
+已实现能力：
 
 - 观察公网 IPv4，以及可选的 IPv6。
 - 执行预先配置的 ChangeIP 命令 provider。
 - 描述已配置的 SOCKS5 端点，但不得暴露凭据。
 - 当 installation 被配置为 Runner 时，执行固定版本的 IPQuality 脚本。
 
-以下只是扩展点，不属于首版实现：
+明确不在实现范围内的能力：
 
 - ChangeIP HTTP-flow provider。
 - Xray 流量与日志观察。
 - 长期跑满带宽的策略与限速。
 
-未来功能应作为同级 package 加入。不要创建空实现、占位协议字段或臆想式接口。
+新增能力应作为同级 package 加入。未实现功能不得创建空实现、占位协议字段或臆想式接口。
 
 ## 安全与契约
 
