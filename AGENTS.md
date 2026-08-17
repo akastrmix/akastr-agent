@@ -16,7 +16,7 @@
 已实现能力：
 
 - 观察公网 IPv4，以及可选的 IPv6。
-- 执行预先配置的 ChangeIP 命令 provider。
+- 执行预先配置的 ChangeIP HTTP API 或固定命令 provider。
 - 描述已配置的 SOCKS5 端点，但不得暴露凭据。
 - 当 installation 被配置为 Runner 时，执行固定版本的 IPQuality 脚本。
 

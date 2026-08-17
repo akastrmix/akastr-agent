@@ -9,7 +9,7 @@ import (
 
 	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
-	changecommand "github.com/akastrmix/akastr-agent/internal/providers/changeip/command"
+	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
 )
 
 type observerStep struct {
@@ -38,16 +38,40 @@ func (o *fakeObserver) Observe(context.Context, ipwatch.Family) (ipwatch.Observa
 	}, nil
 }
 
-type fakeProvider struct{}
+type fakeProvider struct{ result changeprovider.Result }
 
-func (fakeProvider) Run(context.Context) changecommand.Result {
-	return changecommand.Result{Code: changecommand.CodeCompleted, FinishedAt: time.Now().UTC()}
+func (p fakeProvider) Run(context.Context) changeprovider.Result {
+	return p.result
+}
+
+type fakeReconciler struct {
+	commandID string
+	address   string
+}
+
+func (r *fakeReconciler) ArmChange(commandID, address string, _ time.Time) error {
+	r.commandID, r.address = commandID, address
+	return nil
+}
+func (r *fakeReconciler) CancelChange(commandID string) error {
+	if commandID == r.commandID {
+		r.commandID, r.address = "", ""
+	}
+	return nil
+}
+func (r *fakeReconciler) HasChange(commandID string) bool { return commandID == r.commandID }
+func (r *fakeReconciler) ChangeAddress(commandID string) (string, bool) {
+	return r.address, commandID == r.commandID
 }
 
 func TestCompletedProviderReturnsTriggeredWithoutASecondObservation(t *testing.T) {
 	observer := &fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}}
 	handler := &Handler{
-		observer: observer, provider: fakeProvider{}, observeTimeout: time.Second,
+		observer: observer,
+		provider: fakeProvider{result: changeprovider.Result{
+			State: changeprovider.TriggerConfirmed, Code: "completed", FinishedAt: time.Now().UTC(),
+		}},
+		reconciler: &fakeReconciler{}, observeTimeout: time.Second,
 	}
 	result := handler.execute(context.Background(), offerFor("8.8.8.8"))
 	oldIPv4, oldOk := result.Result["old_ipv4"].(*string)
@@ -61,7 +85,48 @@ func TestCompletedProviderReturnsTriggeredWithoutASecondObservation(t *testing.T
 	}
 }
 
+func TestProviderOutcomeControlsReconciliationWithoutRetry(t *testing.T) {
+	tests := []struct {
+		name          string
+		providerState changeprovider.TriggerState
+		providerCode  string
+		wantOutcome   string
+		wantCode      string
+		wantArmed     bool
+	}{
+		{
+			name: "unknown remains armed", providerState: changeprovider.TriggerUnknown,
+			providerCode: "trigger_outcome_unknown", wantOutcome: "succeeded",
+			wantCode: "change_trigger_unknown", wantArmed: true,
+		},
+		{
+			name: "definite failure cancels", providerState: changeprovider.TriggerFailed,
+			providerCode: "exited_nonzero", wantOutcome: "failed",
+			wantCode: "exited_nonzero", wantArmed: false,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reconciler := &fakeReconciler{}
+			handler := &Handler{
+				observer: &fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}},
+				provider: fakeProvider{result: changeprovider.Result{
+					State: test.providerState, Code: test.providerCode, FinishedAt: time.Now().UTC(),
+				}},
+				reconciler: reconciler, observeTimeout: time.Second,
+			}
+			result := handler.execute(context.Background(), offerFor("8.8.8.8"))
+			if result.Outcome != test.wantOutcome || result.Code != test.wantCode {
+				t.Fatalf("execute() = %#v", result)
+			}
+			if armed := reconciler.commandID != ""; armed != test.wantArmed {
+				t.Fatalf("reconciliation armed = %t, want %t", armed, test.wantArmed)
+			}
+		})
+	}
+}
+
 func offerFor(expectedIPv4 string) protocol.OperationOffer {
 	payload, _ := json.Marshal(protocol.ChangeIPPayload{ExpectedIPv4: expectedIPv4})
-	return protocol.OperationOffer{Payload: payload}
+	return protocol.OperationOffer{CommandID: "123e4567-e89b-42d3-a456-426614174000", Payload: payload}
 }

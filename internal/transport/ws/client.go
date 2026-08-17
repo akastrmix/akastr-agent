@@ -25,8 +25,9 @@ type Executor interface {
 }
 
 type ObservationSource interface {
-	Run(context.Context, func(protocol.IPObservationBody) error) error
+	Run(context.Context, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error
 	Ack(string) error
+	AckUnchanged(string) error
 }
 
 type Client struct {
@@ -115,7 +116,7 @@ func (c *Client) Run(ctx context.Context) error {
 	defer cancel()
 	monitorDone := make(chan error, 1)
 	controlDone := make(chan error, 1)
-	go func() { monitorDone <- c.observations.Run(runContext, c.publishObservation) }()
+	go func() { monitorDone <- c.observations.Run(runContext, c.publishObservation, c.publishUnchanged) }()
 	go func() { controlDone <- c.runControlLoop(runContext) }()
 	select {
 	case err := <-monitorDone:
@@ -238,10 +239,33 @@ func (c *Client) runSession(ctx context.Context) error {
 			if err := c.observations.Ack(ack.ObservationID); err != nil {
 				return err
 			}
+		case "changeip.unchanged_ack":
+			ack, err := protocol.DecodeBody[protocol.ChangeIPUnchangedAckBody](envelope)
+			if err != nil {
+				return err
+			}
+			if !ack.Persisted || c.observations == nil {
+				return errors.New("ChangeIP unchanged result was not persisted")
+			}
+			if err := c.observations.AckUnchanged(ack.CommandID); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("unexpected control message %q", envelope.Type)
 		}
 	}
+}
+
+func (c *Client) publishUnchanged(result protocol.ChangeIPUnchangedBody) error {
+	c.mu.Lock()
+	active := c.active
+	c.mu.Unlock()
+	if active == nil {
+		return errors.New("control connection is not ready")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return active.write(ctx, "changeip.unchanged", result)
 }
 
 func (c *Client) publishObservation(observation protocol.IPObservationBody) error {

@@ -38,19 +38,20 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 		published = append(published, event)
 		return nil
 	}
-	if err := monitor.step(context.Background(), publish); err != nil {
+	publishUnchanged := func(protocol.ChangeIPUnchangedBody) error { return nil }
+	if err := monitor.step(context.Background(), publish, publishUnchanged); err != nil {
 		t.Fatal(err)
 	}
 	if len(published) != 0 {
 		t.Fatal("initial observation must not be announced as a change")
 	}
-	if err := monitor.step(context.Background(), publish); err != nil {
+	if err := monitor.step(context.Background(), publish, publishUnchanged); err != nil {
 		t.Fatal(err)
 	}
 	if len(published) != 1 || published[0].PreviousAddress != "8.8.8.8" || published[0].Address != "8.8.4.4" {
 		t.Fatalf("published = %#v", published)
 	}
-	if err := monitor.step(context.Background(), publish); err != nil {
+	if err := monitor.step(context.Background(), publish, publishUnchanged); err != nil {
 		t.Fatal(err)
 	}
 	if len(published) != 2 || published[1].ObservationID != published[0].ObservationID {
@@ -63,10 +64,88 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 	if err := reopened.Ack(published[0].ObservationID); err != nil {
 		t.Fatal(err)
 	}
-	if err := reopened.step(context.Background(), publish); err != nil {
+	if err := reopened.step(context.Background(), publish, publishUnchanged); err != nil {
 		t.Fatal(err)
 	}
 	if len(published) != 3 || published[2].PreviousAddress != "8.8.4.4" || published[2].Address != "1.1.1.1" {
 		t.Fatalf("next change = %#v", published)
+	}
+}
+
+func TestMonitorPersistsFastUnchangedReconciliation(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "ip-state.json")
+	observer := &sequenceObserver{values: []string{"8.8.8.8"}}
+	monitor, err := OpenMonitor(filePath, observer, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+	monitor.now = func() time.Time { return now }
+	noObservation := func(protocol.IPObservationBody) error { return nil }
+	unchanged := []protocol.ChangeIPUnchangedBody{}
+	publishUnchanged := func(event protocol.ChangeIPUnchangedBody) error {
+		unchanged = append(unchanged, event)
+		return nil
+	}
+	if err := monitor.step(context.Background(), noObservation, publishUnchanged); err != nil {
+		t.Fatal(err)
+	}
+	commandID := "123e4567-e89b-42d3-a456-426614174000"
+	if err := monitor.ArmChange(commandID, "8.8.8.8", now); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(5 * time.Minute)
+	for index := 0; index < 3; index++ {
+		if err := monitor.step(context.Background(), noObservation, publishUnchanged); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Minute)
+	}
+	if len(unchanged) != 1 || unchanged[0].CommandID != commandID || unchanged[0].Address != "8.8.8.8" {
+		t.Fatalf("unchanged events = %#v", unchanged)
+	}
+	reopened, err := OpenMonitor(filePath, observer, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.AckUnchanged(commandID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMonitorArmsBeforeInitialCycleAndObservesChangedAddress(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "ip-state.json")
+	observer := &sequenceObserver{values: []string{"8.8.4.4"}}
+	monitor, err := OpenMonitor(filePath, observer, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+	monitor.now = func() time.Time { return now }
+	commandID := "123e4567-e89b-42d3-a456-426614174000"
+	if err := monitor.ArmChange(commandID, "8.8.8.8", now); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(46 * time.Minute)
+	observed := []protocol.IPObservationBody{}
+	unchanged := []protocol.ChangeIPUnchangedBody{}
+	if err := monitor.step(
+		context.Background(),
+		func(event protocol.IPObservationBody) error {
+			observed = append(observed, event)
+			return nil
+		},
+		func(event protocol.ChangeIPUnchangedBody) error {
+			unchanged = append(unchanged, event)
+			return nil
+		},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(unchanged) != 0 {
+		t.Fatalf("changed address produced an unchanged result: %#v", unchanged)
+	}
+	if len(observed) != 1 || observed[0].PreviousAddress != "8.8.8.8" || observed[0].Address != "8.8.4.4" {
+		t.Fatalf("observed events = %#v", observed)
 	}
 }

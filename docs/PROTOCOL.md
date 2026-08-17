@@ -53,9 +53,9 @@ Agent 只有在当前时间已达到 `not_before`、尚未到 `expires_at` 且�
 
 ### `changeip.execute`
 
-payload 只包含 `expected_ipv4`。Agent 在调用 provider 前观察当前公网 IPv4：不匹配时返回 `stale_expected_ipv4`，不执行 provider。provider 使用本机配置中的固定 `program` 与 `args`，其 stdout/stderr 不进入协议或日志。
+payload 只包含 `expected_ipv4`。Agent 在调用 provider 前观察当前公网 IPv4：不匹配时返回 `stale_expected_ipv4`，不执行 provider。Agent 先持久化 command 与该旧 IP 的核对状态，再调用本机固定 provider；stdout/stderr 不进入协议或日志。
 
-provider 零退出返回成功终态 `change_triggered`，其中只有触发前 IPv4；它不宣称地址已经变化。常驻 IPv4 monitor 是唯一的变化观察器，后续以 `ip.observed` 让 AkastrCloud 在业务 session 内收敛成功或超时。其他稳定 code 包括 `stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero`、`timed_out`、`cancelled`、`local_conflict` 和状态恢复相关错误。
+HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或请求建立前失败是明确失败。固定程序 provider 以退出码 `0` 为明确成功、非零为明确失败。明确成功返回 `change_triggered`；请求可能已送达但响应、进程或 WSS 因断网中断时返回 `change_trigger_unknown`。两种成功终态都只包含触发前 IPv4，不宣称地址已经变化，也不会重发 provider。其他对外稳定 code 包括 `http_status_not_200`、`request_failed`、`stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero`、`local_conflict` 和状态恢复相关错误。
 
 ### `ipquality.execute`
 
@@ -71,11 +71,17 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 有效 `https://report.check.place/...` URL 加成功 postflight 是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
 
-## 自然 IPv4 事件
+## ChangeIP 与 IPv4 核对
 
-`ip.observed` 表示一次自然 IPv4 变化，包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。首次观察只建立本地 baseline，不产生消息。
+`ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。首次观察只建立本地 baseline，不产生消息。活动 ChangeIP 中观察到新 IP 时，消息可以先于 `operation.result` 到达；AkastrCloud 以已 `accepted`、`succeeded` 或 `expired` 的相同 command 收敛 session，因此断网不会把该变化误判成自然变化。
 
-Agent 在本地只保留一个 pending transition，收到相同 `observation_id` 且 `persisted=true` 的 `ip.observed_ack` 后才清除；连接不可用时会继续保留并在重连后重发。AkastrCloud 随后应用既有私聊订阅条件并重置该 IP 代际的 IPQuality 缓存。协议没有 Telegram channel delivery。
+若五分钟宽限后连续三次成功观察仍是触发前 IP，Agent 发送 `changeip.unchanged`，body 必须且只能包含 `command_id`、`address` 和 `observed_at`。网络失败不计确认次数。AkastrCloud 持久接纳后返回 `changeip.unchanged_ack`，body 为相同 `command_id` 和 `persisted=true`；45 分钟兜底只属于 Cloud 业务 session。
+
+Agent 在本地只保留一个待确认 IPv4 事件。`ip.observed` 由相同 `observation_id` 的 `ip.observed_ack` 清除，`changeip.unchanged` 由相同 command ID 的 ack 清除；连接不可用时跨重连和进程重启重发。AkastrCloud 对已成功或未变化的 session 只投影一次终态；没有 Agent 快速结果时，业务 session 仍在 45 分钟到期时收敛。
+
+## 自然 IPv4 变化
+
+没有活动 ChangeIP session 的 `ip.observed` 是自然变化。AkastrCloud 应用既有私聊订阅条件并重置该 IP 代际的 IPQuality 缓存；协议没有 Telegram channel delivery。
 
 ## 安全边界
 

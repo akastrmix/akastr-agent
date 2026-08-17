@@ -32,15 +32,16 @@ func (e *blockingExecutor) Execute(context.Context, protocol.OperationOffer) pro
 
 type failingObservationSource struct{}
 
-func (failingObservationSource) Run(context.Context, func(protocol.IPObservationBody) error) error {
+func (failingObservationSource) Run(context.Context, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
 	return errors.New("observation state failed")
 }
 
-func (failingObservationSource) Ack(string) error { return nil }
+func (failingObservationSource) Ack(string) error          { return nil }
+func (failingObservationSource) AckUnchanged(string) error { return nil }
 
 type nilObservationSource struct{}
 
-func (*nilObservationSource) Run(context.Context, func(protocol.IPObservationBody) error) error {
+func (*nilObservationSource) Run(context.Context, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
 	return nil
 }
 
@@ -93,7 +94,8 @@ func TestFatalObservationErrorStopsClient(t *testing.T) {
 	}
 }
 
-func (*nilObservationSource) Ack(string) error { return nil }
+func (*nilObservationSource) Ack(string) error          { return nil }
+func (*nilObservationSource) AckUnchanged(string) error { return nil }
 
 func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 	var observations *nilObservationSource

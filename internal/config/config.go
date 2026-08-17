@@ -160,6 +160,9 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 	}
 	if capabilities.ChangeIP.Enabled {
 		enabled++
+		if !capabilities.IPWatch.Enabled {
+			return errors.New("capabilities.change_ip requires capabilities.ip_watch")
+		}
 		if err := validateAbsoluteLinuxPath("capabilities.change_ip.program", capabilities.ChangeIP.Program); err != nil {
 			return err
 		}

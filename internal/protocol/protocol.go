@@ -80,6 +80,17 @@ type IPObservationAckBody struct {
 	Persisted     bool   `json:"persisted"`
 }
 
+type ChangeIPUnchangedBody struct {
+	CommandID  string `json:"command_id"`
+	Address    string `json:"address"`
+	ObservedAt string `json:"observed_at"`
+}
+
+type ChangeIPUnchangedAckBody struct {
+	CommandID string `json:"command_id"`
+	Persisted bool   `json:"persisted"`
+}
+
 func Encode(messageType string, body any) ([]byte, error) {
 	bodyJSON, err := json.Marshal(body)
 	if err != nil {

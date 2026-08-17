@@ -9,7 +9,9 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/operation"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
 	changecommand "github.com/akastrmix/akastr-agent/internal/providers/changeip/command"
+	changehttp "github.com/akastrmix/akastr-agent/internal/providers/changeip/httpcurl"
 	qualityscript "github.com/akastrmix/akastr-agent/internal/providers/ipquality/script"
 )
 
@@ -44,17 +46,25 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 		}
 	}
 	if model.Config.Capabilities.ChangeIP.Enabled {
-		provider, err := changecommand.New(changecommand.Config{
-			Program: model.Config.Capabilities.ChangeIP.Program,
-			Args:    model.Config.Capabilities.ChangeIP.Args,
-			Timeout: time.Duration(model.Config.Capabilities.ChangeIP.TimeoutSeconds) * time.Second,
-		})
+		cfg := model.Config.Capabilities.ChangeIP
+		var provider changeprovider.Provider
+		if cfg.Program == "/usr/bin/curl" && len(cfg.Args) == 2 && cfg.Args[0] == "--config" && cfg.Args[1] == "/etc/akastr-agent/changeip-curl.conf" {
+			provider, err = changehttp.New(changehttp.Config{
+				Program: cfg.Program, ConfigFile: cfg.Args[1],
+				Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
+			})
+		} else {
+			provider, err = changecommand.New(changecommand.Config{
+				Program: cfg.Program, Args: cfg.Args,
+				Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
+			})
+		}
 		if err != nil {
 			return nil, err
 		}
 		runtime.changeIP = changefeature.New(
-			engine, observer, provider,
-			time.Duration(model.Config.Capabilities.ChangeIP.ObserveTimeoutSeconds)*time.Second,
+			engine, observer, provider, runtime.ipMonitor,
+			time.Duration(cfg.ObserveTimeoutSeconds)*time.Second,
 		)
 	}
 	if model.Config.Capabilities.IPQualityRunner.Enabled {

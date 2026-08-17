@@ -21,7 +21,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 目标节点参数包括：
 
 - 公网 IPv4 定时观察；
-- HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；
+- HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
 - 不含凭据的 SOCKS5 端口描述；代理地址始终使用 Agent 观测到的公网 IPv4。
 
 Runner 可配置 1–128 个以 server key 索引的 SOCKS5 credential profile。安装器固定下载官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) commit `0ee5f192fed70c04615852efba0e4b8bd43546c7`，自动校验并把并发严格固定为 `max_concurrency=1`。
@@ -46,7 +46,7 @@ AkastrCloud 负责业务编排：
 
 IPQuality 的“每天一次”按 `Asia/Hong_Kong` 日历日计算；超过一次直接读取当天缓存。香港时间 `00:00` 或目标节点观测到 IPv4 改变时，主控开启新的缓存代际。此规则由 AkastrCloud 执行，重装 Agent 不能绕过。
 
-ChangeIP provider 零退出只表示触发成功；唯一的常驻 IPv4 monitor 负责上报实际变化，由 AkastrCloud 在 45 分钟 session 内收敛终态。ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令或 HTTP-flow ChangeIP。
+ChangeIP 的 provider 结果只描述“触发请求”，不宣称地址已经改变。触发响应在断网中丢失时，Agent 将结果记为未知而不重发；唯一的常驻 IPv4 monitor 持久关联 command，实际出现新 IP 就上报变化，五分钟后连续三次仍观察到旧 IP 就上报未变化，AkastrCloud 另保留 45 分钟 session 兜底。ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令或浏览器 HTTP-flow ChangeIP。
 
 ## 文档
 
@@ -87,14 +87,13 @@ go vet ./...
 go build ./cmd/akastr-agent
 ```
 
-每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建和 shell 语法检查。正式发布只需从已经验证并合入 `main` 的提交创建并推送语义化版本标签：
+每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建和 shell 语法检查。正式版本不在本仓库手工拆成“打标签”和“再改 Cloud”两次操作；唯一入口位于 AkastrCloud 仓库：
 
-```bash
-git tag -a vX.Y.Z -m "Akastr Agent vX.Y.Z"
-git push origin vX.Y.Z
+```powershell
+.\release.cmd agent -AgentVersion vX.Y.Z -Execute
 ```
 
-标签必须严格符合 `vX.Y.Z`。发布工作流会再次运行完整验证，只构建 Linux amd64 binary 与该版本 `install.sh`，验证版本、架构和资产集合后，自动创建 GitHub Release。构建或验证失败时不会创建 Release，也不会覆盖已经发布的同名版本；每个已发布下载地址保持不可变。
+该命令要求两个仓库都位于 `main`、已经提交且工作树干净；它验证双方协议与 Agent 源码，直接推送 Agent `main`，创建并验证 `vX.Y.Z` 标签，等待 GitHub Actions 发布不可变的 Linux amd64 binary 与版本专用 `install.sh`，再把精确版本、URL 和内部摘要提交到 Cloud，并调用正常 backend 发布。流程不创建 PR；同一版本和 commit 可在中断后直接重跑，已发布资产不会被覆盖。
 
 本地排查发布构建时可以运行：
 
@@ -113,4 +112,4 @@ install.sh
 
 `install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件只提供可重复的 `--install`、只读 `--status` 和显式确认的 `--uninstall`。
 
-GitHub Release 与节点自动更新仍是两项独立操作。Release 成功不会触发节点；只有 AkastrCloud 的生产 release 显式固定相同 WSS 协议、版本、下载地址和内部 digest 后，主进程的六小时循环才会看到该版本。WSS/auth/config 的破坏性版本继续走维护 Gate，不自动跨协议升级。
+GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的六小时循环才会看到该版本。WSS/auth/config 的破坏性版本继续走维护 Gate，不自动跨协议升级。

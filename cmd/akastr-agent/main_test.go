@@ -41,7 +41,7 @@ func TestCheckConfigValidatesRuntimeDependencies(t *testing.T) {
   "ip_state_file": "/tmp/akastr-agent-test-ip-state.json",
   "recent_operation_limit": 16,
   "capabilities": {
-    "ip_watch": {"enabled": false},
+    "ip_watch": {"enabled": true, "interval_seconds": 60, "observe_ipv6": false},
     "change_ip": {
       "enabled": true,
       "program": "/definitely/missing/akastr-changeip",

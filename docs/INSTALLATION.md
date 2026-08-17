@@ -173,7 +173,9 @@ Agent 只维护 `current` release，不提供 `--update` 或本地回退 CLI。�
 | bootstrap 返回 403 | 机器 token 已轮换、节点已删除或 UUID 不匹配；回后台重新取得有效命令 |
 | bootstrap authentication failed | 密文、token 或 UUID 不匹配；停止操作，不要尝试绕过认证 |
 | `check-config` 报 ChangeIP program | 程序不存在、不是 regular file 或不可执行；先修复固定 provider |
-| `change_triggered` | provider 已成功触发；主控继续等待常驻 IPv4 monitor 上报变化 |
+| `change_triggered` | HTTP provider 收到 `200`，或固定程序退出 `0`；只确认触发，主控继续等待公网 IP 事实 |
+| `change_trigger_unknown` | 换 IP 可能让响应、进程或 WSS 提前断开；Agent 不重发 provider，恢复后由常驻 IPv4 monitor 收敛 |
+| `http_status_not_200` / `exited_nonzero` | 服务商返回非 `200`，或固定程序非零退出；先修复 provider，Agent 不把它当成已触发 |
 | IPQuality 脚本校验失败 | 停止安装；不要更改 checksum 或使用浮动在线脚本 |
 | `proxy_profile_not_found` | Runner 未配置该目标 server key；删除后按完整 profile 重新添加 Runner 节点 |
 | `proxy_preflight_failed` / `proxy_postflight_failed` | 检查目标 SOCKS5 host、端口、凭据和代理稳定性，不要打印密码 |
@@ -187,13 +189,12 @@ Agent 只维护 `current` release，不提供 `--update` 或本地回退 CLI。�
 
 ## 9. 维护者发布版本
 
-普通 `main` 提交和 Pull Request 会自动执行测试、静态检查、构建与安装脚本语法检查，但不会发布文件。确认某个 `main` 提交可以发布后，只需创建并推送一个新的语义化标签：
+普通 `main` 提交和 Pull Request 会自动执行测试、静态检查、构建与安装脚本语法检查，但不会发布文件。正式发布从 AkastrCloud 仓库执行唯一同步入口：
 
-```bash
-git tag -a vX.Y.Z -m "Akastr Agent vX.Y.Z"
-git push origin vX.Y.Z
+```powershell
+.\release.cmd agent -AgentVersion vX.Y.Z -Execute
 ```
 
-GitHub Actions 会从标签对应的源码重新验证，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`，核对 binary 的 Linux amd64 架构、内嵌版本、资产集合和脚本语法，然后自动创建 GitHub Release。任一步失败都不会发布；已存在的 Release 不允许由工作流覆盖或替换。
+两个仓库都必须位于 `main`、已经提交且工作树干净。同步发布器验证双方协议与 Agent 源码，直接推送 Agent `main` 和语义化标签；GitHub Actions 从标签重新验证，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`。发布器验真两个不可变资产后，自动提交 Cloud 的精确更新目标并执行正常 backend 发布。流程不创建 PR；同一 tag 与 commit 可在中断后直接重跑，已存在的 Release 不允许覆盖或替换。
 
-每个版本使用独立的 `releases/download/vX.Y.Z/...` 地址。Release 发布本身不会更新节点；维护者还必须在一次批准的 AkastrCloud 发布中固定目标版本、相同 WSS 协议、精确 immutable binary URL 与内部完整性值。该 Cloud release 生效后，主进程的六小时循环才会收到 `update_available`；系统不跟随 GitHub `latest`。发布动作不会创建节点或触发 ChangeIP/IPQuality。
+每个版本使用独立的 `releases/download/vX.Y.Z/...` 地址。只有同步流程中的 Cloud backend 激活成功，主进程的六小时循环才会收到 `update_available`；系统不跟随 GitHub `latest`。发布动作不会创建节点或触发 ChangeIP/IPQuality。
