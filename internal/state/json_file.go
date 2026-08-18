@@ -12,12 +12,13 @@ import (
 )
 
 type JSONFile struct {
-	path string
-	mu   sync.Mutex
+	path          string
+	mu            sync.Mutex
+	syncDirectory func(string) error
 }
 
 func NewJSONFile(path string) *JSONFile {
-	return &JSONFile{path: path}
+	return &JSONFile{path: path, syncDirectory: syncDirectory}
 }
 
 func (f *JSONFile) Load(destination any) (bool, error) {
@@ -91,7 +92,7 @@ func (f *JSONFile) Save(value any) error {
 	}
 	keepTemporary = false
 
-	return syncDirectory(directory)
+	return f.syncDirectory(directory)
 }
 
 func (f *JSONFile) Remove() error {
@@ -101,7 +102,7 @@ func (f *JSONFile) Remove() error {
 	if err := os.Remove(f.path); err != nil {
 		return fmt.Errorf("remove state file: %w", err)
 	}
-	return syncDirectory(filepath.Dir(f.path))
+	return f.syncDirectory(filepath.Dir(f.path))
 }
 
 func syncDirectory(directory string) error {

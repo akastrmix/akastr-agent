@@ -1,0 +1,289 @@
+{
+  "schema": "akastr-agent-protocol-fixtures.v1",
+  "protocol": "2026-08-18.v4",
+  "golden": [
+    {
+      "name": "cloud-auth-challenge",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174100",
+        "type": "auth.challenge",
+        "sent_at": "2026-08-18T00:00:00.000Z",
+        "body": {
+          "challenge_id": "123e4567-e89b-42d3-a456-426614174101",
+          "agent_id": "123e4567-e89b-42d3-a456-426614174102",
+          "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "issued_at": "2026-08-18T00:00:00.000Z",
+          "expires_at": "2026-08-18T00:00:15.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-changeip-offer",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174103",
+        "type": "operation.offer",
+        "sent_at": "2026-08-18T00:00:01.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174104",
+          "command_type": "changeip.execute",
+          "payload_version": 1,
+          "payload": {
+            "expected_ipv4": "8.8.8.8"
+          },
+          "not_before": "2026-08-18T00:00:00.000Z",
+          "expires_at": "2026-08-18T00:45:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-ipquality-offer",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174105",
+        "type": "operation.offer",
+        "sent_at": "2026-08-18T00:00:02.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174106",
+          "command_type": "ipquality.execute",
+          "payload_version": 1,
+          "payload": {
+            "expected_ipv4": "8.8.4.4",
+            "proxy_port": 1080,
+            "proxy_profile_id": "hkt",
+            "script_version": "2026.08.18"
+          },
+          "not_before": "2026-08-18T00:00:00.000Z",
+          "expires_at": "2026-08-18T06:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-operation-accepted-ack",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174107",
+        "type": "operation.accepted_ack",
+        "sent_at": "2026-08-18T00:00:03.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174104",
+          "accepted": true
+        }
+      }
+    },
+    {
+      "name": "agent-auth-response",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174108",
+        "type": "auth.response",
+        "sent_at": "2026-08-18T00:00:04.000Z",
+        "body": {
+          "agent_id": "123e4567-e89b-42d3-a456-426614174102",
+          "challenge_id": "123e4567-e89b-42d3-a456-426614174101",
+          "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }
+      }
+    },
+    {
+      "name": "agent-hello",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174109",
+        "type": "agent.hello",
+        "sent_at": "2026-08-18T00:00:05.000Z",
+        "body": {
+          "agent_version": "v1.0.1",
+          "capabilities": [
+            {
+              "name": "ip.observe",
+              "version": 1,
+              "properties": {
+                "interval_seconds": "60",
+                "observe_ipv6": "false"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "agent-operation-result",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174110",
+        "type": "operation.result",
+        "sent_at": "2026-08-18T00:00:06.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174104",
+          "outcome": "succeeded",
+          "code": "change_triggered",
+          "result": {
+            "old_ipv4": "8.8.8.8",
+            "observed_at": "2026-08-18T00:00:06.000Z"
+          }
+        }
+      }
+    },
+    {
+      "name": "agent-ip-observed",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174111",
+        "type": "ip.observed",
+        "sent_at": "2026-08-18T00:00:07.000Z",
+        "body": {
+          "observation_id": "123e4567-e89b-42d3-a456-426614174112",
+          "family": "ipv4",
+          "previous_address": "8.8.8.8",
+          "address": "8.8.4.4",
+          "observed_at": "2026-08-18T00:00:07.000Z"
+        }
+      }
+    }
+  ],
+  "malformed": [
+    {
+      "name": "cloud-changeip-offer-missing-expected-ipv4",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174113",
+        "type": "operation.offer",
+        "sent_at": "2026-08-18T00:00:08.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174114",
+          "command_type": "changeip.execute",
+          "payload_version": 1,
+          "payload": {},
+          "not_before": "2026-08-18T00:00:00.000Z",
+          "expires_at": "2026-08-18T00:45:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-ipquality-offer-with-target-server-id",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174115",
+        "type": "operation.offer",
+        "sent_at": "2026-08-18T00:00:09.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174116",
+          "command_type": "ipquality.execute",
+          "payload_version": 1,
+          "payload": {
+            "expected_ipv4": "8.8.4.4",
+            "proxy_port": 1080,
+            "proxy_profile_id": "hkt",
+            "script_version": "2026.08.18",
+            "target_server_id": "123e4567-e89b-42d3-a456-426614174117"
+          },
+          "not_before": "2026-08-18T00:00:00.000Z",
+          "expires_at": "2026-08-18T06:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-accepted-ack-missing-accepted",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174118",
+        "type": "operation.accepted_ack",
+        "sent_at": "2026-08-18T00:00:10.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174104"
+        }
+      }
+    },
+    {
+      "name": "cloud-auth-challenge-padded-nonce",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174119",
+        "type": "auth.challenge",
+        "sent_at": "2026-08-18T00:00:11.000Z",
+        "body": {
+          "challenge_id": "123e4567-e89b-42d3-a456-426614174120",
+          "agent_id": "123e4567-e89b-42d3-a456-426614174102",
+          "nonce": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+          "issued_at": "2026-08-18T00:00:11.000Z",
+          "expires_at": "2026-08-18T00:00:26.000Z"
+        }
+      }
+    },
+    {
+      "name": "agent-auth-response-padded-signature",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174121",
+        "type": "auth.response",
+        "sent_at": "2026-08-18T00:00:12.000Z",
+        "body": {
+          "agent_id": "123e4567-e89b-42d3-a456-426614174102",
+          "challenge_id": "123e4567-e89b-42d3-a456-426614174101",
+          "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        }
+      }
+    },
+    {
+      "name": "agent-ip-observed-missing-observed-at",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174122",
+        "type": "ip.observed",
+        "sent_at": "2026-08-18T00:00:13.000Z",
+        "body": {
+          "observation_id": "123e4567-e89b-42d3-a456-426614174123",
+          "family": "ipv4",
+          "previous_address": "8.8.8.8",
+          "address": "8.8.4.4"
+        }
+      }
+    },
+    {
+      "name": "agent-result-extra-field",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-18.v4",
+        "message_id": "123e4567-e89b-42d3-a456-426614174124",
+        "type": "operation.result",
+        "sent_at": "2026-08-18T00:00:14.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174104",
+          "outcome": "succeeded",
+          "code": "change_triggered",
+          "result": {},
+          "target_server_id": "123e4567-e89b-42d3-a456-426614174117"
+        }
+      }
+    },
+    {
+      "name": "agent-message-old-protocol",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-17.v3",
+        "message_id": "123e4567-e89b-42d3-a456-426614174125",
+        "type": "operation.accepted",
+        "sent_at": "2026-08-18T00:00:15.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174104"
+        }
+      }
+    }
+  ]
+}

@@ -210,7 +210,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		if messageType != websocket.MessageText {
 			return errors.New("binary control message rejected")
 		}
-		envelope, err := protocol.Decode(data)
+		envelope, err := protocol.DecodeServerEnvelope(data)
 		if err != nil {
 			return err
 		}
@@ -341,23 +341,34 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 	}); err != nil {
 		return err
 	}
-	if _, err := readEnvelope(ctx, session.connection, "auth.accepted"); err != nil {
+	authAcceptedEnvelope, err := readEnvelope(ctx, session.connection, "auth.accepted")
+	if err != nil {
 		return err
+	}
+	authAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](authAcceptedEnvelope)
+	if err != nil || authAccepted.AgentID != c.identity.AgentID {
+		return errors.New("authentication acknowledgement agent mismatch")
 	}
 	if err := session.write(ctx, "agent.hello", protocol.HelloBody{
 		AgentVersion: c.version, Capabilities: c.capabilities,
 	}); err != nil {
 		return err
 	}
-	_, err = readEnvelope(ctx, session.connection, "hello.accepted")
-	return err
+	helloAcceptedEnvelope, err := readEnvelope(ctx, session.connection, "hello.accepted")
+	if err != nil {
+		return err
+	}
+	helloAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](helloAcceptedEnvelope)
+	if err != nil || helloAccepted.AgentID != c.identity.AgentID {
+		return errors.New("hello acknowledgement agent mismatch")
+	}
+	return nil
 }
 
 func (c *Client) acceptOffer(ctx context.Context, session *session, offer protocol.OperationOffer) error {
 	now := time.Now()
 	recovery := c.executor.KnownOperation(offer.CommandID, offer.CommandType)
-	if !protocol.ValidUUID(offer.CommandID) || offer.PayloadVersion != 1 ||
-		!offerWindowAllows(offer, now, recovery) || len(offer.Payload) == 0 {
+	if protocol.ValidateOperationOffer(offer) != nil || !offerWindowAllows(offer, now, recovery) {
 		return errors.New("operation offer is invalid")
 	}
 	c.mu.Lock()
@@ -486,7 +497,7 @@ func readEnvelope(ctx context.Context, connection *websocket.Conn, expectedType 
 	if messageType != websocket.MessageText {
 		return protocol.Envelope{}, errors.New("binary control message rejected")
 	}
-	envelope, err := protocol.Decode(data)
+	envelope, err := protocol.DecodeServerEnvelope(data)
 	if err != nil {
 		return protocol.Envelope{}, err
 	}

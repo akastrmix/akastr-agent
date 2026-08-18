@@ -1,12 +1,10 @@
 package ipqualityrunner
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/operation"
@@ -61,14 +59,8 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 }
 
 func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
-	var payload protocol.IPQualityPayload
-	decoder := json.NewDecoder(bytes.NewReader(offer.Payload))
-	decoder.DisallowUnknownFields()
-	if decoder.Decode(&payload) != nil {
-		return h.failure("payload_invalid", "", "", "")
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+	payload, err := protocol.DecodeIPQualityPayload(offer.Payload)
+	if err != nil {
 		return h.failure("payload_invalid", "", "", "")
 	}
 	if payload.ScriptVersion != h.scriptVersion {

@@ -9,11 +9,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
+	"github.com/akastrmix/akastr-agent/internal/netpolicy"
 )
 
 const (
@@ -22,7 +24,10 @@ const (
 	MaxMessage  = 64 * 1024
 )
 
-var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var (
+	canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+	stableToken   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+)
 
 type Envelope struct {
 	Protocol  string          `json:"protocol"`
@@ -38,6 +43,10 @@ type AuthChallenge struct {
 	Nonce       string `json:"nonce"`
 	IssuedAt    string `json:"issued_at"`
 	ExpiresAt   string `json:"expires_at"`
+}
+
+type AgentIDBody struct {
+	AgentID string `json:"agent_id"`
 }
 
 type OperationOffer struct {
@@ -129,23 +138,166 @@ func Decode(data []byte) (Envelope, error) {
 	if envelope.Protocol != Version {
 		return Envelope{}, errors.New("unsupported protocol version")
 	}
-	if !canonicalUUID.MatchString(envelope.MessageID) || envelope.SentAt.IsZero() || len(envelope.Body) == 0 {
+	if !canonicalUUID.MatchString(envelope.MessageID) || envelope.Type == "" ||
+		envelope.SentAt.IsZero() || len(envelope.Body) == 0 {
 		return Envelope{}, errors.New("invalid protocol envelope")
 	}
 	return envelope, nil
 }
 
+// DecodeServerEnvelope validates the complete Cloud-to-Agent message before it
+// can affect connection or operation state. Every field in the current wire
+// contract is required; no zero-value fallback is accepted.
+func DecodeServerEnvelope(data []byte) (Envelope, error) {
+	envelope, err := Decode(data)
+	if err != nil {
+		return Envelope{}, err
+	}
+	switch envelope.Type {
+	case "auth.challenge":
+		body, decodeError := decodeRequiredBody[AuthChallenge](
+			envelope, "challenge_id", "agent_id", "nonce", "issued_at", "expires_at",
+		)
+		if decodeError == nil {
+			_, decodeError = AuthSigningText(body)
+		}
+		err = decodeError
+	case "auth.accepted", "hello.accepted":
+		body, decodeError := decodeRequiredBody[AgentIDBody](envelope, "agent_id")
+		if decodeError == nil && !ValidUUID(body.AgentID) {
+			decodeError = errors.New("invalid Agent acknowledgement identifier")
+		}
+		err = decodeError
+	case "operation.offer":
+		body, decodeError := decodeRequiredBody[OperationOffer](
+			envelope,
+			"command_id", "command_type", "payload_version", "payload", "not_before", "expires_at",
+		)
+		if decodeError == nil {
+			decodeError = ValidateOperationOffer(body)
+		}
+		err = decodeError
+	case "operation.accepted_ack":
+		body, decodeError := decodeRequiredBody[AcceptedAckBody](envelope, "command_id", "accepted")
+		if decodeError == nil && !ValidUUID(body.CommandID) {
+			decodeError = errors.New("invalid accepted acknowledgement identifier")
+		}
+		err = decodeError
+	case "operation.result_ack":
+		body, decodeError := decodeRequiredBody[ResultAckBody](envelope, "command_id", "persisted")
+		if decodeError == nil && !ValidUUID(body.CommandID) {
+			decodeError = errors.New("invalid result acknowledgement identifier")
+		}
+		err = decodeError
+	case "ip.snapshot_ack":
+		body, decodeError := decodeRequiredBody[IPSnapshotAckBody](envelope, "snapshot_id", "persisted")
+		if decodeError == nil && !ValidUUID(body.SnapshotID) {
+			decodeError = errors.New("invalid IP snapshot acknowledgement identifier")
+		}
+		err = decodeError
+	case "ip.observed_ack":
+		body, decodeError := decodeRequiredBody[IPObservationAckBody](envelope, "observation_id", "persisted")
+		if decodeError == nil && !ValidUUID(body.ObservationID) {
+			decodeError = errors.New("invalid IP observation acknowledgement identifier")
+		}
+		err = decodeError
+	case "changeip.unchanged_ack":
+		body, decodeError := decodeRequiredBody[ChangeIPUnchangedAckBody](envelope, "command_id", "persisted")
+		if decodeError == nil && !ValidUUID(body.CommandID) {
+			decodeError = errors.New("invalid ChangeIP acknowledgement identifier")
+		}
+		err = decodeError
+	default:
+		err = fmt.Errorf("unsupported server message type %q", envelope.Type)
+	}
+	if err != nil {
+		return Envelope{}, fmt.Errorf("validate %s body: %w", envelope.Type, err)
+	}
+	return envelope, nil
+}
+
 func DecodeBody[T any](envelope Envelope) (T, error) {
+	return decodeJSONBody[T](envelope.Body, envelope.Type)
+}
+
+func decodeRequiredBody[T any](envelope Envelope, fields ...string) (T, error) {
+	return decodeRequiredJSON[T](envelope.Body, envelope.Type, fields...)
+}
+
+func decodeRequiredJSON[T any](data []byte, description string, fields ...string) (T, error) {
 	var result T
-	decoder := json.NewDecoder(bytes.NewReader(envelope.Body))
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(data, &object); err != nil || object == nil || len(object) != len(fields) {
+		return result, fmt.Errorf("decode %s body: required fields are missing", description)
+	}
+	for _, field := range fields {
+		if _, found := object[field]; !found {
+			return result, fmt.Errorf("decode %s body: required field %s is missing", description, field)
+		}
+	}
+	return decodeJSONBody[T](data, description)
+}
+
+func decodeJSONBody[T any](data []byte, description string) (T, error) {
+	var result T
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&result); err != nil {
-		return result, fmt.Errorf("decode %s body: %w", envelope.Type, err)
+		return result, fmt.Errorf("decode %s body: %w", description, err)
 	}
 	if err := requireEOF(decoder); err != nil {
 		return result, err
 	}
 	return result, nil
+}
+
+func ValidateOperationOffer(offer OperationOffer) error {
+	if !ValidUUID(offer.CommandID) || offer.PayloadVersion != 1 ||
+		offer.NotBefore.IsZero() || offer.ExpiresAt.IsZero() ||
+		!offer.ExpiresAt.After(offer.NotBefore) || len(offer.Payload) == 0 {
+		return errors.New("operation offer is invalid")
+	}
+	switch offer.CommandType {
+	case "changeip.execute":
+		_, err := DecodeChangeIPPayload(offer.Payload)
+		return err
+	case "ipquality.execute":
+		_, err := DecodeIPQualityPayload(offer.Payload)
+		return err
+	default:
+		return errors.New("operation type is unsupported")
+	}
+}
+
+func DecodeChangeIPPayload(data []byte) (ChangeIPPayload, error) {
+	payload, err := decodeRequiredJSON[ChangeIPPayload](data, "changeip.execute payload", "expected_ipv4")
+	if err != nil {
+		return ChangeIPPayload{}, err
+	}
+	if !publicIPv4(payload.ExpectedIPv4) {
+		return ChangeIPPayload{}, errors.New("changeip.execute expected IPv4 is invalid")
+	}
+	return payload, nil
+}
+
+func DecodeIPQualityPayload(data []byte) (IPQualityPayload, error) {
+	payload, err := decodeRequiredJSON[IPQualityPayload](
+		data, "ipquality.execute payload",
+		"expected_ipv4", "proxy_port", "proxy_profile_id", "script_version",
+	)
+	if err != nil {
+		return IPQualityPayload{}, err
+	}
+	if !publicIPv4(payload.ExpectedIPv4) || payload.ProxyPort < 1 || payload.ProxyPort > 65535 ||
+		!stableToken.MatchString(payload.ProxyProfileID) || !stableToken.MatchString(payload.ScriptVersion) {
+		return IPQualityPayload{}, errors.New("ipquality.execute payload is invalid")
+	}
+	return payload, nil
+}
+
+func publicIPv4(value string) bool {
+	address, err := netip.ParseAddr(value)
+	return err == nil && netpolicy.IsPublicIPv4(address)
 }
 
 func ValidUUID(value string) bool {

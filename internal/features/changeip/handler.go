@@ -1,12 +1,10 @@
 package changeip
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
@@ -80,8 +78,8 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 }
 
 func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
-	var payload protocol.ChangeIPPayload
-	if err := decodeExact(offer.Payload, &payload); err != nil {
+	payload, err := protocol.DecodeChangeIPPayload(offer.Payload)
+	if err != nil {
 		return failure("payload_invalid", nil, time.Now().UTC())
 	}
 	observeContext, cancelObserve := context.WithTimeout(ctx, h.observeTimeout)
@@ -130,17 +128,4 @@ func changeResult(oldIPv4 *string, observedAt time.Time) map[string]any {
 	return map[string]any{
 		"old_ipv4": oldIPv4, "observed_at": observedAt.UTC().Format(time.RFC3339Nano),
 	}
-}
-
-func decodeExact(data []byte, destination any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errors.New("payload contains trailing JSON")
-	}
-	return nil
 }

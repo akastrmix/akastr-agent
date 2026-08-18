@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,5 +49,21 @@ func TestJSONFileMissingIsNotAnError(t *testing.T) {
 	found, err := NewJSONFile(filepath.Join(t.TempDir(), "missing.json")).Load(&loaded)
 	if err != nil || found {
 		t.Fatalf("Load() = %v, %v", found, err)
+	}
+}
+
+func TestJSONFilePropagatesDirectorySyncFailure(t *testing.T) {
+	want := errors.New("directory fsync failed")
+	path := filepath.Join(t.TempDir(), "state.json")
+	file := NewJSONFile(path)
+	file.syncDirectory = func(string) error { return want }
+	if err := file.Save(testState{SchemaVersion: 1, Value: "durable"}); !errors.Is(err, want) {
+		t.Fatalf("Save() error = %v, want %v", err, want)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("renamed state file missing after directory sync failure: %v", err)
+	}
+	if err := file.Remove(); !errors.Is(err, want) {
+		t.Fatalf("Remove() error = %v, want %v", err, want)
 	}
 }
