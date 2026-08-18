@@ -46,7 +46,7 @@ AkastrCloud 负责业务编排：
 
 IPQuality 的“每天一次”按 `Asia/Hong_Kong` 日历日计算；超过一次直接读取当天缓存。香港时间 `00:00` 或目标节点观测到 IPv4 改变时，主控开启新的缓存代际。此规则由 AkastrCloud 执行，重装 Agent 不能绕过。
 
-ChangeIP 的 provider 结果只描述“触发请求”，不宣称地址已经改变。触发响应在断网中丢失时，Agent 将结果记为未知而不重发；唯一的常驻 IPv4 monitor 持久关联 command，实际出现新 IP 就上报变化，五分钟后连续三次仍观察到旧 IP 就上报未变化，AkastrCloud 另保留 45 分钟 session 兜底。ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令或浏览器 HTTP-flow ChangeIP。
+目标节点按动态公网 IPv4、触发 ChangeIP 后可能立即断网、恢复后可能换 IP 也可能保持原 IP 的网络模型运行；provider 结果只描述触发，不直接代表地址已经改变。完整假设与收敛流程见 [目标节点网络模型](docs/ARCHITECTURE.md#3-目标节点网络模型)，消息契约见 [WSS 协议](docs/PROTOCOL.md#changeip-与-ipv4-核对)。ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令或浏览器 HTTP-flow ChangeIP。
 
 ## 文档
 

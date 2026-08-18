@@ -26,7 +26,20 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 协议 `2026-08-16.v3` 使用有效期 15 秒的服务端 nonce，以及绑定上下文、以换行分隔的 Ed25519 签名文本。机器 token 只用于 HTTPS bootstrap 和注册；WSS 与只读更新检查使用有效公钥身份。offer、accept、终态结果、结果确认和自然 IPv4 观察均使用稳定 UUID。消息按至少一次投递，本地日志和数据库唯一约束共同保证执行与结果幂等。
 
-## 3. 包职责
+## 3. 目标节点网络模型
+
+目标节点按动态公网 IPv4 网络设计，而不是按“请求发出后连接保持稳定”的普通 RPC 环境设计。正式支持的运行模型包含以下事实：
+
+- 公网 IPv4 可以在没有 ChangeIP command 时自然变化；此类变化由常驻观察器独立上报。
+- ChangeIP provider 只负责触发服务商或本机网络动作。HTTP `200` 或固定程序退出码 `0` 只证明触发被明确接受，不证明地址已经改变。
+- provider 被触发后，节点可能立即断网，WSS、HTTP 响应或本地进程结果都可能来不及返回。连接中断不能单独解释为执行失败，也不能据此再次调用 provider。
+- 网络恢复后可能获得新 IPv4，也可能仍是原 IPv4。实际结果只由持续的公网 IPv4 观察收敛，不由 provider 返回文本或 WSS 是否及时断开推断。
+- WSS 使用相同本地身份自动重连；command、待确认 IPv4 事件和核对状态先持久化，因此消息可以乱序或跨重启送达，而本地网络动作不会重复执行。
+- 最近一次有效公网 IPv4 同时是 SOCKS5 公布地址的来源，也是 AkastrCloud 划分 IPQuality 缓存代际的依据；未取得有效公网 IPv4 时不应把节点当作可用代理目标。
+
+典型流程是：Cloud 下发 command → Agent 持久化并触发 provider → 节点可能立即断网 → 网络恢复后 WSS 重连 → IPv4 观察器上报新地址，或确认仍为旧地址 → Cloud 收敛原 ChangeIP session。具体消息与核对契约见 [PROTOCOL.md](PROTOCOL.md)；业务等待窗口、冷却、通知和缓存规则由 AkastrCloud 的 Carpool 契约负责。
+
+## 4. 包职责
 
 - `internal/config`：严格读取和验证操作者配置；未知字段直接报错。
 - `internal/capability`：生成确定性且不含秘密的能力描述。
@@ -43,7 +56,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 新增能力只有在行为得到批准后才能实现，并应使用职责单一的同级包。未实现能力不创建目录、空接口或占位协议字段。
 
-## 4. 本地操作状态
+## 5. 本地操作状态
 
 每个可执行操作都有一个 exclusive group。引擎在执行前持久化 active 记录，得到终态后再移动到有界 recent 历史。即使主控调度错误，同一组内的第二个操作也会被本地拒绝。
 
@@ -51,7 +64,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 终态记录只包含重发所需的有界安全结果。进程重启后，遗留的 active 记录继续占用互斥组；Cloud 保留已 accepted command 并在重连后重发相同 offer，即使原执行窗口已结束，Agent 也只对本地相同 command/type 进入恢复。它会被标记为 `interrupted_unknown` 或继续既有 ChangeIP 核对，不会重新执行 provider，然后释放互斥组；recent 终态直接重放。未知过期 command 和未知或损坏的状态 schema都会被拒绝，不会被静默重置。
 
-## 5. 公网 IP 观察
+## 6. 公网 IP 观察
 
 观察器通过固定 HTTPS 来源 `api.ipify.org` 和 Cloudflare trace 获取公网地址，明确按 IPv4 或 IPv6 建立连接，拒绝重定向、非公网地址和过大响应。IPv4 的非公网范围包括 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 
@@ -61,7 +74,7 @@ ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对�
 
 唯一的常驻 IPv4 monitor 随后负责事实判定：观察到新 IP 时持久上报 `ip.observed`；五分钟宽限后连续三次成功观察仍是旧 IP 时持久上报 `changeip.unchanged`。网络或观察源失败不计次数。两类消息在主控确认前都会跨断线和进程重启重发；主控按 command ID 收敛同一 session，且不要求 `operation.result` 必须先到达。45 分钟兜底只由 AkastrCloud session 持有，Agent 不维护第二个业务计时器。
 
-## 6. SOCKS5 与 IPQuality
+## 7. SOCKS5 与 IPQuality
 
 目标节点的 capability metadata 只公布端口，不包含地址来源、主机名、用户名或密码。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 上的凭据位于独立 root-only profile 文件，以 AkastrCloud 的稳定 server key 索引。
 
@@ -71,7 +84,7 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 通过代理运行不等于直接在目标主机运行：依赖 Runner DNS 或直连网络的脚本检查应在验收时识别，并标记或省略。
 
-## 7. 事务安装与自动更新
+## 8. 事务安装与自动更新
 
 后台的一键命令描述节点的期望安装状态，可用于空白主机、覆盖安装和修复。安装器先在临时目录完成 bootstrap、binary、依赖和 Runner 脚本验证；随后严格停止全部 Agent unit，确认均为 inactive，再检查稳定的 operation journal。存在 active 记录就保持原 unit 并中止；空闲时才把配置、状态和 release root 移到有界事务备份，并只写 `akastr-agent.service`。每次 `--install` 都使用机器 token 重新注册公钥，不复制既有 identity 或 state。主控在同一节点存在未完成 command 时拒绝注册；拒绝发生在公钥替换前，因此安装器保持原目录和启停状态。注册请求已经改变主控公钥后，安装器保留新安装；故障修复方式是重跑同一安装命令。
 
@@ -81,6 +94,6 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 唯一主 service 使用 `Type=notify`，只有 WSS 完成 auth、hello 并收到 `hello.accepted` 后才向 systemd 报告 ready。service 使用 `ProtectSystem=strict`，并明确允许写状态目录与 Agent release root。Agent 只维护 `current` release，不提供手工 `--update` 或本地回退 CLI；更新故障由 AkastrCloud 批准修复版本，或由操作者重新运行后台的一键 `--install`。WSS、认证或配置的破坏性版本必须走人工维护 Gate，不能通过自动更新跨协议部署。
 
-## 8. 节点接入边界
+## 9. 节点接入边界
 
 操作者必须从 AkastrCloud 后台生成完整的一键命令，按 [安装与使用教程](INSTALLATION.md) 安装或重装。Agent 不提供 HTTP 控制面；未接入或离线的节点由主控安全拒绝操作。
