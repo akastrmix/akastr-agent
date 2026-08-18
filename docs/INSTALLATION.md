@@ -68,7 +68,7 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 
 不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令以 `mktemp` 创建唯一入口文件，并在子 shell 退出时自动删除；wget 使用 `--no-hsts`，不会创建或更新用户级 HSTS 数据库。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证，但可重新下载密封配置并为重装后的主机注册新公钥。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
-需要修复、覆盖或重装时，在列表中点击“安装命令”即可重新显示该节点的命令。binary、bootstrap、依赖和本地空闲状态全部验证成功后，安装器才停止 Agent，并暂存 Agent 自己的配置、状态、release 与 unit。每次安装都会注册全新的 identity，不保留既有 private key 或 operation state。主控有未完成 command 时拒绝重装，避免切断正在执行或等待确认的操作。怀疑命令泄露时点击“轮换密钥”，原命令立即失效；删除节点只用于永久移除。
+需要修复、覆盖或重装时，在列表中点击“安装命令”即可重新显示该节点的命令。binary、bootstrap、依赖和本地空闲状态全部验证成功后，安装器才停止 Agent，并暂存 Agent 自己的配置、状态、release 与 unit。每次安装都会注册全新的 identity，不保留既有 private key 或 operation state。主控有未完成 command 或 active ChangeIP session 时拒绝重装，避免切断正在执行或等待 IP 事实确认的操作。怀疑命令泄露时点击“轮换密钥”，原命令立即失效；删除节点只用于永久移除。
 
 安装过程完全非交互。它会：
 
@@ -78,8 +78,8 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 4. 使用节点 UUID 与机器 token 通过 HTTPS 取得持久密封配置；
 5. 在本机以 AES-256-GCM 验证并解密，生成 root-only 配置与 secret 文件；
 6. Runner 下载并自动校验固定 commit 的 IPQuality 脚本；
-7. 严格停止全部 Agent unit，任何 unit 未进入 inactive 都会中止，不移动 Agent 文件；
-8. 停止后读取稳定的 operation journal；有 active 操作就保持原 unit 并中止；
+7. 停止前检查 operation journal 与全部待对账 IP 状态均为空；
+8. 严格停止全部 Agent unit，再对稳定状态执行相同检查；任一检查失败或 unit 未进入 inactive 都恢复原 unit 并中止；
 9. 运行 `check-config`，生成新 identity 并完成注册，再删除本机机器 token 副本；
 10. 把 Agent systemd 命名空间收敛为唯一的 `akastr-agent.service`；服务只有完成 WSS 认证和 hello 后才向 systemd 报告 ready。
 
@@ -161,7 +161,7 @@ Agent 只维护 `current` release，不提供 `--update` 或本地回退 CLI。�
 ( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' && sh "$installer" --uninstall --confirm-destroy-local-agent )
 ```
 
-卸载会停止服务并永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；它不会自动删除后台节点。确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
+卸载会在停止服务前后执行相同的 maintenance-safe 检查；检查失败或 systemd 未能严格停止 unit 时不会删除本地状态。检查通过后才永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；它不会自动删除后台节点。确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
 
 ## 8. 常见故障
 
@@ -180,7 +180,7 @@ Agent 只维护 `current` release，不提供 `--update` 或本地回退 CLI。�
 | `proxy_profile_not_found` | Runner 未配置该目标 server key；删除后按完整 profile 重新添加 Runner 节点 |
 | `proxy_preflight_failed` / `proxy_postflight_failed` | 检查目标 SOCKS5 host、端口、凭据和代理稳定性，不要打印密码 |
 | `runner_busy` | Runner 单执行槽正忙，应由主控排队 |
-| enrollment 返回 `agent_node_busy` / HTTP 409 | 主控仍有 pending、offered 或 accepted command；等待其终结后重新运行同一安装命令 |
+| enrollment 返回 `agent_node_busy` / HTTP 409 | 主控仍有 pending、offered、accepted command 或 active ChangeIP session；等待其终结后重新运行同一安装命令 |
 | service 启动超时 | WSS auth 或 hello 未完成；查看唯一主 service 日志，修复主控、网络或 identity 问题后重跑同一安装命令 |
 | service 反复重启 | 查看 `systemctl show`、`journalctl` 并运行 `check-config`；不要删除 state 逃避错误 |
 | 日志出现 `update_check_failed` | 主控或网络暂时不可用；运行版本继续工作，下一个六小时周期重试 |

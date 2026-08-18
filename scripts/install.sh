@@ -33,36 +33,45 @@ say() { printf '%s\n' "$*"; }
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
+  cleanup_status=$?
+  cleanup_failed=false
+  trap - EXIT HUP INT TERM
   if [ "$transaction_started" = true ] && [ "$transaction_complete" != true ]; then
     if [ "$enrollment_irreversible" = true ]; then
-      rm -f -- "$CONFIG_DIR/machine-token"
-      rm -rf -- "$CONFIG_BACKUP" "$STATE_BACKUP" "$RELEASE_BACKUP" "$UNITS_BACKUP"
+      rm -f -- "$CONFIG_DIR/machine-token" || cleanup_failed=true
+      rm -rf -- "$CONFIG_BACKUP" "$STATE_BACKUP" "$RELEASE_BACKUP" "$UNITS_BACKUP" \
+        || cleanup_failed=true
     else
       if [ "$units_captured" = true ]; then
-        remove_agent_units
-        rollback_directory "$CONFIG_BACKUP" "$CONFIG_DIR"
-        rollback_directory "$STATE_BACKUP" "$STATE_DIR"
-        rollback_directory "$RELEASE_BACKUP" "$RELEASE_ROOT"
+        remove_agent_units || cleanup_failed=true
+        rollback_directory "$CONFIG_BACKUP" "$CONFIG_DIR" || cleanup_failed=true
+        rollback_directory "$STATE_BACKUP" "$STATE_DIR" || cleanup_failed=true
+        rollback_directory "$RELEASE_BACKUP" "$RELEASE_ROOT" || cleanup_failed=true
       fi
-      restore_agent_units
+      restore_agent_units || cleanup_failed=true
     fi
     transaction_complete=true
   fi
   if [ -n "$temporary" ] && [ -d "$temporary" ]; then
-    rm -rf -- "$temporary"
+    rm -rf -- "$temporary" || cleanup_failed=true
   fi
+  if [ "$cleanup_failed" = true ]; then
+    printf 'Error: installer rollback or cleanup was incomplete; preserve the install-backup paths and inspect systemd.\n' >&2
+    exit 1
+  fi
+  exit "$cleanup_status"
 }
 trap cleanup EXIT
-trap 'cleanup; exit 1' HUP INT TERM
+trap 'exit 1' HUP INT TERM
 
 rollback_directory() {
   backup=$1
   destination=$2
   if [ -e "$backup" ] || [ -L "$backup" ]; then
-    rm -rf -- "$destination"
-    mv -- "$backup" "$destination"
+    rm -rf -- "$destination" || return 1
+    mv -- "$backup" "$destination" || return 1
   elif [ "$backup_complete" = true ]; then
-    rm -rf -- "$destination"
+    rm -rf -- "$destination" || return 1
   fi
 }
 
@@ -79,11 +88,19 @@ remove_agent_units() {
   for unit_path in "$SYSTEMD_ROOT"/akastr-agent*.service "$SYSTEMD_ROOT"/akastr-agent*.timer; do
     if [ -e "$unit_path" ] || [ -L "$unit_path" ]; then
       unit_name=$(basename "$unit_path")
-      systemctl disable --now "$unit_name" >/dev/null 2>&1 || true
-      rm -f -- "$unit_path"
+      if ! systemctl disable --now "$unit_name" >/dev/null; then
+        printf 'Error: failed to disable and stop %s.\n' "$unit_name" >&2
+        return 1
+      fi
+      unit_state=$(systemctl is-active "$unit_name" 2>/dev/null || true)
+      if [ "$unit_state" != 'inactive' ]; then
+        printf 'Error: Agent systemd unit did not stop: %s.\n' "$unit_name" >&2
+        return 1
+      fi
+      rm -f -- "$unit_path" || return 1
     fi
   done
-  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl daemon-reload >/dev/null || return 1
 }
 
 capture_agent_units() {
@@ -105,7 +122,7 @@ capture_agent_units() {
       fi
       systemctl disable "$unit_name" >/dev/null
       systemctl stop "$unit_name" >/dev/null
-      systemctl reset-failed "$unit_name" >/dev/null 2>&1 || true
+      systemctl reset-failed "$unit_name" >/dev/null
       unit_state=$(systemctl is-active "$unit_name" 2>/dev/null || true)
       [ "$unit_state" = 'inactive' ] || fail "Agent systemd unit did not stop: $unit_name"
     fi
@@ -124,18 +141,18 @@ restore_agent_units() {
   [ -d "$UNITS_BACKUP" ] || return 0
   for unit_path in "$UNITS_BACKUP"/files/*; do
     [ -f "$unit_path" ] || continue
-    mv -- "$unit_path" "$SYSTEMD_ROOT/$(basename "$unit_path")"
+    mv -- "$unit_path" "$SYSTEMD_ROOT/$(basename "$unit_path")" || return 1
   done
-  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl daemon-reload >/dev/null || return 1
   while read -r unit_name; do
     [ -n "$unit_name" ] || continue
-    systemctl enable "$unit_name" >/dev/null 2>&1 || true
+    systemctl enable "$unit_name" >/dev/null || return 1
   done < "$UNITS_BACKUP/enabled"
   while read -r unit_name; do
     [ -n "$unit_name" ] || continue
-    systemctl start "$unit_name" >/dev/null 2>&1 || true
+    systemctl start "$unit_name" >/dev/null || return 1
   done < "$UNITS_BACKUP/active"
-  rm -rf -- "$UNITS_BACKUP"
+  rm -rf -- "$UNITS_BACKUP" || return 1
 }
 
 require_uuid() {
@@ -228,6 +245,16 @@ prepare_ipquality() {
   chmod 0755 "$ipquality_path"
 }
 
+maintenance_safe_check() {
+  maintenance_binary=$1
+  maintenance_config=$2
+  [ -f "$maintenance_binary" ] && [ ! -L "$maintenance_binary" ] && [ -x "$maintenance_binary" ] \
+    || fail "maintenance check binary is not a regular executable: $maintenance_binary"
+  [ -f "$maintenance_config" ] && [ ! -L "$maintenance_config" ] \
+    || fail "maintenance check config is not a regular file: $maintenance_config"
+  "$maintenance_binary" check-idle --config "$maintenance_config"
+}
+
 write_service_unit() {
   cat > "$SERVICE_FILE" <<'UNIT'
 [Unit]
@@ -300,9 +327,10 @@ fresh_install() {
   install_packages "$install_mode"
   prepare_ipquality
 
+  maintenance_safe_check "$binary_path" "$bootstrap_dir/config.json"
   transaction_started=true
   capture_agent_units
-  "$binary_path" check-idle --config "$bootstrap_dir/config.json"
+  maintenance_safe_check "$binary_path" "$bootstrap_dir/config.json"
   backup_existing "$CONFIG_DIR" "$CONFIG_BACKUP"
   backup_existing "$STATE_DIR" "$STATE_BACKUP"
   backup_existing "$RELEASE_ROOT" "$RELEASE_BACKUP"
@@ -355,8 +383,17 @@ uninstall_existing() {
   [ "${1:-}" = '--confirm-destroy-local-agent' ] \
     || fail 'uninstall requires --confirm-destroy-local-agent'
   [ "$#" -eq 1 ] || fail 'invalid uninstall arguments'
-  remove_agent_units
+
+  maintenance_binary="$RELEASE_ROOT/current/akastr-agent"
+  maintenance_config="$CONFIG_DIR/config.json"
+  maintenance_safe_check "$maintenance_binary" "$maintenance_config"
+  transaction_started=true
+  capture_agent_units
+  maintenance_safe_check "$maintenance_binary" "$maintenance_config"
+  enrollment_irreversible=true
   rm -rf -- "$CONFIG_DIR" "$STATE_DIR" "$RELEASE_ROOT"
+  rm -rf -- "$UNITS_BACKUP"
+  transaction_complete=true
   say 'Akastr Agent uninstalled successfully.'
 }
 

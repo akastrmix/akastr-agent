@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -51,6 +52,22 @@ type enrollmentResponse struct {
 	OK       bool   `json:"ok"`
 	AgentID  string `json:"agent_id"`
 	Protocol string `json:"protocol"`
+}
+
+type enrollmentErrorResponse struct {
+	Error  string          `json:"error"`
+	Detail json.RawMessage `json:"detail,omitempty"`
+}
+
+var definitiveEnrollmentErrors = map[string]int{
+	"agent_enrollment_input_invalid":      http.StatusBadRequest,
+	"agent_enrollment_invalid":            http.StatusForbidden,
+	"agent_enrollment_public_key_invalid": http.StatusBadRequest,
+	"agent_version_invalid":               http.StatusBadRequest,
+	"agent_capabilities_invalid":          http.StatusBadRequest,
+	"agent_role_capabilities_invalid":     http.StatusConflict,
+	"agent_runner_conflict":               http.StatusConflict,
+	"agent_node_busy":                     http.StatusConflict,
 }
 
 func Load(filePath string) (Identity, error) {
@@ -208,8 +225,7 @@ func Enroll(ctx context.Context, options struct {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		if enrollmentRejected(response.StatusCode) {
+		if enrollmentRejected(response) {
 			if removeError := state.NewJSONFile(options.IdentityFile).Remove(); removeError != nil {
 				return Identity{}, fmt.Errorf(
 					"enroll identity: server returned HTTP %d and pending identity removal failed: %w",
@@ -239,15 +255,41 @@ func Enroll(ctx context.Context, options struct {
 	return identity, nil
 }
 
-func enrollmentRejected(statusCode int) bool {
-	if statusCode >= 300 && statusCode < 400 {
-		return true
-	}
-	if statusCode < 400 || statusCode >= 500 {
+func enrollmentRejected(response *http.Response) bool {
+	if response.StatusCode < 400 || response.StatusCode >= 500 ||
+		response.StatusCode == http.StatusRequestTimeout ||
+		response.StatusCode == http.StatusTooEarly ||
+		response.StatusCode == http.StatusTooManyRequests {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return false
 	}
-	return statusCode != http.StatusRequestTimeout && statusCode != http.StatusTooEarly &&
-		statusCode != http.StatusTooManyRequests
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return false
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4097))
+	if err != nil || len(body) > 4096 {
+		return false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var result enrollmentErrorResponse
+	if err := decoder.Decode(&result); err != nil {
+		return false
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return false
+	}
+	if len(result.Detail) > 0 {
+		var detail map[string]any
+		if err := json.Unmarshal(result.Detail, &detail); err != nil || detail == nil {
+			return false
+		}
+	}
+	expectedStatus, ok := definitiveEnrollmentErrors[result.Error]
+	return ok && response.StatusCode == expectedStatus
 }
 
 func deriveEnrollmentURL(endpoint string) (string, error) {

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +19,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/state"
 )
 
-func TestEnrollRejectsHTTPRedirects(t *testing.T) {
+func TestEnrollDoesNotFollowRedirectAndRetainsPendingIdentity(t *testing.T) {
 	root := t.TempDir()
 	tokenBytes := make([]byte, 32)
 	for index := range tokenBytes {
@@ -59,8 +60,113 @@ func TestEnrollRejectsHTTPRedirects(t *testing.T) {
 	if redirectedRequests.Load() != 0 {
 		t.Fatal("enrollment client followed a redirect")
 	}
+	pending, err := loadStored(identityFile)
+	if err != nil || pending.EnrollmentState != EnrollmentPending {
+		t.Fatalf("redirect pending identity = %#v, error = %v", pending, err)
+	}
+}
+
+func TestEnrollmentRejectedRequiresExactBusinessError(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		want        bool
+	}{
+		{
+			name: "invalid token", status: http.StatusForbidden,
+			contentType: "application/json; charset=utf-8",
+			body:        `{"error":"agent_enrollment_invalid"}`,
+			want:        true,
+		},
+		{
+			name: "node busy with detail", status: http.StatusConflict,
+			contentType: "application/json",
+			body:        `{"error":"agent_node_busy","detail":{"command_id":"test"}}`,
+			want:        true,
+		},
+		{
+			name: "redirect", status: http.StatusTemporaryRedirect,
+			contentType: "application/json", body: `{"error":"agent_enrollment_invalid"}`,
+		},
+		{
+			name: "request timeout", status: http.StatusRequestTimeout,
+			contentType: "application/json", body: `{"error":"agent_enrollment_invalid"}`,
+		},
+		{
+			name: "server error", status: http.StatusServiceUnavailable,
+			contentType: "application/json", body: `{"error":"agent_enrollment_invalid"}`,
+		},
+		{
+			name: "proxy page", status: http.StatusForbidden,
+			contentType: "text/html", body: `<html>denied</html>`,
+		},
+		{
+			name: "generic JSON error", status: http.StatusForbidden,
+			contentType: "application/json", body: `{"error":"bad_request"}`,
+		},
+		{
+			name: "unknown response field", status: http.StatusForbidden,
+			contentType: "application/json",
+			body:        `{"error":"agent_enrollment_invalid","request_id":"test"}`,
+		},
+		{
+			name: "known error with wrong status", status: http.StatusBadRequest,
+			contentType: "application/json", body: `{"error":"agent_enrollment_invalid"}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := &http.Response{
+				StatusCode: test.status,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(test.body)),
+			}
+			response.Header.Set("Content-Type", test.contentType)
+			if got := enrollmentRejected(response); got != test.want {
+				t.Fatalf("enrollmentRejected() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestEnrollRemovesPendingIdentityAfterExplicitBusinessRejection(t *testing.T) {
+	root := t.TempDir()
+	tokenBytes := make([]byte, 32)
+	for index := range tokenBytes {
+		tokenBytes[index] = byte(index + 1)
+	}
+	tokenFile := filepath.Join(root, "machine-token")
+	if err := os.WriteFile(tokenFile, []byte(base64.RawURLEncoding.EncodeToString(tokenBytes)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Content-Type", "application/json; charset=utf-8")
+		response.WriteHeader(http.StatusForbidden)
+		_, _ = response.Write([]byte(`{"error":"agent_enrollment_invalid"}`))
+	}))
+	defer server.Close()
+	identityFile := filepath.Join(root, "identity.json")
+	_, err := Enroll(t.Context(), struct {
+		Endpoint        string
+		TokenFile       string
+		IdentityFile    string
+		ExpectedAgentID string
+		AgentVersion    string
+		Capabilities    []capability.Descriptor
+		HTTPClient      *http.Client
+	}{
+		Endpoint:  "wss" + strings.TrimPrefix(server.URL, "https") + "/internal/agents/ws",
+		TokenFile: tokenFile, IdentityFile: identityFile,
+		ExpectedAgentID: "123e4567-e89b-42d3-a456-426614174000",
+		AgentVersion:    "v1.0.0", HTTPClient: server.Client(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 403") {
+		t.Fatalf("Enroll() error = %v, want HTTP 403", err)
+	}
 	if _, err := os.Stat(identityFile); !os.IsNotExist(err) {
-		t.Fatal("definitively rejected enrollment retained a pending identity")
+		t.Fatalf("definitively rejected enrollment identity stat error = %v", err)
 	}
 }
 

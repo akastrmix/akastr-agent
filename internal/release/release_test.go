@@ -80,7 +80,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'",
 		"command -v \"$command\"",
 		"backup_existing \"$CONFIG_DIR\" \"$CONFIG_BACKUP\"",
-		"check-idle --config \"$bootstrap_dir/config.json\"",
+		"maintenance_safe_check \"$binary_path\" \"$bootstrap_dir/config.json\"",
 		"capture_agent_units",
 		"$SYSTEMD_ROOT\"/akastr-agent*.service",
 		"$SYSTEMD_ROOT\"/akastr-agent*.timer",
@@ -90,6 +90,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"TimeoutStartSec=45s",
 		"Akastr Agent $AGENT_RELEASE_VERSION installed successfully.",
 		"rollback_directory \"$CONFIG_BACKUP\" \"$CONFIG_DIR\"",
+		"installer rollback or cleanup was incomplete",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer missing contract %q", required)
@@ -122,10 +123,39 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"RandomizedDelaySec=",
 		"已安装",
 		"自动更新",
+		"systemctl disable --now \"$unit_name\" >/dev/null 2>&1 || true",
+		"systemctl daemon-reload >/dev/null 2>&1 || true",
+		"systemctl enable \"$unit_name\" >/dev/null 2>&1 || true",
+		"systemctl start \"$unit_name\" >/dev/null 2>&1 || true",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("installer contains forbidden contract %q", forbidden)
 		}
+	}
+	freshStart := strings.Index(installer, "fresh_install() {")
+	freshEnd := strings.Index(installer, "\nshow_status() {")
+	if freshStart < 0 || freshEnd <= freshStart {
+		t.Fatal("cannot isolate fresh_install")
+	}
+	freshInstall := installer[freshStart:freshEnd]
+	idleCheck := "maintenance_safe_check \"$binary_path\" \"$bootstrap_dir/config.json\""
+	stop := "capture_agent_units"
+	if strings.Count(freshInstall, idleCheck) != 2 ||
+		strings.Index(freshInstall, idleCheck) > strings.Index(freshInstall, stop) ||
+		strings.LastIndex(freshInstall, idleCheck) < strings.Index(freshInstall, stop) {
+		t.Fatal("fresh install must run the same maintenance-safe check before and after stopping units")
+	}
+	uninstallStart := strings.Index(installer, "uninstall_existing() {")
+	uninstallEnd := strings.Index(installer, "\npreflight\n")
+	if uninstallStart < 0 || uninstallEnd <= uninstallStart {
+		t.Fatal("cannot isolate uninstall_existing")
+	}
+	uninstall := installer[uninstallStart:uninstallEnd]
+	uninstallIdleCheck := "maintenance_safe_check \"$maintenance_binary\" \"$maintenance_config\""
+	if strings.Count(uninstall, uninstallIdleCheck) != 2 ||
+		strings.Index(uninstall, uninstallIdleCheck) > strings.Index(uninstall, stop) ||
+		strings.LastIndex(uninstall, uninstallIdleCheck) < strings.Index(uninstall, stop) {
+		t.Fatal("uninstall must check maintenance safety before and after strictly stopping units")
 	}
 }
 
