@@ -77,9 +77,8 @@ func TestCompletedProviderReturnsTriggeredWithoutASecondObservation(t *testing.T
 	}
 	result := handler.execute(context.Background(), offerFor("8.8.8.8"))
 	oldIPv4, oldOk := result.Result["old_ipv4"].(*string)
-	newIPv4, newOk := result.Result["new_ipv4"].(*string)
 	if result.Outcome != "succeeded" || result.Code != "change_triggered" ||
-		!oldOk || oldIPv4 == nil || *oldIPv4 != "8.8.8.8" || !newOk || newIPv4 != nil {
+		!oldOk || oldIPv4 == nil || *oldIPv4 != "8.8.8.8" || len(result.Result) != 2 {
 		t.Fatalf("execute() = %#v", result)
 	}
 	if observer.calls != 1 {
@@ -141,7 +140,10 @@ func TestActiveJournalRecoveryNeverRunsProviderAgain(t *testing.T) {
 	}
 	provider := &countingProvider{}
 	handler := New(engine, nil, provider, nil, time.Second)
-	result := handler.Execute(t.Context(), offer)
+	result, err := handler.Execute(t.Context(), offer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Outcome != "failed" || result.Code != "interrupted_unknown" {
 		t.Fatalf("Execute() = %#v", result)
 	}

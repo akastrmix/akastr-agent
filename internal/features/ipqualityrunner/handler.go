@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -23,12 +24,13 @@ func New(engine *operation.Engine, provider *script.Provider, scriptVersion stri
 	return &Handler{engine: engine, provider: provider, scriptVersion: scriptVersion}
 }
 
-func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
+func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	if recent, found := h.engine.Recent(offer.CommandID); found && len(recent.TerminalResult) > 0 {
 		var result protocol.ExecutionResult
 		if json.Unmarshal(recent.TerminalResult, &result) == nil {
-			return result
+			return result, nil
 		}
+		return protocol.ExecutionResult{}, errors.New("decode persisted IPQuality terminal result")
 	}
 	if _, err := h.engine.Begin(offer.CommandID, "ipquality.execute", "ipquality-runner"); err != nil {
 		if _, active := h.engine.Active(offer.CommandID); active {
@@ -37,14 +39,12 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) pr
 			if _, finishError := h.engine.FinishWithResult(
 				offer.CommandID, operation.StatusFailed, result.Code, persisted,
 			); finishError == nil {
-				return result
+				return result, nil
+			} else {
+				return protocol.ExecutionResult{}, fmt.Errorf("persist recovered IPQuality terminal result: %w", finishError)
 			}
 		}
-		code := "runner_busy"
-		if errors.Is(err, operation.ErrDuplicate) {
-			code = "result_recovery_failed"
-		}
-		return h.failure(code, "", "", "")
+		return protocol.ExecutionResult{}, fmt.Errorf("begin IPQuality operation: %w", err)
 	}
 	result := h.execute(ctx, offer)
 	persisted, _ := json.Marshal(result)
@@ -55,9 +55,9 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) pr
 		status = operation.StatusCancelled
 	}
 	if _, err := h.engine.FinishWithResult(offer.CommandID, status, result.Code, persisted); err != nil {
-		return h.failure("state_persist_failed", "", "", "")
+		return protocol.ExecutionResult{}, fmt.Errorf("persist IPQuality terminal result: %w", err)
 	}
-	return result
+	return result, nil
 }
 
 func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {

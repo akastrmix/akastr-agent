@@ -25,30 +25,38 @@ type blockingExecutor struct {
 	release chan struct{}
 }
 
+type fatalExecutor struct{}
+
+func (fatalExecutor) KnownOperation(string, string) bool { return false }
+func (fatalExecutor) Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error) {
+	return protocol.ExecutionResult{}, errors.New("durable state unavailable")
+}
+
 func (e *blockingExecutor) KnownOperation(string, string) bool { return false }
 
 func (e *recordingExecutor) KnownOperation(commandID, commandType string) bool {
 	return e.known[commandID] == commandType
 }
 
-func (e *blockingExecutor) Execute(context.Context, protocol.OperationOffer) protocol.ExecutionResult {
+func (e *blockingExecutor) Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	close(e.started)
 	<-e.release
-	return protocol.ExecutionResult{Outcome: "failed", Code: "test", Result: map[string]any{}}
+	return protocol.ExecutionResult{Outcome: "failed", Code: "test", Result: map[string]any{}}, nil
 }
 
 type failingObservationSource struct{}
 
-func (failingObservationSource) Run(context.Context, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
+func (failingObservationSource) Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
 	return errors.New("observation state failed")
 }
 
+func (failingObservationSource) AckSnapshot(string) error  { return nil }
 func (failingObservationSource) Ack(string) error          { return nil }
 func (failingObservationSource) AckUnchanged(string) error { return nil }
 
 type nilObservationSource struct{}
 
-func (*nilObservationSource) Run(context.Context, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
+func (*nilObservationSource) Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
 	return nil
 }
 
@@ -86,6 +94,33 @@ func TestOperationLeaseBlocksUpdateUntilExecutionFinishes(t *testing.T) {
 	t.Fatal("operation lease was not released after terminal persistence")
 }
 
+func TestExecutionPersistenceFailureBecomesFatalWithoutWireResult(t *testing.T) {
+	gate := lifecycle.New()
+	lease, ok := gate.TryOperation()
+	if !ok {
+		t.Fatal("operation lease was rejected")
+	}
+	commandID := "123e4567-e89b-42d3-a456-426614174003"
+	client := &Client{
+		executor: fatalExecutor{}, lifecycle: gate,
+		running: map[string]*lifecycle.Lease{commandID: lease},
+		pending: make(map[string]pendingOperation), completed: make(map[string]protocol.ExecutionResult),
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	client.execute(t.Context(), protocol.OperationOffer{CommandID: commandID})
+	if client.executionFailure() == nil {
+		t.Fatal("executor persistence failure did not stop the control loop")
+	}
+	if _, found := client.completed[commandID]; found {
+		t.Fatal("executor persistence failure created a wire terminal result")
+	}
+	if update, ok := gate.TryUpdate(); !ok {
+		t.Fatal("operation lease was not released after fatal execution failure")
+	} else {
+		update.Release()
+	}
+}
+
 func TestFatalObservationErrorStopsClient(t *testing.T) {
 	client := &Client{
 		endpoint:     "wss://127.0.0.1:1/internal/agents/ws",
@@ -101,6 +136,7 @@ func TestFatalObservationErrorStopsClient(t *testing.T) {
 	}
 }
 
+func (*nilObservationSource) AckSnapshot(string) error  { return nil }
 func (*nilObservationSource) Ack(string) error          { return nil }
 func (*nilObservationSource) AckUnchanged(string) error { return nil }
 
@@ -125,9 +161,9 @@ func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 	}
 }
 
-func (e *recordingExecutor) Execute(_ context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
+func (e *recordingExecutor) Execute(_ context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	e.executed <- offer.CommandID
-	return protocol.ExecutionResult{Outcome: "failed", Code: "test", Result: map[string]any{}}
+	return protocol.ExecutionResult{Outcome: "failed", Code: "test", Result: map[string]any{}}, nil
 }
 
 func TestAcceptedAckGatesExecution(t *testing.T) {

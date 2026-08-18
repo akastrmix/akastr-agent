@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	changefeature "github.com/akastrmix/akastr-agent/internal/features/changeip"
@@ -100,42 +101,26 @@ func (r *Runtime) IPMonitor() *ipwatch.Monitor {
 	return r.ipMonitor
 }
 
-func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
+func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	now := time.Now()
 	if now.Before(offer.NotBefore) {
-		return unsupportedResult(offer.CommandType, "offer_not_ready")
+		return protocol.ExecutionResult{}, errors.New("accepted operation offer is not ready")
 	}
 	if !now.Before(offer.ExpiresAt) && !r.KnownOperation(offer.CommandID, offer.CommandType) {
-		return unsupportedResult(offer.CommandType, "offer_expired")
+		return protocol.ExecutionResult{}, errors.New("accepted operation offer expired before execution")
 	}
 	switch offer.CommandType {
 	case "changeip.execute":
 		if r.changeIP == nil {
-			return unsupportedResult(offer.CommandType, "capability_disabled")
+			return protocol.ExecutionResult{}, errors.New("accepted ChangeIP command has no local capability")
 		}
 		return r.changeIP.Execute(ctx, offer)
 	case "ipquality.execute":
 		if r.ipQuality == nil {
-			return unsupportedResult(offer.CommandType, "capability_disabled")
+			return protocol.ExecutionResult{}, errors.New("accepted IPQuality command has no local capability")
 		}
 		return r.ipQuality.Execute(ctx, offer)
 	default:
-		return protocol.ExecutionResult{Outcome: "failed", Code: "command_unsupported", Result: map[string]any{}}
+		return protocol.ExecutionResult{}, errors.New("accepted command type is unsupported")
 	}
-}
-
-func unsupportedResult(commandType, code string) protocol.ExecutionResult {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if commandType == "changeip.execute" {
-		return protocol.ExecutionResult{Outcome: "failed", Code: code, Result: map[string]any{
-			"old_ipv4": nil, "new_ipv4": nil, "observed_at": now,
-		}}
-	}
-	if commandType == "ipquality.execute" {
-		return protocol.ExecutionResult{Outcome: "failed", Code: code, Result: map[string]any{
-			"report_url": nil, "proxy_ipv4_before": nil, "proxy_ipv4_after": nil,
-			"script_version": "unavailable", "checked_at": now,
-		}}
-	}
-	return protocol.ExecutionResult{Outcome: "failed", Code: code, Result: map[string]any{}}
 }

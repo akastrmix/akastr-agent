@@ -21,12 +21,13 @@ import (
 )
 
 type Executor interface {
-	Execute(context.Context, protocol.OperationOffer) protocol.ExecutionResult
+	Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error)
 	KnownOperation(commandID, commandType string) bool
 }
 
 type ObservationSource interface {
-	Run(context.Context, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error
+	Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error
+	AckSnapshot(string) error
 	Ack(string) error
 	AckUnchanged(string) error
 }
@@ -47,6 +48,7 @@ type Client struct {
 	running   map[string]*lifecycle.Lease
 	pending   map[string]pendingOperation
 	completed map[string]protocol.ExecutionResult
+	fatalErr  error
 }
 
 type pendingOperation struct {
@@ -87,7 +89,9 @@ func New(options struct {
 		return nil, err
 	}
 	parsed, err := url.Parse(options.Endpoint)
-	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" || parsed.RawQuery != "" {
+	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" ||
+		parsed.Path != "/internal/agents/ws" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, errors.New("WSS endpoint is invalid")
 	}
 	return &Client{
@@ -118,7 +122,9 @@ func (c *Client) Run(ctx context.Context) error {
 	defer cancel()
 	monitorDone := make(chan error, 1)
 	controlDone := make(chan error, 1)
-	go func() { monitorDone <- c.observations.Run(runContext, c.publishObservation, c.publishUnchanged) }()
+	go func() {
+		monitorDone <- c.observations.Run(runContext, c.publishSnapshot, c.publishObservation, c.publishUnchanged)
+	}()
 	go func() { controlDone <- c.runControlLoop(runContext) }()
 	select {
 	case err := <-monitorDone:
@@ -145,6 +151,9 @@ func (c *Client) runControlLoop(ctx context.Context) error {
 		err := c.runSession(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if fatalError := c.executionFailure(); fatalError != nil {
+			return fatalError
 		}
 		delay := backoff + time.Duration(rand.Int64N(max(1, int64(backoff/4))))
 		c.logger.Warn("control connection ended", "code", safeConnectionCode(err), "retry_in", delay.String())
@@ -230,6 +239,17 @@ func (c *Client) runSession(ctx context.Context) error {
 				delete(c.completed, ack.CommandID)
 				c.mu.Unlock()
 			}
+		case "ip.snapshot_ack":
+			ack, err := protocol.DecodeBody[protocol.IPSnapshotAckBody](envelope)
+			if err != nil {
+				return err
+			}
+			if !ack.Persisted || c.observations == nil {
+				return errors.New("IP snapshot was not persisted")
+			}
+			if err := c.observations.AckSnapshot(ack.SnapshotID); err != nil {
+				return err
+			}
 		case "ip.observed_ack":
 			ack, err := protocol.DecodeBody[protocol.IPObservationAckBody](envelope)
 			if err != nil {
@@ -280,6 +300,18 @@ func (c *Client) publishObservation(observation protocol.IPObservationBody) erro
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return active.write(ctx, "ip.observed", observation)
+}
+
+func (c *Client) publishSnapshot(snapshot protocol.IPSnapshotBody) error {
+	c.mu.Lock()
+	active := c.active
+	c.mu.Unlock()
+	if active == nil {
+		return errors.New("control connection is not ready")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return active.write(ctx, "ip.snapshot", snapshot)
 }
 
 func (c *Client) authenticate(ctx context.Context, session *session) error {
@@ -383,10 +415,23 @@ func (c *Client) handleAcceptedAck(ctx context.Context, ack protocol.AcceptedAck
 }
 
 func (c *Client) execute(ctx context.Context, offer protocol.OperationOffer) {
-	result := c.executor.Execute(ctx, offer)
+	result, executeError := c.executor.Execute(ctx, offer)
 	c.mu.Lock()
 	lease := c.running[offer.CommandID]
 	delete(c.running, offer.CommandID)
+	if executeError != nil {
+		active := c.active
+		if c.fatalErr == nil {
+			c.fatalErr = fmt.Errorf("execute accepted command %s: %w", offer.CommandID, executeError)
+		}
+		c.mu.Unlock()
+		lease.Release()
+		c.logger.Error("accepted command has no durable terminal result", "code", "operation_state_persist_failed")
+		if active != nil {
+			active.connection.CloseNow()
+		}
+		return
+	}
 	c.completed[offer.CommandID] = result
 	active := c.active
 	c.mu.Unlock()
@@ -396,8 +441,15 @@ func (c *Client) execute(ctx context.Context, offer protocol.OperationOffer) {
 		defer cancel()
 		if err := active.write(writeContext, "operation.result", resultBody(offer.CommandID, result)); err != nil {
 			c.logger.Warn("operation result awaits reconnect", "command_id", offer.CommandID, "code", result.Code)
+			active.connection.CloseNow()
 		}
 	}
+}
+
+func (c *Client) executionFailure() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.fatalErr
 }
 
 func (c *Client) releasePending() {

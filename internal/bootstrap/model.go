@@ -105,8 +105,8 @@ func (p Payload) Validate(expectedAgentID string) error {
 }
 
 func (t Target) validate() error {
-	if t.IPWatchIntervalSeconds < 10 || t.IPWatchIntervalSeconds > 3600 {
-		return errors.New("target IP watch interval must be between 10 and 3600 seconds")
+	if t.IPWatchIntervalSeconds < 10 || t.IPWatchIntervalSeconds > 300 {
+		return errors.New("target IP watch interval must be between 10 and 300 seconds")
 	}
 	if err := t.ChangeIP.validate(); err != nil {
 		return err

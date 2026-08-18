@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"runtime"
+	"sort"
 )
 
 var stableProfileID = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
@@ -57,4 +58,17 @@ func loadProfiles(filePath string) (map[string]Profile, error) {
 		}
 	}
 	return document.Profiles, nil
+}
+
+func ProfileIDs(filePath string) ([]string, error) {
+	profiles, err := loadProfiles(filePath)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(profiles))
+	for id := range profiles {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }

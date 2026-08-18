@@ -1,4 +1,4 @@
-# Akastr Agent 协议 `2026-08-16.v3`
+# Akastr Agent 协议 `2026-08-18.v4`
 
 AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 64 KiB。未知字段、未知 message type、未知 capability 字段、binary frame、无效 UUID 和未来协议版本均会失败关闭。
 
@@ -21,7 +21,7 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；只有收到 `hello.accepted`，连接才进入 ready。相同节点的新认证连接会替换既有连接。
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；只有收到 `hello.accepted`，连接才进入 ready。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
 
 ## 自动更新检查
 
@@ -61,7 +61,7 @@ HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或
 
 ### `ipquality.execute`
 
-payload 只包含 `target_server_id`、`expected_ipv4`、不含秘密的 `proxy_port`、本地 `proxy_profile_id` 和 `script_version`。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 字段。SOCKS5 username/password 只存在 Runner 的 root-only profile 文件中。
+payload 只包含 `expected_ipv4`、不含秘密的 `proxy_port`、本地 `proxy_profile_id` 和 `script_version`。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 或目标 ID 字段。SOCKS5 username/password 只存在 Runner 的 root-only profile 文件中。
 
 Runner 同一时间只允许一个 command。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
 
@@ -75,11 +75,13 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 ## ChangeIP 与 IPv4 核对
 
-`ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。首次观察只建立本地 baseline，不产生消息。活动 ChangeIP 中观察到新 IP 时，消息可以先于 `operation.result` 到达；AkastrCloud 以已 `accepted`、`succeeded` 或 `expired` 的相同 command 收敛 session，因此断网不会把该变化误判成自然变化。
+首次成功观察必须先持久化并发送 `ip.snapshot`，body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；重装后的 snapshot 若与既有 baseline 不同且节点没有未终结 command，Cloud 以既有地址作为 previous address 原子记录一次自然变化。存在未终结 command 时地址冲突安全失败。Agent 在确认前不得接受 ChangeIP，并跨重连、重启重发 snapshot。
+
+`ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。事件时间必须晚于 Cloud 当前 baseline 且不得超前主控超过五分钟。只有 command 已 accepted、观测不早于 session 开始且仍在 session 窗口内，变化才归因于 ChangeIP；消息可以先于 `operation.result` 到达。尚未接受 command 时发生的变化仍是自然变化，不会被错误归因。
 
 若五分钟宽限后连续三次成功观察仍是触发前 IP，Agent 发送 `changeip.unchanged`，body 必须且只能包含 `command_id`、`address` 和 `observed_at`。网络失败不计确认次数。AkastrCloud 持久接纳后返回 `changeip.unchanged_ack`，body 为相同 `command_id` 和 `persisted=true`；45 分钟兜底只属于 Cloud 业务 session。
 
-Agent 在本地只保留一个待确认 IPv4 事件。`ip.observed` 由相同 `observation_id` 的 `ip.observed_ack` 清除，`changeip.unchanged` 由相同 command ID 的 ack 清除；连接不可用时跨重连和进程重启重发。AkastrCloud 对已成功或未变化的 session 只投影一次终态；没有 Agent 快速结果时，业务 session 仍在 45 分钟到期时收敛。
+Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`ip.snapshot`、`ip.observed` 和 `changeip.unchanged` 分别由相同 snapshot ID、observation ID 或 command ID 的 ack 清除；连接不可用时跨重连和进程重启重发。AkastrCloud 对已成功或未变化的 session 只投影一次终态；没有 Agent 快速结果时，业务 session 仍在 45 分钟到期时收敛，并同步终结尚未 accepted 的 command。
 
 ## 自然 IPv4 变化
 
@@ -87,7 +89,7 @@ Agent 在本地只保留一个待确认 IPv4 事件。`ip.observed` 由相同 `o
 
 ## 安全边界
 
-- 协议固定为 `2026-08-16.v3`，不自动降级，也不接受协议之外的字段。
+- 协议固定为 `2026-08-18.v4`，不自动降级，也不接受协议之外的字段。
 - SOCKS5 capability 只允许 `port`，不接受地址来源或自定义主机名字段。
 - bootstrap/enrollment 使用机器 token，WSS 与自动更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。

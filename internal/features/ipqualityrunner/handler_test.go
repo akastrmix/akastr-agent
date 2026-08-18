@@ -20,7 +20,10 @@ func TestActiveJournalRecoveryReleasesRunnerWithoutExecuting(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := New(engine, nil, "2026.08.13")
-	result := handler.Execute(t.Context(), protocol.OperationOffer{CommandID: commandID})
+	result, err := handler.Execute(t.Context(), protocol.OperationOffer{CommandID: commandID})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result.Outcome != "failed" || result.Code != "interrupted_unknown" {
 		t.Fatalf("Execute() = %#v", result)
 	}

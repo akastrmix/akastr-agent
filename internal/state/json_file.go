@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 )
 
@@ -90,9 +91,33 @@ func (f *JSONFile) Save(value any) error {
 	}
 	keepTemporary = false
 
-	if directoryHandle, err := os.Open(directory); err == nil {
-		_ = directoryHandle.Sync()
+	return syncDirectory(directory)
+}
+
+func (f *JSONFile) Remove() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if err := os.Remove(f.path); err != nil {
+		return fmt.Errorf("remove state file: %w", err)
+	}
+	return syncDirectory(filepath.Dir(f.path))
+}
+
+func syncDirectory(directory string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directoryHandle, err := os.Open(directory)
+	if err != nil {
+		return fmt.Errorf("open state directory for sync: %w", err)
+	}
+	if err := directoryHandle.Sync(); err != nil {
 		_ = directoryHandle.Close()
+		return fmt.Errorf("sync state directory: %w", err)
+	}
+	if err := directoryHandle.Close(); err != nil {
+		return fmt.Errorf("close state directory: %w", err)
 	}
 	return nil
 }

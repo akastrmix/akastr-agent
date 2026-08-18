@@ -38,7 +38,7 @@ apt-get install --yes ca-certificates curl wget
 
 必须填写节点名称并绑定对应服务器，然后设置：
 
-- 公网 IPv4 检查间隔：10–3600 秒；一般保持 60 秒；
+- 公网 IPv4 检查间隔：10–300 秒；一般保持 60 秒；
 - ChangeIP：不启用、粘贴服务商完整 `curl` 命令，或固定本机程序；
 - SOCKS5 入口：不公布，或公布端口。
 
@@ -127,7 +127,7 @@ journalctl -u akastr-agent.service -n 100 --no-pager
 
 Agent 没有供操作者绕过主控的本地换 IP 或 IPQuality 命令。用户从 AkastrCloud/Carpool 发起延迟立即更换、预设更换、自动定时更换和 IPQuality 查询。
 
-自然 IPv4 首次观察只建立 baseline，之后的变化通过 WSS 持久上报。AkastrCloud 重置该 IP 代际的 IPQuality 缓存，并私聊所有仍满足订阅条件的用户；没有 Telegram channel 播报。
+自然 IPv4 首次观察通过 WSS `ip.snapshot` 持久建立 Cloud baseline，之后的变化再以 `ip.observed` 上报。AkastrCloud 重置变化后的 IPQuality 缓存代际，并私聊所有仍满足订阅条件的用户；没有 Telegram channel 播报。
 
 常用只读或服务操作：
 

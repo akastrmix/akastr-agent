@@ -69,3 +69,23 @@ func TestInterpretScriptOutputFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestProfileIDsAreSortedWithoutCredentials(t *testing.T) {
+	profilesPath := filepath.Join(t.TempDir(), "profiles.json")
+	if err := os.WriteFile(profilesPath, []byte(`{
+  "schema_version": 1,
+  "profiles": {
+    "z-secondary": {"username": "second-user", "password": "second-secret"},
+    "a-primary": {"username": "first-user", "password": "first-secret"}
+  }
+}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := ProfileIDs(profilesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != "a-primary" || ids[1] != "z-secondary" {
+		t.Fatalf("ProfileIDs() = %#v", ids)
+	}
+}

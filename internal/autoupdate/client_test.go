@@ -21,10 +21,11 @@ func TestClientAuthenticatesAndValidatesApprovedManifest(t *testing.T) {
 		t.Fatal(err)
 	}
 	credentials := identity.Identity{
-		SchemaVersion: identity.SchemaVersion,
-		AgentID:       "123e4567-e89b-42d3-a456-426614174000",
-		PublicKey:     base64.RawURLEncoding.EncodeToString(publicKey),
-		PrivateKey:    base64.RawURLEncoding.EncodeToString(privateKey),
+		SchemaVersion:   identity.SchemaVersion,
+		EnrollmentState: identity.EnrollmentConfirmed,
+		AgentID:         "123e4567-e89b-42d3-a456-426614174000",
+		PublicKey:       base64.RawURLEncoding.EncodeToString(publicKey),
+		PrivateKey:      base64.RawURLEncoding.EncodeToString(privateKey),
 	}
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

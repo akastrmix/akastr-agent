@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	Version     = "2026-08-16.v3"
+	Version     = "2026-08-18.v4"
 	AuthContext = "akastr-agent-auth-v1"
 	MaxMessage  = 64 * 1024
 )
@@ -60,11 +60,22 @@ type ChangeIPPayload struct {
 }
 
 type IPQualityPayload struct {
-	TargetServerID string `json:"target_server_id"`
 	ExpectedIPv4   string `json:"expected_ipv4"`
 	ProxyPort      int    `json:"proxy_port"`
 	ProxyProfileID string `json:"proxy_profile_id"`
 	ScriptVersion  string `json:"script_version"`
+}
+
+type IPSnapshotBody struct {
+	SnapshotID string `json:"snapshot_id"`
+	Family     string `json:"family"`
+	Address    string `json:"address"`
+	ObservedAt string `json:"observed_at"`
+}
+
+type IPSnapshotAckBody struct {
+	SnapshotID string `json:"snapshot_id"`
+	Persisted  bool   `json:"persisted"`
 }
 
 type IPObservationBody struct {

@@ -96,6 +96,7 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 			lease.Release()
 			if reexecError != nil {
 				logger.Error("automatic update process replacement failed", "code", "update_reexec_failed")
+				return errors.Join(errors.New("automatic update process replacement failed"), reexecError)
 			}
 		}
 	}

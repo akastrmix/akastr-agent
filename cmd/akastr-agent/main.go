@@ -18,6 +18,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/autoupdate"
 	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/capability"
+	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/operation"
@@ -92,7 +93,7 @@ func run(arguments []string, output io.Writer) error {
 			return err
 		}
 		if arguments[0] == "check-idle" {
-			if err := checkIdle(model.Config.StateFile, model.Config.RecentOperationLimit); err != nil {
+			if err := checkIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintln(output, "Agent is idle")
@@ -162,8 +163,12 @@ func run(arguments []string, output io.Writer) error {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
+			runContext, cancelRun := context.WithCancel(ctx)
+			defer cancelRun()
+			updateDone := make(chan error, 1)
+			controlDone := make(chan error, 1)
 			go func() {
-				err := autoupdate.RunLoop(ctx, autoupdate.LoopOptions{
+				updateDone <- autoupdate.RunLoop(runContext, autoupdate.LoopOptions{
 					ControlEndpoint: model.Config.Control.Endpoint,
 					CurrentVersion:  version,
 					Credentials:     credentials,
@@ -175,15 +180,21 @@ func run(arguments []string, output io.Writer) error {
 					},
 					Logger: logger,
 				})
-				if err != nil && !errors.Is(err, context.Canceled) {
-					logger.Error("automatic update loop stopped", "code", "update_loop_failed")
-				}
 			}()
-			err = client.Run(ctx)
-			if errors.Is(err, context.Canceled) {
+			go func() { controlDone <- client.Run(runContext) }()
+			var firstError error
+			select {
+			case firstError = <-updateDone:
+				cancelRun()
+				<-controlDone
+			case firstError = <-controlDone:
+				cancelRun()
+				<-updateDone
+			}
+			if ctx.Err() != nil || errors.Is(firstError, context.Canceled) {
 				return nil
 			}
-			return err
+			return firstError
 		}
 		encoder := json.NewEncoder(output)
 		encoder.SetIndent("", "  ")
@@ -193,7 +204,7 @@ func run(arguments []string, output io.Writer) error {
 	}
 }
 
-func checkIdle(stateFile string, recentLimit int) error {
+func checkIdle(stateFile, ipStateFile string, recentLimit int) error {
 	engine, err := operation.Open(operation.Options{StateFile: stateFile, RecentLimit: recentLimit})
 	if err != nil {
 		return err
@@ -201,5 +212,5 @@ func checkIdle(stateFile string, recentLimit int) error {
 	if len(engine.Snapshot().Active) != 0 {
 		return errors.New("an Agent operation is active")
 	}
-	return nil
+	return ipwatch.CheckIdle(ipStateFile)
 }

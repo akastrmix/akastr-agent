@@ -19,18 +19,25 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
+	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/state"
 )
 
-const SchemaVersion = 1
+const SchemaVersion = 2
+
+const (
+	EnrollmentPending   = "pending"
+	EnrollmentConfirmed = "confirmed"
+)
 
 var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 type Identity struct {
-	SchemaVersion int    `json:"schema_version"`
-	AgentID       string `json:"agent_id"`
-	PublicKey     string `json:"public_key"`
-	PrivateKey    string `json:"private_key"`
+	SchemaVersion   int    `json:"schema_version"`
+	EnrollmentState string `json:"enrollment_state"`
+	AgentID         string `json:"agent_id"`
+	PublicKey       string `json:"public_key"`
+	PrivateKey      string `json:"private_key"`
 }
 
 type enrollmentRequest struct {
@@ -47,6 +54,17 @@ type enrollmentResponse struct {
 }
 
 func Load(filePath string) (Identity, error) {
+	identity, err := loadStored(filePath)
+	if err != nil {
+		return Identity{}, err
+	}
+	if identity.EnrollmentState != EnrollmentConfirmed {
+		return Identity{}, errors.New("identity enrollment is not confirmed")
+	}
+	return identity, nil
+}
+
+func loadStored(filePath string) (Identity, error) {
 	info, err := os.Stat(filePath)
 	if err != nil {
 		return Identity{}, fmt.Errorf("stat identity: %w", err)
@@ -65,15 +83,25 @@ func Load(filePath string) (Identity, error) {
 	if !found {
 		return Identity{}, errors.New("identity does not exist")
 	}
-	if err := identity.Validate(); err != nil {
+	if err := identity.validateStored(); err != nil {
 		return Identity{}, err
 	}
 	return identity, nil
 }
 
 func (i Identity) Validate() error {
+	if i.EnrollmentState != EnrollmentConfirmed {
+		return errors.New("identity enrollment is not confirmed")
+	}
+	return i.validateStored()
+}
+
+func (i Identity) validateStored() error {
 	if i.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("identity schema_version must be %d", SchemaVersion)
+	}
+	if i.EnrollmentState != EnrollmentPending && i.EnrollmentState != EnrollmentConfirmed {
+		return errors.New("identity enrollment_state is invalid")
 	}
 	if !canonicalUUID.MatchString(i.AgentID) {
 		return errors.New("identity agent_id is invalid")
@@ -106,11 +134,6 @@ func Enroll(ctx context.Context, options struct {
 	Capabilities    []capability.Descriptor
 	HTTPClient      *http.Client
 }) (Identity, error) {
-	if _, err := os.Stat(options.IdentityFile); err == nil {
-		return Identity{}, errors.New("identity already exists")
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return Identity{}, fmt.Errorf("stat identity: %w", err)
-	}
 	tokenInfo, err := os.Stat(options.TokenFile)
 	if err != nil {
 		return Identity{}, fmt.Errorf("stat machine token: %w", err)
@@ -127,13 +150,36 @@ func Enroll(ctx context.Context, options struct {
 	if _, err := decodeKey(token, 32); err != nil {
 		return Identity{}, errors.New("machine token must be canonical base64url for 32 bytes")
 	}
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return Identity{}, fmt.Errorf("generate identity: %w", err)
+	var identity Identity
+	if _, statError := os.Stat(options.IdentityFile); statError == nil {
+		identity, err = loadStored(options.IdentityFile)
+		if err != nil {
+			return Identity{}, err
+		}
+		if identity.EnrollmentState != EnrollmentPending || identity.AgentID != options.ExpectedAgentID {
+			return Identity{}, errors.New("confirmed or mismatched identity already exists")
+		}
+	} else if !errors.Is(statError, os.ErrNotExist) {
+		return Identity{}, fmt.Errorf("stat identity: %w", statError)
+	} else {
+		publicKey, privateKey, generateError := ed25519.GenerateKey(rand.Reader)
+		if generateError != nil {
+			return Identity{}, fmt.Errorf("generate identity: %w", generateError)
+		}
+		identity = Identity{
+			SchemaVersion:   SchemaVersion,
+			EnrollmentState: EnrollmentPending,
+			AgentID:         options.ExpectedAgentID,
+			PublicKey:       base64.RawURLEncoding.EncodeToString(publicKey),
+			PrivateKey:      base64.RawURLEncoding.EncodeToString(privateKey),
+		}
+		if err := state.NewJSONFile(options.IdentityFile).Save(identity); err != nil {
+			return Identity{}, fmt.Errorf("persist pending identity: %w", err)
+		}
 	}
 	body, err := json.Marshal(enrollmentRequest{
 		MachineToken: token,
-		PublicKey:    base64.RawURLEncoding.EncodeToString(publicKey),
+		PublicKey:    identity.PublicKey,
 		AgentVersion: options.AgentVersion,
 		Capabilities: options.Capabilities,
 	})
@@ -150,15 +196,6 @@ func Enroll(ctx context.Context, options struct {
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
-	identity := Identity{
-		SchemaVersion: SchemaVersion,
-		AgentID:       options.ExpectedAgentID,
-		PublicKey:     base64.RawURLEncoding.EncodeToString(publicKey),
-		PrivateKey:    base64.RawURLEncoding.EncodeToString(privateKey),
-	}
-	if err := state.NewJSONFile(options.IdentityFile).Save(identity); err != nil {
-		return Identity{}, fmt.Errorf("persist pending identity: %w", err)
-	}
 	client := options.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
@@ -172,7 +209,14 @@ func Enroll(ctx context.Context, options struct {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		_ = os.Remove(options.IdentityFile)
+		if enrollmentRejected(response.StatusCode) {
+			if removeError := state.NewJSONFile(options.IdentityFile).Remove(); removeError != nil {
+				return Identity{}, fmt.Errorf(
+					"enroll identity: server returned HTTP %d and pending identity removal failed: %w",
+					response.StatusCode, removeError,
+				)
+			}
+		}
 		return Identity{}, fmt.Errorf("enroll identity: server returned HTTP %d", response.StatusCode)
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 4097))
@@ -185,19 +229,36 @@ func Enroll(ctx context.Context, options struct {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Identity{}, errors.New("enrollment response contains trailing JSON")
 	}
-	if !result.OK || result.Protocol != "2026-08-16.v3" || result.AgentID != options.ExpectedAgentID {
+	if !result.OK || result.Protocol != protocol.Version || result.AgentID != options.ExpectedAgentID {
 		return Identity{}, errors.New("enrollment response identity or protocol mismatch")
+	}
+	identity.EnrollmentState = EnrollmentConfirmed
+	if err := state.NewJSONFile(options.IdentityFile).Save(identity); err != nil {
+		return Identity{}, fmt.Errorf("persist confirmed identity: %w", err)
 	}
 	return identity, nil
 }
 
+func enrollmentRejected(statusCode int) bool {
+	if statusCode >= 300 && statusCode < 400 {
+		return true
+	}
+	if statusCode < 400 || statusCode >= 500 {
+		return false
+	}
+	return statusCode != http.StatusRequestTimeout && statusCode != http.StatusTooEarly &&
+		statusCode != http.StatusTooManyRequests
+}
+
 func deriveEnrollmentURL(endpoint string) (string, error) {
 	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" || !strings.HasSuffix(parsed.Path, "/ws") {
+	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" ||
+		parsed.Path != "/internal/agents/ws" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", errors.New("control endpoint cannot derive enrollment URL")
 	}
 	parsed.Scheme = "https"
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/ws") + "/enroll"
+	parsed.Path = "/internal/agents/enroll"
 	return parsed.String(), nil
 }
 

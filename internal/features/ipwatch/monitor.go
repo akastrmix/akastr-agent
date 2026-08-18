@@ -19,6 +19,7 @@ type AddressObserver interface {
 type monitorSnapshot struct {
 	SchemaVersion    int                             `json:"schema_version"`
 	LastIPv4         string                          `json:"last_ipv4,omitempty"`
+	PendingSnapshot  *protocol.IPSnapshotBody        `json:"pending_snapshot,omitempty"`
 	Pending          *protocol.IPObservationBody     `json:"pending,omitempty"`
 	ChangeAttempt    *changeAttempt                  `json:"change_attempt,omitempty"`
 	PendingUnchanged *protocol.ChangeIPUnchangedBody `json:"pending_unchanged,omitempty"`
@@ -48,7 +49,7 @@ const (
 )
 
 func OpenMonitor(filePath string, observer AddressObserver, interval time.Duration) (*Monitor, error) {
-	if observer == nil || interval < 10*time.Second || interval > time.Hour {
+	if observer == nil || interval < 10*time.Second || interval > 5*time.Minute {
 		return nil, errors.New("IP monitor options are invalid")
 	}
 	monitor := &Monitor{
@@ -60,47 +61,101 @@ func OpenMonitor(filePath string, observer AddressObserver, interval time.Durati
 		return nil, err
 	}
 	if found {
-		if monitor.snapshot.SchemaVersion != 1 {
-			return nil, errors.New("IP state schema is unsupported")
-		}
-		if monitor.snapshot.LastIPv4 != "" {
-			address, parseError := netip.ParseAddr(monitor.snapshot.LastIPv4)
-			if parseError != nil || !address.Is4() {
-				return nil, errors.New("IP state last_ipv4 is invalid")
-			}
-		}
-		if pending := monitor.snapshot.Pending; pending != nil {
-			if pending.Family != "ipv4" || pending.PreviousAddress == pending.Address || pending.ObservationID == "" {
-				return nil, errors.New("IP state pending observation is invalid")
-			}
-		}
-		if monitor.snapshot.Pending != nil && monitor.snapshot.PendingUnchanged != nil {
-			return nil, errors.New("IP state contains multiple pending events")
-		}
-		if attempt := monitor.snapshot.ChangeAttempt; attempt != nil {
-			address, parseError := netip.ParseAddr(attempt.Address)
-			if !protocol.ValidUUID(attempt.CommandID) || parseError != nil || !address.Is4() ||
-				attempt.ReconcileAt.IsZero() || attempt.Confirmations < 0 ||
-				attempt.Confirmations >= changeUnchangedConfirmations {
-				return nil, errors.New("IP state ChangeIP attempt is invalid")
-			}
-		}
-		if pending := monitor.snapshot.PendingUnchanged; pending != nil {
-			address, parseError := netip.ParseAddr(pending.Address)
-			if !protocol.ValidUUID(pending.CommandID) || parseError != nil || !address.Is4() || pending.ObservedAt == "" {
-				return nil, errors.New("IP state pending unchanged result is invalid")
-			}
+		if err := validateMonitorSnapshot(monitor.snapshot); err != nil {
+			return nil, err
 		}
 	}
 	return monitor, nil
 }
 
-func (m *Monitor) Run(ctx context.Context, publish func(protocol.IPObservationBody) error, publishUnchanged func(protocol.ChangeIPUnchangedBody) error) error {
-	if publish == nil || publishUnchanged == nil {
+func CheckIdle(filePath string) error {
+	snapshot := monitorSnapshot{SchemaVersion: 1}
+	found, err := state.NewJSONFile(filePath).Load(&snapshot)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if err := validateMonitorSnapshot(snapshot); err != nil {
+		return err
+	}
+	if snapshot.PendingSnapshot != nil || snapshot.Pending != nil || snapshot.ChangeAttempt != nil || snapshot.PendingUnchanged != nil {
+		return errors.New("IP observation or ChangeIP reconciliation is pending")
+	}
+	return nil
+}
+
+func validateMonitorSnapshot(snapshot monitorSnapshot) error {
+	if snapshot.SchemaVersion != 1 {
+		return errors.New("IP state schema is unsupported")
+	}
+	if snapshot.LastIPv4 != "" {
+		address, parseError := netip.ParseAddr(snapshot.LastIPv4)
+		if parseError != nil || !address.Is4() {
+			return errors.New("IP state last_ipv4 is invalid")
+		}
+	}
+	if pending := snapshot.PendingSnapshot; pending != nil {
+		address, addressError := netip.ParseAddr(pending.Address)
+		observedAt, timeError := time.Parse(time.RFC3339Nano, pending.ObservedAt)
+		if pending.Family != "ipv4" || !protocol.ValidUUID(pending.SnapshotID) ||
+			addressError != nil || !address.Is4() || timeError != nil || observedAt.IsZero() ||
+			snapshot.LastIPv4 != pending.Address {
+			return errors.New("IP state pending snapshot is invalid")
+		}
+	}
+	if pending := snapshot.Pending; pending != nil {
+		previous, previousError := netip.ParseAddr(pending.PreviousAddress)
+		address, addressError := netip.ParseAddr(pending.Address)
+		observedAt, timeError := time.Parse(time.RFC3339Nano, pending.ObservedAt)
+		if pending.Family != "ipv4" || !protocol.ValidUUID(pending.ObservationID) ||
+			previousError != nil || !previous.Is4() || addressError != nil || !address.Is4() ||
+			previous == address || timeError != nil || observedAt.IsZero() {
+			return errors.New("IP state pending observation is invalid")
+		}
+	}
+	pendingStates := 0
+	if snapshot.PendingSnapshot != nil {
+		pendingStates++
+	}
+	if snapshot.Pending != nil {
+		pendingStates++
+	}
+	if snapshot.ChangeAttempt != nil {
+		pendingStates++
+	}
+	if snapshot.PendingUnchanged != nil {
+		pendingStates++
+	}
+	if pendingStates > 1 {
+		return errors.New("IP state contains multiple pending events")
+	}
+	if attempt := snapshot.ChangeAttempt; attempt != nil {
+		address, parseError := netip.ParseAddr(attempt.Address)
+		if !protocol.ValidUUID(attempt.CommandID) || parseError != nil || !address.Is4() ||
+			attempt.ReconcileAt.IsZero() || attempt.Confirmations < 0 ||
+			attempt.Confirmations >= changeUnchangedConfirmations {
+			return errors.New("IP state ChangeIP attempt is invalid")
+		}
+	}
+	if pending := snapshot.PendingUnchanged; pending != nil {
+		address, parseError := netip.ParseAddr(pending.Address)
+		observedAt, timeError := time.Parse(time.RFC3339Nano, pending.ObservedAt)
+		if !protocol.ValidUUID(pending.CommandID) || parseError != nil || !address.Is4() ||
+			timeError != nil || observedAt.IsZero() {
+			return errors.New("IP state pending unchanged result is invalid")
+		}
+	}
+	return nil
+}
+
+func (m *Monitor) Run(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error, publishUnchanged func(protocol.ChangeIPUnchangedBody) error) error {
+	if publishSnapshot == nil || publish == nil || publishUnchanged == nil {
 		return errors.New("IP observation publishers are required")
 	}
 	for {
-		if err := m.step(ctx, publish, publishUnchanged); err != nil && ctx.Err() == nil {
+		if err := m.step(ctx, publishSnapshot, publish, publishUnchanged); err != nil && ctx.Err() == nil {
 			if !errors.Is(err, errTransientMonitor) {
 				return err
 			}
@@ -126,7 +181,7 @@ func (m *Monitor) ArmChange(commandID, address string, startedAt time.Time) erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if (m.snapshot.LastIPv4 != "" && m.snapshot.LastIPv4 != address) ||
-		m.snapshot.Pending != nil || m.snapshot.PendingUnchanged != nil {
+		m.snapshot.PendingSnapshot != nil || m.snapshot.Pending != nil || m.snapshot.PendingUnchanged != nil {
 		return errors.New("IP monitor state does not match ChangeIP preflight")
 	}
 	if m.snapshot.ChangeAttempt != nil {
@@ -200,6 +255,21 @@ func (m *Monitor) Ack(observationID string) error {
 	return nil
 }
 
+func (m *Monitor) AckSnapshot(snapshotID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.snapshot.PendingSnapshot == nil || m.snapshot.PendingSnapshot.SnapshotID != snapshotID {
+		return errors.New("IP snapshot acknowledgment does not match pending state")
+	}
+	next := m.snapshot
+	next.PendingSnapshot = nil
+	if err := m.file.Save(next); err != nil {
+		return err
+	}
+	m.snapshot = next
+	return nil
+}
+
 func (m *Monitor) AckUnchanged(commandID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -215,8 +285,16 @@ func (m *Monitor) AckUnchanged(commandID string) error {
 	return nil
 }
 
-func (m *Monitor) step(ctx context.Context, publish func(protocol.IPObservationBody) error, publishUnchanged func(protocol.ChangeIPUnchangedBody) error) error {
+func (m *Monitor) step(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error, publishUnchanged func(protocol.ChangeIPUnchangedBody) error) error {
 	m.mu.Lock()
+	if m.snapshot.PendingSnapshot != nil {
+		pending := *m.snapshot.PendingSnapshot
+		m.mu.Unlock()
+		if err := publishSnapshot(pending); err != nil {
+			return fmt.Errorf("%w: publish pending snapshot", errTransientMonitor)
+		}
+		return nil
+	}
 	if m.snapshot.Pending != nil {
 		pending := *m.snapshot.Pending
 		m.mu.Unlock()
@@ -241,14 +319,22 @@ func (m *Monitor) step(ctx context.Context, publish func(protocol.IPObservationB
 	current := observation.Address.String()
 	m.mu.Lock()
 	if m.snapshot.LastIPv4 == "" {
+		pending := &protocol.IPSnapshotBody{
+			SnapshotID: protocol.NewUUID(), Family: "ipv4", Address: current,
+			ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),
+		}
 		next := m.snapshot
 		next.LastIPv4 = current
+		next.PendingSnapshot = pending
 		if err := m.file.Save(next); err != nil {
 			m.mu.Unlock()
 			return err
 		}
 		m.snapshot = next
 		m.mu.Unlock()
+		if err := publishSnapshot(*pending); err != nil {
+			return fmt.Errorf("%w: publish snapshot", errTransientMonitor)
+		}
 		return nil
 	}
 	if m.snapshot.LastIPv4 == current {

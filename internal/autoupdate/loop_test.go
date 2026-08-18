@@ -116,3 +116,34 @@ func TestRunLoopDefersWhenAnOperationIsActive(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 }
+
+func TestRunLoopStopsWhenReexecFails(t *testing.T) {
+	ticks := make(chan time.Time, 1)
+	want := errors.New("reexec failed")
+	done := make(chan error, 1)
+	go func() {
+		done <- RunLoop(t.Context(), LoopOptions{
+			ControlEndpoint: "wss://control.example/internal/agents/ws",
+			CurrentVersion:  "v0.7.0", Credentials: identity.Identity{},
+			ConfigPath: "/etc/akastr-agent/config.json", ReleaseRoot: "/usr/local/lib/akastr-agent",
+			Lifecycle: lifecycle.New(),
+			Checker: loopChecker{manifest: Manifest{
+				Schema: Schema, Status: "update_available", Version: "v0.7.1",
+				Protocol:     protocol.Version,
+				BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v0.7.1/akastr-agent-linux-amd64",
+				BinarySHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			}}, Ticks: ticks,
+			Apply:  func(context.Context, ApplyOptions) error { return nil },
+			Reexec: func(string) error { return want },
+		})
+	}()
+	ticks <- time.Now()
+	select {
+	case err := <-done:
+		if !errors.Is(err, want) {
+			t.Fatalf("RunLoop() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunLoop did not stop after reexec failure")
+	}
+}

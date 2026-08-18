@@ -89,6 +89,9 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 		if err := os.Rename(staging, targetRelease); err != nil {
 			return fmt.Errorf("install Agent update release: %w", err)
 		}
+		if err := syncDirectory(releasesRoot); err != nil {
+			return fmt.Errorf("sync Agent releases directory: %w", err)
+		}
 		createdRelease = true
 		staging = ""
 	}
@@ -222,7 +225,22 @@ func replaceSymlink(path, target string) error {
 		_ = os.Remove(temporary)
 		return fmt.Errorf("replace Agent current symlink: %w", err)
 	}
+	if err := syncDirectory(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("sync Agent current directory: %w", err)
+	}
 	return nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
+		return err
+	}
+	return directory.Close()
 }
 
 func pruneOldReleases(releasesRoot, current string) {

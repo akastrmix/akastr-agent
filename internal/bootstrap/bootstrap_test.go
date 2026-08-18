@@ -215,6 +215,14 @@ func TestPayloadValidationRejectsGenericShellAndDuplicateProfiles(t *testing.T) 
 	if err := target.Validate(testAgentID); err == nil {
 		t.Fatal("generic shell command must be rejected")
 	}
+	target.Target = &Target{
+		IPWatchIntervalSeconds: 301,
+		ChangeIP:               ChangeIP{Provider: "disabled"},
+		SOCKS5:                 SOCKS5{},
+	}
+	if err := target.Validate(testAgentID); err == nil {
+		t.Fatal("IP watch interval above five minutes must be rejected")
+	}
 	runner := Payload{
 		SchemaVersion: 2, Mode: "runner", AgentID: testAgentID, Name: "Runner",
 		ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",

@@ -7,10 +7,10 @@ import (
 )
 
 type Descriptor struct {
-	Name            string            `json:"name"`
-	Version         int               `json:"version"`
-	ExclusiveGroups []string          `json:"exclusive_groups,omitempty"`
-	Properties      map[string]string `json:"properties,omitempty"`
+	Name            string         `json:"name"`
+	Version         int            `json:"version"`
+	ExclusiveGroups []string       `json:"exclusive_groups,omitempty"`
+	Properties      map[string]any `json:"properties,omitempty"`
 }
 
 type Registry struct {
@@ -49,9 +49,14 @@ func cloneDescriptor(source Descriptor) Descriptor {
 	copy := source
 	copy.ExclusiveGroups = append([]string(nil), source.ExclusiveGroups...)
 	if source.Properties != nil {
-		copy.Properties = make(map[string]string, len(source.Properties))
+		copy.Properties = make(map[string]any, len(source.Properties))
 		for key, value := range source.Properties {
-			copy.Properties[key] = value
+			switch typed := value.(type) {
+			case []string:
+				copy.Properties[key] = append([]string(nil), typed...)
+			default:
+				copy.Properties[key] = value
+			}
 		}
 	}
 	return copy

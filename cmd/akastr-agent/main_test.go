@@ -12,17 +12,18 @@ import (
 
 func TestCheckIdleRejectsAnActiveOperation(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "operations.json")
+	ipStatePath := filepath.Join(t.TempDir(), "ip-state.json")
 	engine, err := operation.Open(operation.Options{StateFile: statePath, RecentLimit: 16})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := checkIdle(statePath, 16); err != nil {
+	if err := checkIdle(statePath, ipStatePath, 16); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := engine.Begin("active-command", "changeip", "target-network"); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkIdle(statePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
+	if err := checkIdle(statePath, ipStatePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
 		t.Fatalf("checkIdle error = %v, want active operation rejection", err)
 	}
 }

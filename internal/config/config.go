@@ -154,8 +154,8 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 	enabled := 0
 	if capabilities.IPWatch.Enabled {
 		enabled++
-		if capabilities.IPWatch.IntervalSeconds < 10 || capabilities.IPWatch.IntervalSeconds > 3600 {
-			return errors.New("capabilities.ip_watch.interval_seconds must be between 10 and 3600")
+		if capabilities.IPWatch.IntervalSeconds < 10 || capabilities.IPWatch.IntervalSeconds > 300 {
+			return errors.New("capabilities.ip_watch.interval_seconds must be between 10 and 300")
 		}
 	}
 	if capabilities.ChangeIP.Enabled {

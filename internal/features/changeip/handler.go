@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -36,16 +37,17 @@ func New(engine *operation.Engine, observer ipwatch.AddressObserver, provider ch
 	}
 }
 
-func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
+func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	if recent, found := h.engine.Recent(offer.CommandID); found && len(recent.TerminalResult) > 0 {
 		var result protocol.ExecutionResult
 		if json.Unmarshal(recent.TerminalResult, &result) == nil {
-			return result
+			return result, nil
 		}
+		return protocol.ExecutionResult{}, errors.New("decode persisted ChangeIP terminal result")
 	}
 	if _, err := h.engine.Begin(offer.CommandID, "changeip.execute", "target-network"); err != nil {
 		if _, active := h.engine.Active(offer.CommandID); active {
-			result := failure("interrupted_unknown", nil, nil, time.Now().UTC())
+			result := failure("interrupted_unknown", nil, time.Now().UTC())
 			status := operation.StatusFailed
 			if h.reconciler != nil && h.reconciler.HasChange(offer.CommandID) {
 				address, _ := h.reconciler.ChangeAddress(offer.CommandID)
@@ -56,14 +58,12 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) pr
 			if _, finishError := h.engine.FinishWithResult(
 				offer.CommandID, status, result.Code, persisted,
 			); finishError == nil {
-				return result
+				return result, nil
+			} else {
+				return protocol.ExecutionResult{}, fmt.Errorf("persist recovered ChangeIP terminal result: %w", finishError)
 			}
 		}
-		code := "local_conflict"
-		if errors.Is(err, operation.ErrDuplicate) {
-			code = "result_recovery_failed"
-		}
-		return failure(code, nil, nil, time.Now().UTC())
+		return protocol.ExecutionResult{}, fmt.Errorf("begin ChangeIP operation: %w", err)
 	}
 	result := h.execute(ctx, offer)
 	persisted, _ := json.Marshal(result)
@@ -74,62 +74,61 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) pr
 		status = operation.StatusCancelled
 	}
 	if _, err := h.engine.FinishWithResult(offer.CommandID, status, result.Code, persisted); err != nil {
-		return failure("state_persist_failed", nil, nil, time.Now().UTC())
+		return protocol.ExecutionResult{}, fmt.Errorf("persist ChangeIP terminal result: %w", err)
 	}
-	return result
+	return result, nil
 }
 
 func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
 	var payload protocol.ChangeIPPayload
 	if err := decodeExact(offer.Payload, &payload); err != nil {
-		return failure("payload_invalid", nil, nil, time.Now().UTC())
+		return failure("payload_invalid", nil, time.Now().UTC())
 	}
 	observeContext, cancelObserve := context.WithTimeout(ctx, h.observeTimeout)
 	beforeObservation, err := h.observer.Observe(observeContext, ipwatch.IPv4)
 	cancelObserve()
 	if err != nil {
-		return failure("ipv4_observe_failed", nil, nil, time.Now().UTC())
+		return failure("ipv4_observe_failed", nil, time.Now().UTC())
 	}
 	before := beforeObservation.Address.String()
 	if before != payload.ExpectedIPv4 {
-		return failure("stale_expected_ipv4", &before, &before, beforeObservation.ObservedAt)
+		return failure("stale_expected_ipv4", &before, beforeObservation.ObservedAt)
 	}
 	if h.reconciler == nil || h.reconciler.ArmChange(offer.CommandID, before, time.Now().UTC()) != nil {
-		return failure("reconciliation_state_failed", &before, &before, time.Now().UTC())
+		return failure("reconciliation_state_failed", &before, time.Now().UTC())
 	}
 	providerResult := h.provider.Run(ctx)
 	if providerResult.State == changeprovider.TriggerFailed {
 		if err := h.reconciler.CancelChange(offer.CommandID); err != nil {
 			return reconciliationPending(&before, providerResult.FinishedAt)
 		}
-		return failure(providerResult.Code, &before, &before, providerResult.FinishedAt)
+		return failure(providerResult.Code, &before, providerResult.FinishedAt)
 	}
 	if providerResult.State == changeprovider.TriggerUnknown {
 		return reconciliationPending(&before, providerResult.FinishedAt)
 	}
 	return protocol.ExecutionResult{
 		Outcome: "succeeded", Code: "change_triggered",
-		Result: changeResult(&before, nil, providerResult.FinishedAt),
+		Result: changeResult(&before, providerResult.FinishedAt),
 	}
 }
 
 func reconciliationPending(oldIPv4 *string, observedAt time.Time) protocol.ExecutionResult {
 	return protocol.ExecutionResult{
 		Outcome: "succeeded", Code: "change_trigger_unknown",
-		Result: changeResult(oldIPv4, nil, observedAt),
+		Result: changeResult(oldIPv4, observedAt),
 	}
 }
 
-func failure(code string, oldIPv4, newIPv4 *string, observedAt time.Time) protocol.ExecutionResult {
+func failure(code string, oldIPv4 *string, observedAt time.Time) protocol.ExecutionResult {
 	return protocol.ExecutionResult{
-		Outcome: "failed", Code: code, Result: changeResult(oldIPv4, newIPv4, observedAt),
+		Outcome: "failed", Code: code, Result: changeResult(oldIPv4, observedAt),
 	}
 }
 
-func changeResult(oldIPv4, newIPv4 *string, observedAt time.Time) map[string]any {
+func changeResult(oldIPv4 *string, observedAt time.Time) map[string]any {
 	return map[string]any{
-		"old_ipv4": oldIPv4, "new_ipv4": newIPv4,
-		"observed_at": observedAt.UTC().Format(time.RFC3339Nano),
+		"old_ipv4": oldIPv4, "observed_at": observedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 
