@@ -59,10 +59,7 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 }
 
 func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
-	payload, err := protocol.DecodeIPQualityPayload(offer.Payload)
-	if err != nil {
-		return h.failure("payload_invalid", "", "", "")
-	}
+	payload := *offer.IPQuality
 	if payload.ScriptVersion != h.scriptVersion {
 		return h.failure("script_version_mismatch", "", "", "")
 	}

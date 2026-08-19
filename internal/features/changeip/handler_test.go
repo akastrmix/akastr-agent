@@ -2,7 +2,6 @@ package changeip
 
 import (
 	"context"
-	"encoding/json"
 	"net/netip"
 	"path/filepath"
 	"testing"
@@ -163,6 +162,8 @@ func (p *countingProvider) Run(context.Context) changeprovider.Result {
 }
 
 func offerFor(expectedIPv4 string) protocol.OperationOffer {
-	payload, _ := json.Marshal(protocol.ChangeIPPayload{ExpectedIPv4: expectedIPv4})
-	return protocol.OperationOffer{CommandID: "123e4567-e89b-42d3-a456-426614174000", Payload: payload}
+	return protocol.OperationOffer{
+		CommandID: "123e4567-e89b-42d3-a456-426614174000",
+		ChangeIP:  &protocol.ChangeIPPayload{ExpectedIPv4: expectedIPv4},
+	}
 }

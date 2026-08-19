@@ -50,6 +50,16 @@ type AgentIDBody struct {
 }
 
 type OperationOffer struct {
+	CommandID      string
+	CommandType    string
+	PayloadVersion int
+	NotBefore      time.Time
+	ExpiresAt      time.Time
+	ChangeIP       *ChangeIPPayload
+	IPQuality      *IPQualityPayload
+}
+
+type operationOfferBody struct {
 	CommandID      string          `json:"command_id"`
 	CommandType    string          `json:"command_type"`
 	PayloadVersion int             `json:"payload_version"`
@@ -145,83 +155,41 @@ func Decode(data []byte) (Envelope, error) {
 	return envelope, nil
 }
 
-// DecodeServerEnvelope validates the complete Cloud-to-Agent message before it
-// can affect connection or operation state. Every field in the current wire
-// contract is required; no zero-value fallback is accepted.
-func DecodeServerEnvelope(data []byte) (Envelope, error) {
-	envelope, err := Decode(data)
-	if err != nil {
-		return Envelope{}, err
-	}
-	switch envelope.Type {
-	case "auth.challenge":
-		body, decodeError := decodeRequiredBody[AuthChallenge](
-			envelope, "challenge_id", "agent_id", "nonce", "issued_at", "expires_at",
-		)
-		if decodeError == nil {
-			_, decodeError = AuthSigningText(body)
-		}
-		err = decodeError
-	case "auth.accepted", "hello.accepted":
-		body, decodeError := decodeRequiredBody[AgentIDBody](envelope, "agent_id")
-		if decodeError == nil && !ValidUUID(body.AgentID) {
-			decodeError = errors.New("invalid Agent acknowledgement identifier")
-		}
-		err = decodeError
-	case "operation.offer":
-		body, decodeError := decodeRequiredBody[OperationOffer](
-			envelope,
-			"command_id", "command_type", "payload_version", "payload", "not_before", "expires_at",
-		)
-		if decodeError == nil {
-			decodeError = ValidateOperationOffer(body)
-		}
-		err = decodeError
-	case "operation.accepted_ack":
-		body, decodeError := decodeRequiredBody[AcceptedAckBody](envelope, "command_id", "accepted")
-		if decodeError == nil && !ValidUUID(body.CommandID) {
-			decodeError = errors.New("invalid accepted acknowledgement identifier")
-		}
-		err = decodeError
-	case "operation.result_ack":
-		body, decodeError := decodeRequiredBody[ResultAckBody](envelope, "command_id", "persisted")
-		if decodeError == nil && !ValidUUID(body.CommandID) {
-			decodeError = errors.New("invalid result acknowledgement identifier")
-		}
-		err = decodeError
-	case "ip.snapshot_ack":
-		body, decodeError := decodeRequiredBody[IPSnapshotAckBody](envelope, "snapshot_id", "persisted")
-		if decodeError == nil && !ValidUUID(body.SnapshotID) {
-			decodeError = errors.New("invalid IP snapshot acknowledgement identifier")
-		}
-		err = decodeError
-	case "ip.observed_ack":
-		body, decodeError := decodeRequiredBody[IPObservationAckBody](envelope, "observation_id", "persisted")
-		if decodeError == nil && !ValidUUID(body.ObservationID) {
-			decodeError = errors.New("invalid IP observation acknowledgement identifier")
-		}
-		err = decodeError
-	case "changeip.unchanged_ack":
-		body, decodeError := decodeRequiredBody[ChangeIPUnchangedAckBody](envelope, "command_id", "persisted")
-		if decodeError == nil && !ValidUUID(body.CommandID) {
-			decodeError = errors.New("invalid ChangeIP acknowledgement identifier")
-		}
-		err = decodeError
-	default:
-		err = fmt.Errorf("unsupported server message type %q", envelope.Type)
-	}
-	if err != nil {
-		return Envelope{}, fmt.Errorf("validate %s body: %w", envelope.Type, err)
-	}
-	return envelope, nil
-}
-
-func DecodeBody[T any](envelope Envelope) (T, error) {
-	return decodeJSONBody[T](envelope.Body, envelope.Type)
-}
-
-func decodeRequiredBody[T any](envelope Envelope, fields ...string) (T, error) {
+func DecodeBody[T any](envelope Envelope, fields ...string) (T, error) {
 	return decodeRequiredJSON[T](envelope.Body, envelope.Type, fields...)
+}
+
+func DecodeOperationOffer(envelope Envelope) (OperationOffer, error) {
+	body, err := DecodeBody[operationOfferBody](
+		envelope,
+		"command_id", "command_type", "payload_version", "payload", "not_before", "expires_at",
+	)
+	if err != nil || !ValidUUID(body.CommandID) || body.PayloadVersion != 1 ||
+		body.NotBefore.IsZero() || body.ExpiresAt.IsZero() ||
+		!body.ExpiresAt.After(body.NotBefore) || len(body.Payload) == 0 {
+		return OperationOffer{}, errors.New("operation offer is invalid")
+	}
+	offer := OperationOffer{
+		CommandID: body.CommandID, CommandType: body.CommandType, PayloadVersion: body.PayloadVersion,
+		NotBefore: body.NotBefore, ExpiresAt: body.ExpiresAt,
+	}
+	switch body.CommandType {
+	case "changeip.execute":
+		payload, err := decodeChangeIPPayload(body.Payload)
+		if err != nil {
+			return OperationOffer{}, err
+		}
+		offer.ChangeIP = &payload
+	case "ipquality.execute":
+		payload, err := decodeIPQualityPayload(body.Payload)
+		if err != nil {
+			return OperationOffer{}, err
+		}
+		offer.IPQuality = &payload
+	default:
+		return OperationOffer{}, errors.New("operation type is unsupported")
+	}
+	return offer, nil
 }
 
 func decodeRequiredJSON[T any](data []byte, description string, fields ...string) (T, error) {
@@ -251,25 +219,7 @@ func decodeJSONBody[T any](data []byte, description string) (T, error) {
 	return result, nil
 }
 
-func ValidateOperationOffer(offer OperationOffer) error {
-	if !ValidUUID(offer.CommandID) || offer.PayloadVersion != 1 ||
-		offer.NotBefore.IsZero() || offer.ExpiresAt.IsZero() ||
-		!offer.ExpiresAt.After(offer.NotBefore) || len(offer.Payload) == 0 {
-		return errors.New("operation offer is invalid")
-	}
-	switch offer.CommandType {
-	case "changeip.execute":
-		_, err := DecodeChangeIPPayload(offer.Payload)
-		return err
-	case "ipquality.execute":
-		_, err := DecodeIPQualityPayload(offer.Payload)
-		return err
-	default:
-		return errors.New("operation type is unsupported")
-	}
-}
-
-func DecodeChangeIPPayload(data []byte) (ChangeIPPayload, error) {
+func decodeChangeIPPayload(data []byte) (ChangeIPPayload, error) {
 	payload, err := decodeRequiredJSON[ChangeIPPayload](data, "changeip.execute payload", "expected_ipv4")
 	if err != nil {
 		return ChangeIPPayload{}, err
@@ -280,7 +230,7 @@ func DecodeChangeIPPayload(data []byte) (ChangeIPPayload, error) {
 	return payload, nil
 }
 
-func DecodeIPQualityPayload(data []byte) (IPQualityPayload, error) {
+func decodeIPQualityPayload(data []byte) (IPQualityPayload, error) {
 	payload, err := decodeRequiredJSON[IPQualityPayload](
 		data, "ipquality.execute payload",
 		"expected_ipv4", "proxy_port", "proxy_profile_id", "script_version",

@@ -100,7 +100,7 @@
         "type": "agent.hello",
         "sent_at": "2026-08-18T00:00:05.000Z",
         "body": {
-          "agent_version": "v1.0.1",
+          "agent_version": "v1.2.3",
           "capabilities": [
             {
               "name": "ip.observe",
@@ -171,7 +171,7 @@
       }
     },
     {
-      "name": "cloud-ipquality-offer-with-target-server-id",
+      "name": "cloud-ipquality-offer-extra-field",
       "direction": "cloud_to_agent",
       "message": {
         "protocol": "2026-08-18.v4",
@@ -187,7 +187,7 @@
             "proxy_port": 1080,
             "proxy_profile_id": "hkt",
             "script_version": "2026.08.18",
-            "target_server_id": "123e4567-e89b-42d3-a456-426614174117"
+            "unexpected": true
           },
           "not_before": "2026-08-18T00:00:00.000Z",
           "expires_at": "2026-08-18T06:00:00.000Z"
@@ -268,15 +268,15 @@
           "outcome": "succeeded",
           "code": "change_triggered",
           "result": {},
-          "target_server_id": "123e4567-e89b-42d3-a456-426614174117"
+          "unexpected": true
         }
       }
     },
     {
-      "name": "agent-message-old-protocol",
+      "name": "agent-message-unsupported-protocol",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-17.v3",
+        "protocol": "unsupported",
         "message_id": "123e4567-e89b-42d3-a456-426614174125",
         "type": "operation.accepted",
         "sent_at": "2026-08-18T00:00:15.000Z",

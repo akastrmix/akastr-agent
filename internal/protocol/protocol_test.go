@@ -2,6 +2,8 @@ package protocol
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -66,7 +68,7 @@ func TestPairedProtocolFixturesValidateCloudToAgentMessages(t *testing.T) {
 			continue
 		}
 		goldenCount++
-		if _, err := DecodeServerEnvelope(fixture.Message); err != nil {
+		if err := decodeCloudFixture(fixture.Message); err != nil {
 			t.Errorf("golden fixture %q rejected: %v", fixture.Name, err)
 		}
 	}
@@ -76,11 +78,70 @@ func TestPairedProtocolFixturesValidateCloudToAgentMessages(t *testing.T) {
 			continue
 		}
 		malformedCount++
-		if _, err := DecodeServerEnvelope(fixture.Message); err == nil {
+		if err := decodeCloudFixture(fixture.Message); err == nil {
 			t.Errorf("malformed fixture %q accepted", fixture.Name)
 		}
 	}
 	if goldenCount == 0 || malformedCount == 0 {
 		t.Fatal("paired fixtures do not cover Cloud-to-Agent messages")
+	}
+}
+
+func decodeCloudFixture(data []byte) error {
+	envelope, err := Decode(data)
+	if err != nil {
+		return err
+	}
+	switch envelope.Type {
+	case "auth.challenge":
+		body, err := DecodeBody[AuthChallenge](
+			envelope, "challenge_id", "agent_id", "nonce", "issued_at", "expires_at",
+		)
+		if err != nil {
+			return err
+		}
+		_, err = AuthSigningText(body)
+		return err
+	case "auth.accepted", "hello.accepted":
+		body, err := DecodeBody[AgentIDBody](envelope, "agent_id")
+		if err != nil || !ValidUUID(body.AgentID) {
+			return errors.New("invalid Agent acknowledgement")
+		}
+		return nil
+	case "operation.offer":
+		_, err := DecodeOperationOffer(envelope)
+		return err
+	case "operation.accepted_ack":
+		body, err := DecodeBody[AcceptedAckBody](envelope, "command_id", "accepted")
+		if err != nil || !ValidUUID(body.CommandID) {
+			return errors.New("invalid accepted acknowledgement")
+		}
+		return nil
+	case "operation.result_ack":
+		body, err := DecodeBody[ResultAckBody](envelope, "command_id", "persisted")
+		if err != nil || !ValidUUID(body.CommandID) {
+			return errors.New("invalid result acknowledgement")
+		}
+		return nil
+	case "ip.snapshot_ack":
+		body, err := DecodeBody[IPSnapshotAckBody](envelope, "snapshot_id", "persisted")
+		if err != nil || !ValidUUID(body.SnapshotID) {
+			return errors.New("invalid snapshot acknowledgement")
+		}
+		return nil
+	case "ip.observed_ack":
+		body, err := DecodeBody[IPObservationAckBody](envelope, "observation_id", "persisted")
+		if err != nil || !ValidUUID(body.ObservationID) {
+			return errors.New("invalid observation acknowledgement")
+		}
+		return nil
+	case "changeip.unchanged_ack":
+		body, err := DecodeBody[ChangeIPUnchangedAckBody](envelope, "command_id", "persisted")
+		if err != nil || !ValidUUID(body.CommandID) {
+			return errors.New("invalid ChangeIP acknowledgement")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported Cloud message type %q", envelope.Type)
 	}
 }

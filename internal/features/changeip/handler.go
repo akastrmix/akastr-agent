@@ -78,10 +78,7 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 }
 
 func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
-	payload, err := protocol.DecodeChangeIPPayload(offer.Payload)
-	if err != nil {
-		return failure("payload_invalid", nil, time.Now().UTC())
-	}
+	payload := *offer.ChangeIP
 	observeContext, cancelObserve := context.WithTimeout(ctx, h.observeTimeout)
 	beforeObservation, err := h.observer.Observe(observeContext, ipwatch.IPv4)
 	cancelObserve()

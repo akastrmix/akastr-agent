@@ -210,13 +210,13 @@ func (c *Client) runSession(ctx context.Context) error {
 		if messageType != websocket.MessageText {
 			return errors.New("binary control message rejected")
 		}
-		envelope, err := protocol.DecodeServerEnvelope(data)
+		envelope, err := protocol.Decode(data)
 		if err != nil {
 			return err
 		}
 		switch envelope.Type {
 		case "operation.offer":
-			offer, err := protocol.DecodeBody[protocol.OperationOffer](envelope)
+			offer, err := protocol.DecodeOperationOffer(envelope)
 			if err != nil {
 				return err
 			}
@@ -224,14 +224,20 @@ func (c *Client) runSession(ctx context.Context) error {
 				return err
 			}
 		case "operation.accepted_ack":
-			ack, err := protocol.DecodeBody[protocol.AcceptedAckBody](envelope)
-			if err != nil {
+			ack, err := protocol.DecodeBody[protocol.AcceptedAckBody](envelope, "command_id", "accepted")
+			if err != nil || !protocol.ValidUUID(ack.CommandID) {
+				if err == nil {
+					err = errors.New("invalid accepted acknowledgement identifier")
+				}
 				return err
 			}
 			c.handleAcceptedAck(ctx, ack)
 		case "operation.result_ack":
-			ack, err := protocol.DecodeBody[protocol.ResultAckBody](envelope)
-			if err != nil {
+			ack, err := protocol.DecodeBody[protocol.ResultAckBody](envelope, "command_id", "persisted")
+			if err != nil || !protocol.ValidUUID(ack.CommandID) {
+				if err == nil {
+					err = errors.New("invalid result acknowledgement identifier")
+				}
 				return err
 			}
 			if ack.Persisted {
@@ -240,8 +246,11 @@ func (c *Client) runSession(ctx context.Context) error {
 				c.mu.Unlock()
 			}
 		case "ip.snapshot_ack":
-			ack, err := protocol.DecodeBody[protocol.IPSnapshotAckBody](envelope)
-			if err != nil {
+			ack, err := protocol.DecodeBody[protocol.IPSnapshotAckBody](envelope, "snapshot_id", "persisted")
+			if err != nil || !protocol.ValidUUID(ack.SnapshotID) {
+				if err == nil {
+					err = errors.New("invalid IP snapshot acknowledgement identifier")
+				}
 				return err
 			}
 			if !ack.Persisted || c.observations == nil {
@@ -251,8 +260,11 @@ func (c *Client) runSession(ctx context.Context) error {
 				return err
 			}
 		case "ip.observed_ack":
-			ack, err := protocol.DecodeBody[protocol.IPObservationAckBody](envelope)
-			if err != nil {
+			ack, err := protocol.DecodeBody[protocol.IPObservationAckBody](envelope, "observation_id", "persisted")
+			if err != nil || !protocol.ValidUUID(ack.ObservationID) {
+				if err == nil {
+					err = errors.New("invalid IP observation acknowledgement identifier")
+				}
 				return err
 			}
 			if !ack.Persisted || c.observations == nil {
@@ -262,8 +274,11 @@ func (c *Client) runSession(ctx context.Context) error {
 				return err
 			}
 		case "changeip.unchanged_ack":
-			ack, err := protocol.DecodeBody[protocol.ChangeIPUnchangedAckBody](envelope)
-			if err != nil {
+			ack, err := protocol.DecodeBody[protocol.ChangeIPUnchangedAckBody](envelope, "command_id", "persisted")
+			if err != nil || !protocol.ValidUUID(ack.CommandID) {
+				if err == nil {
+					err = errors.New("invalid ChangeIP acknowledgement identifier")
+				}
 				return err
 			}
 			if !ack.Persisted || c.observations == nil {
@@ -319,7 +334,9 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 	if err != nil {
 		return err
 	}
-	challenge, err := protocol.DecodeBody[protocol.AuthChallenge](challengeEnvelope)
+	challenge, err := protocol.DecodeBody[protocol.AuthChallenge](
+		challengeEnvelope, "challenge_id", "agent_id", "nonce", "issued_at", "expires_at",
+	)
 	if err != nil {
 		return err
 	}
@@ -345,7 +362,7 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 	if err != nil {
 		return err
 	}
-	authAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](authAcceptedEnvelope)
+	authAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](authAcceptedEnvelope, "agent_id")
 	if err != nil || authAccepted.AgentID != c.identity.AgentID {
 		return errors.New("authentication acknowledgement agent mismatch")
 	}
@@ -358,7 +375,7 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 	if err != nil {
 		return err
 	}
-	helloAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](helloAcceptedEnvelope)
+	helloAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](helloAcceptedEnvelope, "agent_id")
 	if err != nil || helloAccepted.AgentID != c.identity.AgentID {
 		return errors.New("hello acknowledgement agent mismatch")
 	}
@@ -368,7 +385,7 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 func (c *Client) acceptOffer(ctx context.Context, session *session, offer protocol.OperationOffer) error {
 	now := time.Now()
 	recovery := c.executor.KnownOperation(offer.CommandID, offer.CommandType)
-	if protocol.ValidateOperationOffer(offer) != nil || !offerWindowAllows(offer, now, recovery) {
+	if !offerWindowAllows(offer, now, recovery) {
 		return errors.New("operation offer is invalid")
 	}
 	c.mu.Lock()
@@ -497,7 +514,7 @@ func readEnvelope(ctx context.Context, connection *websocket.Conn, expectedType 
 	if messageType != websocket.MessageText {
 		return protocol.Envelope{}, errors.New("binary control message rejected")
 	}
-	envelope, err := protocol.DecodeServerEnvelope(data)
+	envelope, err := protocol.Decode(data)
 	if err != nil {
 		return protocol.Envelope{}, err
 	}
