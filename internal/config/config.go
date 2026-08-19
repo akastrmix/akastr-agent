@@ -13,6 +13,7 @@ import (
 )
 
 const SchemaVersion = 2
+const ChangeIPProviderRoot = "/usr/local/lib/akastr-agent-providers"
 
 var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
@@ -166,6 +167,14 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 		if err := validateAbsoluteLinuxPath("capabilities.change_ip.program", capabilities.ChangeIP.Program); err != nil {
 			return err
 		}
+		if capabilities.ChangeIP.Program == "/usr/bin/curl" {
+			if len(capabilities.ChangeIP.Args) != 2 || capabilities.ChangeIP.Args[0] != "--config" ||
+				capabilities.ChangeIP.Args[1] != "/etc/akastr-agent/changeip-curl.conf" {
+				return errors.New("capabilities.change_ip curl provider configuration is invalid")
+			}
+		} else if err := ValidateChangeIPCommandProgram(capabilities.ChangeIP.Program); err != nil {
+			return err
+		}
 		if len(capabilities.ChangeIP.Args) > 32 {
 			return errors.New("capabilities.change_ip.args must contain at most 32 arguments")
 		}
@@ -210,6 +219,16 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 	}
 	if enabled == 0 {
 		return errors.New("at least one capability must be enabled")
+	}
+	return nil
+}
+
+func ValidateChangeIPCommandProgram(value string) error {
+	if err := validateAbsoluteLinuxPath("ChangeIP command program", value); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(value, ChangeIPProviderRoot+"/") {
+		return fmt.Errorf("ChangeIP command program must be below %s", ChangeIPProviderRoot)
 	}
 	return nil
 }

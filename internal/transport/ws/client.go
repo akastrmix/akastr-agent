@@ -22,11 +22,12 @@ import (
 
 type Executor interface {
 	Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error)
-	KnownOperation(commandID, commandType string) bool
 }
 
 type ObservationSource interface {
 	Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error
+	NotifyControlReady()
+	SnapshotReady() bool
 	AckSnapshot(string) error
 	Ack(string) error
 	AckUnchanged(string) error
@@ -43,18 +44,16 @@ type Client struct {
 	onReady      func() error
 	logger       *slog.Logger
 
-	mu        sync.Mutex
-	active    *session
-	running   map[string]*lifecycle.Lease
-	pending   map[string]pendingOperation
-	completed map[string]protocol.ExecutionResult
-	fatalErr  error
+	mu       sync.Mutex
+	active   *session
+	running  map[string]*lifecycle.Lease
+	pending  map[string]pendingOperation
+	fatalErr error
 }
 
 type pendingOperation struct {
-	offer    protocol.OperationOffer
-	lease    *lifecycle.Lease
-	recovery bool
+	offer protocol.OperationOffer
+	lease *lifecycle.Lease
 }
 
 type session struct {
@@ -100,7 +99,6 @@ func New(options struct {
 		executor:     options.Executor, observations: options.Observations,
 		lifecycle: options.Lifecycle, onReady: options.OnReady, logger: options.Logger,
 		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
-		completed: make(map[string]protocol.ExecutionResult),
 	}, nil
 }
 
@@ -197,6 +195,9 @@ func (c *Client) runSession(ctx context.Context) error {
 		}
 	}
 	c.setActive(session)
+	if c.observations != nil {
+		c.observations.NotifyControlReady()
+	}
 	defer func() {
 		c.clearActive(session)
 		c.releasePending()
@@ -240,10 +241,8 @@ func (c *Client) runSession(ctx context.Context) error {
 				}
 				return err
 			}
-			if ack.Persisted {
-				c.mu.Lock()
-				delete(c.completed, ack.CommandID)
-				c.mu.Unlock()
+			if !ack.Persisted {
+				return errors.New("operation result was not persisted")
 			}
 		case "ip.snapshot_ack":
 			ack, err := protocol.DecodeBody[protocol.IPSnapshotAckBody](envelope, "snapshot_id", "persisted")
@@ -384,18 +383,18 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 
 func (c *Client) acceptOffer(ctx context.Context, session *session, offer protocol.OperationOffer) error {
 	now := time.Now()
-	recovery := c.executor.KnownOperation(offer.CommandID, offer.CommandType)
-	if !offerWindowAllows(offer, now, recovery) {
+	if !offerHandshakeAllows(offer, now) {
 		return errors.New("operation offer is invalid")
 	}
-	c.mu.Lock()
-	if result, found := c.completed[offer.CommandID]; found {
-		c.mu.Unlock()
-		if err := session.write(ctx, "operation.accepted", protocol.CommandIDBody{CommandID: offer.CommandID}); err != nil {
-			return err
+	if offer.CommandType == "changeip.execute" {
+		if c.observations == nil {
+			return errors.New("ChangeIP observation source is unavailable")
 		}
-		return session.write(ctx, "operation.result", resultBody(offer.CommandID, result))
+		if !c.observations.SnapshotReady() {
+			return nil
+		}
 	}
+	c.mu.Lock()
 	if _, found := c.running[offer.CommandID]; found {
 		c.mu.Unlock()
 		return session.write(ctx, "operation.accepted", protocol.CommandIDBody{CommandID: offer.CommandID})
@@ -409,14 +408,13 @@ func (c *Client) acceptOffer(ctx context.Context, session *session, offer protoc
 		c.mu.Unlock()
 		return errors.New("automatic update is in progress")
 	}
-	c.pending[offer.CommandID] = pendingOperation{offer: offer, lease: lease, recovery: recovery}
+	c.pending[offer.CommandID] = pendingOperation{offer: offer, lease: lease}
 	c.mu.Unlock()
 	return session.write(ctx, "operation.accepted", protocol.CommandIDBody{CommandID: offer.CommandID})
 }
 
-func offerWindowAllows(offer protocol.OperationOffer, now time.Time, recovery bool) bool {
-	return offer.ExpiresAt.After(offer.NotBefore) && !now.Before(offer.NotBefore) &&
-		(now.Before(offer.ExpiresAt) || recovery)
+func offerHandshakeAllows(offer protocol.OperationOffer, now time.Time) bool {
+	return offer.ExpiresAt.After(offer.NotBefore) && !now.Before(offer.NotBefore)
 }
 
 func (c *Client) handleAcceptedAck(ctx context.Context, ack protocol.AcceptedAckBody) {
@@ -427,7 +425,7 @@ func (c *Client) handleAcceptedAck(ctx context.Context, ack protocol.AcceptedAck
 		c.mu.Unlock()
 		return
 	}
-	if !ack.Accepted || !offerWindowAllows(pending.offer, time.Now(), pending.recovery) {
+	if !ack.Accepted {
 		c.mu.Unlock()
 		pending.lease.Release()
 		return
@@ -460,7 +458,6 @@ func (c *Client) execute(ctx context.Context, offer protocol.OperationOffer) {
 		}
 		return
 	}
-	c.completed[offer.CommandID] = result
 	active := c.active
 	c.mu.Unlock()
 	lease.Release()

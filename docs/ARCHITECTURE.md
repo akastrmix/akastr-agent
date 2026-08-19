@@ -11,7 +11,7 @@
 
 运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。后台只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
 
-项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。安装命令只供 root shell 直接执行，不调用或依赖 `sudo`。操作者可以重复执行同一安装命令：安装器先验证 binary、密封配置和依赖，并确认 operation journal 与待对账 IP 状态为空，随后严格停止全部 Agent unit，再对稳定状态执行相同检查；任一检查失败就恢复原 unit 并中止，否则暂存 Agent 自有路径并为该节点注册全新的 Ed25519 identity。主控存在 pending、offered、accepted command 或 active ChangeIP session 时拒绝重新注册。安装事务把 `akastr-agent*` systemd 命名空间收敛为唯一主 service。轮换 token 会重新加密 bootstrap 并让原命令立即失效。安装器没有 TTY、向导或菜单，用户不直接维护 JSON 或 checksum。所有安装期下载都使用 HTTPS-only、三次重试且禁用持久 HSTS 数据库的 wget，文件完整落盘后才会被执行或安装；网络响应不会直接通过管道交给 root shell。Runner 会安装 Bash、jq、curl、bc、netcat、DNS 与 iproute 依赖，并在变更本地 Agent 前逐项确认实际命令可执行；发布门禁会在 Debian 12/13 slim 环境真实安装同一清单。
+项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。安装命令只供 root shell 直接执行，不调用或依赖 `sudo`。操作者可以重复执行同一安装命令：已有 Agent 会在任何下载或包变更前确认 operation journal 与待对账 IP 状态为空；新 binary、密封配置和依赖验证完成后，安装器严格停止全部 Agent unit，再以新 binary 对稳定状态执行相同检查。任一检查失败就恢复原 unit 并中止，否则暂存 Agent 自有路径并为该节点注册全新的 Ed25519 identity。主控存在 pending、offered、accepted command、active ChangeIP session 或目标 IPQuality run 时拒绝重新注册。安装事务把 `akastr-agent*` systemd 命名空间收敛为唯一主 service。轮换 token 会重新加密 bootstrap 并让原命令立即失效。安装器没有 TTY、向导或菜单，用户不直接维护 JSON 或 checksum。所有安装期下载都使用 HTTPS-only、三次重试且禁用持久 HSTS 数据库的 wget，文件完整落盘后才会被执行或安装；网络响应不会直接通过管道交给 root shell。Runner 会安装 Bash、jq、curl、bc、netcat、DNS 与 iproute 依赖，并在变更本地 Agent 前逐项确认实际命令可执行；发布门禁会在 Debian 12/13 slim 环境真实安装同一清单。
 
 ## 2. 主控边界
 
@@ -62,7 +62,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 日志只保存 operation ID、kind、exclusive group、时间、状态和稳定终态 code，不保存 payload、SOCKS5 凭据、脚本输出、客户信息或 Telegram 标识。
 
-终态记录只包含重发所需的有界安全结果。进程重启后，遗留的 active 记录继续占用互斥组；Cloud 保留已 accepted command 并在重连后重发相同 offer，即使原执行窗口已结束，Agent 也只对本地相同 command/type 进入恢复。它会被标记为 `interrupted_unknown` 或继续既有 ChangeIP 核对，不会重新执行 provider，然后释放互斥组；recent 终态直接重放。未知过期 command 和未知或损坏的状态 schema都会被拒绝，不会被静默重置。
+终态记录只包含重发所需的有界安全结果。Cloud 的 accepted ack 是执行授权：Cloud 已持久 acceptance 但节点尚未收到 ack 就断线时，相同 offer 可在原窗口后重新握手并开始一次本地执行；从未 accepted 的过期 command 得不到授权。进程重启后的 active ChangeIP 记录直接收敛为 `change_trigger_unknown`，其他 active 操作按各自恢复语义终结，provider 都不会再次执行；recent 终态直接重放。未知或损坏的状态 schema 会被拒绝，不会被静默重置。
 
 ## 6. 公网 IP 观察
 
@@ -86,13 +86,13 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 ## 8. 事务安装与自动更新
 
-后台的一键命令描述节点的期望安装状态，可用于空白主机、覆盖安装和修复。安装器先在临时目录完成 bootstrap、binary、依赖和 Runner 脚本验证，并检查 operation journal 与全部待对账 IP 状态；随后严格停止全部 Agent unit，再对稳定状态执行相同检查。任一检查失败就保持原目录并恢复原 unit；空闲时才把配置、状态和 release root 移到有界事务备份，并只写 `akastr-agent.service`。每次 `--install` 都使用机器 token 重新注册公钥，不复制既有 identity 或 state。主控在同一节点存在未完成 command 或 active ChangeIP session 时拒绝注册；拒绝发生在公钥替换前，因此安装器保持原目录和启停状态。注册请求已经改变主控公钥后，安装器保留新安装；故障修复方式是重跑同一安装命令。
+后台的一键命令描述节点的期望安装状态，可用于空白主机、覆盖安装和修复。安装器按操作模式执行最小 preflight；覆盖安装先用现有 binary 检查 operation journal 与全部待对账 IP 状态，再下载并验证 bootstrap、binary、依赖和 Runner 脚本。随后以新 binary 检查、严格停止全部 Agent unit，并对稳定状态再次检查。任一检查失败就保持原目录并恢复原 unit；空闲时才把配置、状态和 release root 移到有界事务备份，并只写 `akastr-agent.service`。每次 `--install` 都使用机器 token 重新注册公钥，不复制既有 identity 或 state。主控在同一节点存在未完成 command、active ChangeIP session 或目标 IPQuality run 时拒绝注册；拒绝发生在公钥替换前，因此安装器保持原目录和启停状态。注册请求已经改变主控公钥后，安装器保留新安装；故障修复方式是重跑同一安装命令。
 
 自动更新不由 GitHub `latest` 驱动。主进程的六小时循环使用当前 Ed25519 identity 向 `POST /internal/agents/update` 发起带时间和 nonce 的签名只读检查；AkastrCloud 只有在目标版本已经随生产 release 固定、WSS 协议相同且节点没有未完成 command 时才返回 `update_available`。看到可用 manifest 后，更新必须取得进程级 exclusive lease；Agent 从发送 `operation.accepted` 前到 executor 已持久化终态期间持有 operation lease，两者使用同一个生命周期门，因此不存在“检查完空闲后又接单”的间隙。更新持锁完成下载、校验、`current` 切换和原位执行；持锁时收到 offer 会断开本次会话而不接受，主控保留并在重连后重发。更新只接受精确 GitHub immutable asset URL、前向 `vMAJOR.MINOR.PATCH` 和主控返回的内部 SHA-256，最大下载 32 MiB。新 binary 必须报告目标版本并通过当前 `check-config`，切换成功后只保留 current。
 
 正式版本由 AkastrCloud 仓库的同步发布入口生成。发布器先验证并推送 Agent `main` 与不可变标签，等待 GitHub Release 的两个精确资产并核对 binary 版本与内部摘要，再提交 Cloud 的唯一更新目标并走正常 backend 发布。该顺序允许同一版本在任一阶段中断后续跑，但不会覆盖已发布资产或让 Cloud 指向尚未验真的 binary。
 
-唯一主 service 使用 `Type=notify`，只有 WSS 完成 auth、hello 并收到 `hello.accepted` 后才向 systemd 报告 ready。service 使用 `ProtectSystem=strict`，并明确允许写状态目录与 Agent release root。Agent 只维护 `current` release，不提供手工 `--update` 或本地回退 CLI；更新故障由 AkastrCloud 批准修复版本，或由操作者重新运行后台的一键 `--install`。WSS、认证或配置的破坏性版本必须走人工维护 Gate，不能通过自动更新跨协议部署。
+唯一主 service 使用 `Type=notify`，只有 WSS 完成 auth、hello 并收到 `hello.accepted` 后才向 systemd 报告 ready。service 使用 `ProtectSystem=strict`，并明确允许写状态目录与 Agent release root；固定 ChangeIP 程序只允许位于 `/usr/local/lib/akastr-agent-providers/`，运行时只读。Agent 只维护 `current` release，不提供手工 `--update` 或本地回退 CLI；更新故障由 AkastrCloud 批准修复版本，或由操作者重新运行后台的一键 `--install`。WSS、认证或配置的破坏性版本必须走人工维护 Gate，不能通过自动更新跨协议部署。
 
 ## 9. 节点接入边界
 

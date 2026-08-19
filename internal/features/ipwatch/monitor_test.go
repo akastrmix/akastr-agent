@@ -50,6 +50,9 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 	if len(published) != 0 || len(snapshots) != 1 || snapshots[0].Address != "8.8.8.8" {
 		t.Fatalf("initial snapshot = %#v, observations = %#v", snapshots, published)
 	}
+	if monitor.SnapshotReady() {
+		t.Fatal("monitor became ChangeIP-ready before snapshot acknowledgement")
+	}
 	if err := monitor.step(context.Background(), publishSnapshot, publish, publishUnchanged); err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +65,9 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 	}
 	if err := reopened.AckSnapshot(snapshots[0].SnapshotID); err != nil {
 		t.Fatal(err)
+	}
+	if !reopened.SnapshotReady() {
+		t.Fatal("monitor did not become ChangeIP-ready after snapshot acknowledgement")
 	}
 	if err := reopened.step(context.Background(), publishSnapshot, publish, publishUnchanged); err != nil {
 		t.Fatal(err)
@@ -84,6 +90,50 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 	if len(published) != 3 || published[2].PreviousAddress != "8.8.4.4" || published[2].Address != "1.1.1.1" {
 		t.Fatalf("next change = %#v", published)
 	}
+}
+
+func TestControlReadinessWakesPendingSnapshotImmediately(t *testing.T) {
+	monitor, err := OpenMonitor(
+		filepath.Join(t.TempDir(), "ip-state.json"),
+		&sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstAttempt := make(chan struct{})
+	retried := make(chan struct{})
+	attempts := 0
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- monitor.Run(
+			ctx,
+			func(protocol.IPSnapshotBody) error {
+				attempts++
+				if attempts == 1 {
+					close(firstAttempt)
+					return context.DeadlineExceeded
+				}
+				close(retried)
+				return nil
+			},
+			func(protocol.IPObservationBody) error { return nil },
+			func(protocol.ChangeIPUnchangedBody) error { return nil },
+		)
+	}()
+	select {
+	case <-firstAttempt:
+	case <-time.After(time.Second):
+		t.Fatal("initial snapshot publish did not run")
+	}
+	monitor.NotifyControlReady()
+	select {
+	case <-retried:
+	case <-time.After(time.Second):
+		t.Fatal("control readiness did not wake the pending snapshot")
+	}
+	cancel()
+	<-done
 }
 
 func TestMonitorPersistsFastUnchangedReconciliation(t *testing.T) {

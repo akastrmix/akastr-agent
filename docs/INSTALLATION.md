@@ -44,7 +44,7 @@ apt-get install --yes ca-certificates curl wget
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于 root-only 的 `/etc/akastr-agent/changeip-curl.conf`。
 
-“固定本机程序”填写可执行文件的绝对路径，例如 `/usr/local/bin/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。它不接受 shell 命令串、`/bin/sh`、`/bin/bash`、`/usr/bin/env` 或 `eval`。主控以后只能触发这组固定 argv，不能远程换程序或参数。
+“固定本机程序”必须放在专用只读目录 `/usr/local/lib/akastr-agent-providers/` 下，例如 `/usr/local/lib/akastr-agent-providers/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。后台和 Agent 都拒绝目录外程序；它不接受 shell 命令串或通用 shell 入口。主控以后只能触发这组固定 argv，不能远程换程序或参数。
 
 公布 SOCKS5 只描述已有代理，Agent 不安装代理服务，也不保存该代理的用户名和密码。只需填写 1–65535 的监听端口；主控始终使用 Agent 最近一次观测到的公网 IPv4，不接受 DDNS、固定主机名或手填 IP。尚未建立公网 IPv4 baseline 时不会派发 IPQuality。
 
@@ -72,13 +72,13 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 
 安装过程完全非交互。它会：
 
-1. 检查 root、Debian 12/13、amd64 和 systemd；
-2. 安装所需 Debian 包；
+1. 按 `--install` 模式检查 root、Debian 12/13、amd64、systemd 和下载校验工具；`--status` 只要求 systemd，`--uninstall` 只要求 root 与 systemd；
+2. 若本机已有 Agent，在任何下载或包变更前先检查 operation journal 与全部待对账 IP 状态均为空；
 3. 下载同版本 amd64 binary，并自动完成内部完整性校验；
 4. 使用节点 UUID 与机器 token 通过 HTTPS 取得持久密封配置；
 5. 在本机以 AES-256-GCM 验证并解密，生成 root-only 配置与 secret 文件；
-6. Runner 下载并自动校验固定 commit 的 IPQuality 脚本；
-7. 停止前检查 operation journal 与全部待对账 IP 状态均为空；
+6. 安装所需 Debian 包；Runner 再下载并自动校验固定 commit 的 IPQuality 脚本；
+7. 用新 binary 和新配置再次执行 maintenance-safe 检查；
 8. 严格停止全部 Agent unit，再对稳定状态执行相同检查；任一检查失败或 unit 未进入 inactive 都恢复原 unit 并中止；
 9. 运行 `check-config`，生成新 identity 并完成注册，再删除本机机器 token 副本；
 10. 把 Agent systemd 命名空间收敛为唯一的 `akastr-agent.service`；服务只有完成 WSS 认证和 hello 后才向 systemd 报告 ready。
@@ -101,10 +101,11 @@ Akastr Agent <release-version> installed successfully.
 /var/lib/akastr-agent/
 /usr/local/lib/akastr-agent/releases/<release-version>/
 /usr/local/lib/akastr-agent/current
+/usr/local/lib/akastr-agent-providers/
 /etc/systemd/system/akastr-agent.service
 ```
 
-HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/etc/akastr-agent/proxy-profiles.json` 与 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。配置与 secret 文件权限为 `0600`，配置和状态目录为 root-only。唯一主进程可以写 `/var/lib/akastr-agent` 与自己的 release root，其他系统目录仍由 `ProtectSystem=strict` 保护。
+HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/etc/akastr-agent/proxy-profiles.json` 与 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。固定程序由操作者预先放入 `/usr/local/lib/akastr-agent-providers/`，安装器只创建目录、不写入或卸载其中的程序。配置与 secret 文件权限为 `0600`，配置和状态目录为 root-only。唯一主进程可以写 `/var/lib/akastr-agent` 与自己的 release root；provider 目录和其他系统目录在 `ProtectSystem=strict` 下只读。
 
 ## 5. 安装后验收
 
@@ -161,7 +162,7 @@ Agent 只维护 `current` release，不提供 `--update` 或本地回退 CLI。�
 ( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' && sh "$installer" --uninstall --confirm-destroy-local-agent )
 ```
 
-卸载会在停止服务前后执行相同的 maintenance-safe 检查；检查失败或 systemd 未能严格停止 unit 时不会删除本地状态。检查通过后才永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；它不会自动删除后台节点。确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
+卸载会在停止服务前后执行相同的 maintenance-safe 检查；检查失败或 systemd 未能严格停止 unit 时不会删除本地状态。检查通过后才永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；操作者管理的 `/usr/local/lib/akastr-agent-providers` 保留。它不会自动删除后台节点。确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
 
 ## 8. 常见故障
 

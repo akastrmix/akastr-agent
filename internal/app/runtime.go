@@ -84,31 +84,11 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 	return runtime, nil
 }
 
-func (r *Runtime) KnownOperation(commandID, commandType string) bool {
-	if r.operations == nil {
-		return false
-	}
-	if record, found := r.operations.Active(commandID); found {
-		return record.Kind == commandType
-	}
-	if record, found := r.operations.Recent(commandID); found {
-		return record.Kind == commandType
-	}
-	return false
-}
-
 func (r *Runtime) IPMonitor() *ipwatch.Monitor {
 	return r.ipMonitor
 }
 
 func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
-	now := time.Now()
-	if now.Before(offer.NotBefore) {
-		return protocol.ExecutionResult{}, errors.New("accepted operation offer is not ready")
-	}
-	if !now.Before(offer.ExpiresAt) && !r.KnownOperation(offer.CommandID, offer.CommandType) {
-		return protocol.ExecutionResult{}, errors.New("accepted operation offer expired before execution")
-	}
 	switch offer.CommandType {
 	case "changeip.execute":
 		if r.changeIP == nil {

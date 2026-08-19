@@ -17,7 +17,6 @@ import (
 
 type recordingExecutor struct {
 	executed chan string
-	known    map[string]string
 }
 
 type blockingExecutor struct {
@@ -27,15 +26,8 @@ type blockingExecutor struct {
 
 type fatalExecutor struct{}
 
-func (fatalExecutor) KnownOperation(string, string) bool { return false }
 func (fatalExecutor) Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	return protocol.ExecutionResult{}, errors.New("durable state unavailable")
-}
-
-func (e *blockingExecutor) KnownOperation(string, string) bool { return false }
-
-func (e *recordingExecutor) KnownOperation(commandID, commandType string) bool {
-	return e.known[commandID] == commandType
 }
 
 func (e *blockingExecutor) Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error) {
@@ -50,11 +42,24 @@ func (failingObservationSource) Run(context.Context, func(protocol.IPSnapshotBod
 	return errors.New("observation state failed")
 }
 
+func (failingObservationSource) NotifyControlReady()       {}
+func (failingObservationSource) SnapshotReady() bool       { return false }
 func (failingObservationSource) AckSnapshot(string) error  { return nil }
 func (failingObservationSource) Ack(string) error          { return nil }
 func (failingObservationSource) AckUnchanged(string) error { return nil }
 
 type nilObservationSource struct{}
+
+type readinessObservationSource struct{ ready bool }
+
+func (source readinessObservationSource) Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
+	return nil
+}
+func (readinessObservationSource) NotifyControlReady()        {}
+func (source readinessObservationSource) SnapshotReady() bool { return source.ready }
+func (readinessObservationSource) AckSnapshot(string) error   { return nil }
+func (readinessObservationSource) Ack(string) error           { return nil }
+func (readinessObservationSource) AckUnchanged(string) error  { return nil }
 
 func (*nilObservationSource) Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
 	return nil
@@ -65,7 +70,7 @@ func TestOperationLeaseBlocksUpdateUntilExecutionFinishes(t *testing.T) {
 	executor := &blockingExecutor{started: make(chan struct{}), release: make(chan struct{})}
 	client := &Client{
 		executor: executor, lifecycle: gate, running: map[string]*lifecycle.Lease{},
-		pending: map[string]pendingOperation{}, completed: map[string]protocol.ExecutionResult{},
+		pending: map[string]pendingOperation{},
 	}
 	offer := protocol.OperationOffer{
 		CommandID: "123e4567-e89b-42d3-a456-426614174002",
@@ -104,15 +109,12 @@ func TestExecutionPersistenceFailureBecomesFatalWithoutWireResult(t *testing.T) 
 	client := &Client{
 		executor: fatalExecutor{}, lifecycle: gate,
 		running: map[string]*lifecycle.Lease{commandID: lease},
-		pending: make(map[string]pendingOperation), completed: make(map[string]protocol.ExecutionResult),
-		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		pending: make(map[string]pendingOperation),
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	client.execute(t.Context(), protocol.OperationOffer{CommandID: commandID})
 	if client.executionFailure() == nil {
 		t.Fatal("executor persistence failure did not stop the control loop")
-	}
-	if _, found := client.completed[commandID]; found {
-		t.Fatal("executor persistence failure created a wire terminal result")
 	}
 	if update, ok := gate.TryUpdate(); !ok {
 		t.Fatal("operation lease was not released after fatal execution failure")
@@ -139,6 +141,8 @@ func TestFatalObservationErrorStopsClient(t *testing.T) {
 func (*nilObservationSource) AckSnapshot(string) error  { return nil }
 func (*nilObservationSource) Ack(string) error          { return nil }
 func (*nilObservationSource) AckUnchanged(string) error { return nil }
+func (*nilObservationSource) NotifyControlReady()       {}
+func (*nilObservationSource) SnapshotReady() bool       { return false }
 
 func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 	var observations *nilObservationSource
@@ -170,8 +174,7 @@ func TestAcceptedAckGatesExecution(t *testing.T) {
 	executor := &recordingExecutor{executed: make(chan string, 2)}
 	client := &Client{
 		executor: executor, lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
-		pending:   map[string]pendingOperation{},
-		completed: map[string]protocol.ExecutionResult{},
+		pending: map[string]pendingOperation{},
 	}
 	first := protocol.OperationOffer{
 		CommandID: "123e4567-e89b-42d3-a456-426614174000",
@@ -205,15 +208,76 @@ func TestAcceptedAckGatesExecution(t *testing.T) {
 	}
 }
 
-func TestExpiredOfferWindowAllowsOnlyKnownRecovery(t *testing.T) {
+func TestExpiredOfferCanReachAuthoritativeAcceptanceHandshake(t *testing.T) {
 	now := time.Now()
 	offer := protocol.OperationOffer{
 		NotBefore: now.Add(-2 * time.Minute), ExpiresAt: now.Add(-time.Minute),
 	}
-	if offerWindowAllows(offer, now, false) {
-		t.Fatal("unknown expired command was accepted")
+	if !offerHandshakeAllows(offer, now) {
+		t.Fatal("expired command was blocked before the Cloud acceptance acknowledgement")
 	}
-	if !offerWindowAllows(offer, now, true) {
-		t.Fatal("known expired command was not admitted for recovery")
+}
+
+func TestChangeIPOfferWaitsForSnapshotAcknowledgement(t *testing.T) {
+	client := &Client{
+		executor: &recordingExecutor{}, observations: readinessObservationSource{ready: false},
+		lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
+		pending: map[string]pendingOperation{},
+	}
+	err := client.acceptOffer(t.Context(), nil, protocol.OperationOffer{
+		CommandID:   "123e4567-e89b-42d3-a456-426614174005",
+		CommandType: "changeip.execute",
+		NotBefore:   time.Now().Add(-time.Second), ExpiresAt: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("acceptOffer() error = %v", err)
+	}
+	if len(client.pending) != 0 || len(client.running) != 0 {
+		t.Fatal("ChangeIP offer was accepted before snapshot acknowledgement")
+	}
+	update, acquired := client.lifecycle.TryUpdate()
+	if !acquired {
+		t.Fatal("ignored ChangeIP offer retained an operation lease")
+	}
+	update.Release()
+}
+
+func TestChangeIPOfferFailsWhenObservationSourceIsUnavailable(t *testing.T) {
+	client := &Client{
+		executor: &recordingExecutor{}, lifecycle: lifecycle.New(),
+		running: map[string]*lifecycle.Lease{}, pending: map[string]pendingOperation{},
+	}
+	err := client.acceptOffer(t.Context(), nil, protocol.OperationOffer{
+		CommandID:   "123e4567-e89b-42d3-a456-426614174006",
+		CommandType: "changeip.execute",
+		NotBefore:   time.Now().Add(-time.Second), ExpiresAt: time.Now().Add(time.Minute),
+	})
+	if err == nil || !strings.Contains(err.Error(), "observation source") {
+		t.Fatalf("acceptOffer() error = %v", err)
+	}
+}
+
+func TestAcceptedAckExecutesAfterOfferExpiry(t *testing.T) {
+	executor := &recordingExecutor{executed: make(chan string, 1)}
+	client := &Client{
+		executor: executor, lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
+		pending: map[string]pendingOperation{},
+	}
+	offer := protocol.OperationOffer{
+		CommandID: "123e4567-e89b-42d3-a456-426614174004",
+		NotBefore: time.Now().Add(-time.Minute), ExpiresAt: time.Now().Add(-time.Second),
+	}
+	lease, _ := client.lifecycle.TryOperation()
+	client.pending[offer.CommandID] = pendingOperation{offer: offer, lease: lease}
+	client.handleAcceptedAck(t.Context(), protocol.AcceptedAckBody{
+		CommandID: offer.CommandID, Accepted: true,
+	})
+	select {
+	case commandID := <-executor.executed:
+		if commandID != offer.CommandID {
+			t.Fatalf("executed %s", commandID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Cloud-accepted expired offer was not executed")
 	}
 }

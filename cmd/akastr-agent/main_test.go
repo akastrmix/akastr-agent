@@ -45,7 +45,7 @@ func TestCheckConfigValidatesRuntimeDependencies(t *testing.T) {
     "ip_watch": {"enabled": true, "interval_seconds": 60, "observe_ipv6": false},
     "change_ip": {
       "enabled": true,
-      "program": "/definitely/missing/akastr-changeip",
+      "program": "/usr/local/lib/akastr-agent-providers/definitely-missing",
       "args": ["change"],
       "timeout_seconds": 30,
       "observe_timeout_seconds": 60

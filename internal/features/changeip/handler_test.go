@@ -60,7 +60,6 @@ func (r *fakeReconciler) CancelChange(commandID string) error {
 	}
 	return nil
 }
-func (r *fakeReconciler) HasChange(commandID string) bool { return commandID == r.commandID }
 func (r *fakeReconciler) ChangeAddress(commandID string) (string, bool) {
 	return r.address, commandID == r.commandID
 }
@@ -143,8 +142,12 @@ func TestActiveJournalRecoveryNeverRunsProviderAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Outcome != "failed" || result.Code != "interrupted_unknown" {
+	if result.Outcome != "succeeded" || result.Code != "change_trigger_unknown" {
 		t.Fatalf("Execute() = %#v", result)
+	}
+	oldIPv4, ok := result.Result["old_ipv4"].(*string)
+	if !ok || oldIPv4 == nil || *oldIPv4 != offer.ChangeIP.ExpectedIPv4 {
+		t.Fatalf("recovered old IPv4 = %#v", result.Result["old_ipv4"])
 	}
 	if provider.calls != 0 {
 		t.Fatalf("provider calls = %d, want 0", provider.calls)

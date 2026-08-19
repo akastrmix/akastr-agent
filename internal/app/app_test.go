@@ -2,10 +2,8 @@ package app
 
 import (
 	"testing"
-	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/config"
-	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 func TestBuildCapabilitiesOmitsSecretsAndLocalPaths(t *testing.T) {
@@ -46,17 +44,5 @@ func TestBuildCapabilitiesOmitsSecretsAndLocalPaths(t *testing.T) {
 	profiles, ok := runnerProperties["proxy_profile_ids"].([]string)
 	if !ok || len(profiles) != 2 || profiles[0] != "backup" || profiles[1] != "primary" {
 		t.Fatalf("runner proxy profiles = %#v", runnerProperties["proxy_profile_ids"])
-	}
-}
-
-func TestRuntimeTreatsAcceptedOfferBeforeNotBeforeAsFatal(t *testing.T) {
-	runtime := &Runtime{}
-	_, err := runtime.Execute(t.Context(), protocol.OperationOffer{
-		CommandType: "changeip.execute",
-		NotBefore:   time.Now().Add(time.Minute),
-		ExpiresAt:   time.Now().Add(2 * time.Minute),
-	})
-	if err == nil || err.Error() != "accepted operation offer is not ready" {
-		t.Fatalf("Execute() error = %v", err)
 	}
 }

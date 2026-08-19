@@ -47,9 +47,9 @@ akastr-agent-update-check-v1
 - `payload_version=1` 与对应类型的严格 payload；
 - `not_before` 和 `expires_at`。
 
-Agent 只有在当前时间已达到 `not_before`、尚未到 `expires_at` 且进程级更新 lease 空闲时，才接受从未在本地出现的新 command。只有主控再发送 `operation.accepted_ack` 且 `accepted=true`，Agent 才持久化 running 状态并调用本地已配置 provider。终态先持久化，再释放 operation lease 并通过 `operation.result` 发送；AkastrCloud 只接受数据库状态已经是 `accepted` 的首个终态，在数据库事务和下游事件接纳成功后发送 `operation.result_ack`。
+Agent 在当前时间达到 `not_before` 且进程级更新 lease 空闲时发送 `operation.accepted`，但该消息只发起持久化握手，不代表本地已经获得执行权。主控只会在未过 `expires_at` 的 offered command 上首次建立 accepted；已经 accepted 的 command 即使原窗口已过仍返回 `operation.accepted_ack accepted=true`，从未 accepted 的过期 command 返回 `false`。Agent 只有收到 `true` 才调用本地已配置 provider，此后不再用本地时钟复核原 offer 截止时间。终态先持久化，再释放 operation lease 并通过 `operation.result` 发送；AkastrCloud 只接受数据库状态已经是 `accepted` 的首个终态，在数据库事务和下游事件接纳成功后发送 `operation.result_ack`。
 
-已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时主控继续发送相同 offer；Agent 仅在本地 active/recent journal 中存在相同 command ID 和类型时允许越过该截止时间。active 记录收敛为 `interrupted_unknown` 或已有 ChangeIP 核对状态，recent 记录重放原终态，provider 都不会再次执行。从未在本地出现的过期 command 始终拒绝。
+已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时主控继续发送相同 offer，并以 accepted ack 恢复执行权；这覆盖主控已提交 acceptance、但 ack 尚未到达节点便断线的窗口。active ChangeIP journal 一律收敛为 `change_trigger_unknown`，recent 记录重放原终态，两者都不会再次执行 provider；首次 accepted ack 后尚无 journal 的 command 才开始一次本地执行。主控从未 accepted 的过期 command 不会获得执行权。
 
 断线后 offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件、凭据或任意 URL。
 
@@ -57,7 +57,7 @@ Agent 只有在当前时间已达到 `not_before`、尚未到 `expires_at` 且�
 
 payload 只包含 `expected_ipv4`。Agent 在调用 provider 前观察当前公网 IPv4：不匹配时返回 `stale_expected_ipv4`，不执行 provider。Agent 先持久化 command 与该旧 IP 的核对状态，再调用本机固定 provider；stdout/stderr 不进入协议或日志。
 
-HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或请求建立前失败是明确失败。固定程序 provider 以退出码 `0` 为明确成功、非零为明确失败。明确成功返回 `change_triggered`；请求可能已送达但响应、进程或 WSS 因断网中断时返回 `change_trigger_unknown`。两种成功终态都只包含触发前 IPv4，不宣称地址已经变化，也不会重发 provider。其他对外稳定 code 包括 `http_status_not_200`、`request_failed`、`stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero`、`local_conflict` 和状态恢复相关错误。
+HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或请求建立前失败是明确失败。固定程序 provider 以退出码 `0` 为明确成功、非零为明确失败。明确成功返回 `change_triggered`；请求可能已送达但响应、进程或 WSS 因断网中断时返回 `change_trigger_unknown`。两种成功终态都只包含触发前 IPv4，不宣称地址已经变化，也不会重发 provider。其他对外稳定 code 包括 `http_status_not_200`、`request_failed`、`stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero` 和 `reconciliation_state_failed`。
 
 ### `ipquality.execute`
 
@@ -75,7 +75,7 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 ## ChangeIP 与 IPv4 核对
 
-首次成功观察必须先持久化并发送 `ip.snapshot`，body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；重装后的 snapshot 若与既有 baseline 不同且节点没有未终结 command，Cloud 以既有地址作为 previous address 原子记录一次自然变化。存在未终结 command 时地址冲突安全失败。Agent 在确认前不得接受 ChangeIP，并跨重连、重启重发 snapshot。
+首次成功观察必须先持久化并发送 `ip.snapshot`，body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；当前 identity 的 snapshot readiness 与该提交原子持久化，重连和进程重启保留，重新 enrollment 时清除。重装后的 snapshot 若与既有 baseline 不同且节点没有未终结 command，Cloud 以既有地址作为 previous address 原子记录一次自然变化。存在未终结 command 时地址冲突安全失败。Agent 在确认前不得接受 ChangeIP，并跨重连、重启重发尚未确认的 snapshot。
 
 `ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。事件时间必须晚于 Cloud 当前 baseline 且不得超前主控超过五分钟。只有 command 已 accepted、观测不早于 session 开始且仍在 session 窗口内，变化才归因于 ChangeIP；消息可以先于 `operation.result` 到达。尚未接受 command 时发生的变化仍是自然变化，不会被错误归因。
 

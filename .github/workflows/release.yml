@@ -84,6 +84,13 @@ jobs:
           file dist/akastr-agent-linux-amd64 | grep -Eq 'ELF 64-bit.*x86-64.*statically linked'
           test "$(dist/akastr-agent-linux-amd64 version)" = "$RELEASE_TAG"
           bash -n dist/install.sh
+          ! LC_ALL=C grep -q $'\r' dist/install.sh
+          set +e
+          installer_usage=$(dist/install.sh 2>&1)
+          installer_status=$?
+          set -e
+          test "$installer_status" -eq 1
+          grep -Fq 'usage: install.sh' <<<"$installer_usage"
           ! grep -Eq '@AKASTR_AGENT_(VERSION|BINARY_SHA256)@' dist/install.sh
           grep -Fq "wget --no-hsts --https-only --tries=3 --timeout=30 -qO" dist/install.sh
           ! grep -Fq "curl --fail --silent --show-error --location" dist/install.sh

@@ -14,6 +14,7 @@ RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'
 CONFIG_DIR=/etc/akastr-agent
 STATE_DIR=/var/lib/akastr-agent
 RELEASE_ROOT=/usr/local/lib/akastr-agent
+PROVIDER_ROOT=/usr/local/lib/akastr-agent-providers
 SYSTEMD_ROOT=/etc/systemd/system
 SERVICE_FILE=/etc/systemd/system/akastr-agent.service
 
@@ -160,8 +161,16 @@ require_uuid() {
     || fail 'invalid node UUID'
 }
 
-preflight() {
+require_root() {
   [ "$(id -u)" -eq 0 ] || fail 'run the installer as root'
+}
+
+require_systemd() {
+  command -v systemctl >/dev/null 2>&1 || fail 'systemd is required'
+}
+
+preflight_install() {
+  require_root
   case "$(uname -m)" in
     x86_64|amd64) ;;
     *) fail 'only x86_64 / amd64 is supported' ;;
@@ -177,9 +186,18 @@ preflight() {
     debian:12|debian:13) ;;
     *) fail 'only Debian 12 and Debian 13 are supported' ;;
   esac
-  command -v systemctl >/dev/null 2>&1 || fail 'systemd is required'
-  command -v wget >/dev/null 2>&1 || fail 'install ca-certificates, curl, and wget first'
-  command -v curl >/dev/null 2>&1 || fail 'install ca-certificates, curl, and wget first'
+  require_systemd
+  command -v wget >/dev/null 2>&1 || fail 'install wget before running the installer'
+  command -v sha256sum >/dev/null 2>&1 || fail 'sha256sum is required'
+}
+
+preflight_status() {
+  require_systemd
+}
+
+preflight_uninstall() {
+  require_root
+  require_systemd
 }
 
 make_temporary() {
@@ -255,6 +273,15 @@ maintenance_safe_check() {
   "$maintenance_binary" check-idle --config "$maintenance_config"
 }
 
+check_existing_install_idle() {
+  existing_binary="$RELEASE_ROOT/current/akastr-agent"
+  existing_config="$CONFIG_DIR/config.json"
+  if [ -e "$existing_binary" ] || [ -L "$existing_binary" ] \
+      || [ -e "$existing_config" ] || [ -L "$existing_config" ]; then
+    maintenance_safe_check "$existing_binary" "$existing_config"
+  fi
+}
+
 write_service_unit() {
   cat > "$SERVICE_FILE" <<'UNIT'
 [Unit]
@@ -302,6 +329,8 @@ fresh_install() {
   printf '%s\n' "$machine_token" | grep -Eq '^[A-Za-z0-9_-]{43}$' \
     || fail 'invalid machine token'
 
+  check_existing_install_idle
+
   make_temporary
   token_file="$temporary/machine-token"
   printf '%s\n' "$machine_token" > "$token_file"
@@ -339,6 +368,7 @@ fresh_install() {
   release_dir="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION"
   install -d -m 0700 "$CONFIG_DIR" "$STATE_DIR"
   install -d -m 0755 "$release_dir"
+  install -d -m 0755 "$PROVIDER_ROOT"
   install -m 0755 "$binary_path" "$release_dir/akastr-agent"
   install -m 0600 "$bootstrap_dir/config.json" "$CONFIG_DIR/config.json"
   install -m 0600 "$bootstrap_dir/machine-token" "$CONFIG_DIR/machine-token"
@@ -397,19 +427,21 @@ uninstall_existing() {
   say 'Akastr Agent uninstalled successfully.'
 }
 
-preflight
 operation=${1:-}
 case "$operation" in
   --install)
     [ "$#" -eq 1 ] || fail '--install accepts no additional arguments'
+    preflight_install
     fresh_install
     ;;
   --status)
     [ "$#" -eq 1 ] || fail '--status accepts no additional arguments'
+    preflight_status
     show_status
     ;;
   --uninstall)
     shift
+    preflight_uninstall
     uninstall_existing "$@"
     ;;
   *)

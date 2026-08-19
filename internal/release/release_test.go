@@ -80,7 +80,12 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'",
 		"command -v \"$command\"",
 		"backup_existing \"$CONFIG_DIR\" \"$CONFIG_BACKUP\"",
+		"check_existing_install_idle",
 		"maintenance_safe_check \"$binary_path\" \"$bootstrap_dir/config.json\"",
+		"preflight_install",
+		"preflight_status",
+		"preflight_uninstall",
+		"PROVIDER_ROOT=/usr/local/lib/akastr-agent-providers",
 		"capture_agent_units",
 		"$SYSTEMD_ROOT\"/akastr-agent*.service",
 		"$SYSTEMD_ROOT\"/akastr-agent*.timer",
@@ -138,6 +143,9 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		t.Fatal("cannot isolate fresh_install")
 	}
 	freshInstall := installer[freshStart:freshEnd]
+	if strings.Index(freshInstall, "check_existing_install_idle") > strings.Index(freshInstall, "download_binary") {
+		t.Fatal("fresh install must check the existing runtime before downloads or package changes")
+	}
 	idleCheck := "maintenance_safe_check \"$binary_path\" \"$bootstrap_dir/config.json\""
 	stop := "capture_agent_units"
 	if strings.Count(freshInstall, idleCheck) != 2 ||
@@ -146,7 +154,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		t.Fatal("fresh install must run the same maintenance-safe check before and after stopping units")
 	}
 	uninstallStart := strings.Index(installer, "uninstall_existing() {")
-	uninstallEnd := strings.Index(installer, "\npreflight\n")
+	uninstallEnd := strings.Index(installer, "\noperation=${1:-}\n")
 	if uninstallStart < 0 || uninstallEnd <= uninstallStart {
 		t.Fatal("cannot isolate uninstall_existing")
 	}
@@ -156,6 +164,10 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		strings.Index(uninstall, uninstallIdleCheck) > strings.Index(uninstall, stop) ||
 		strings.LastIndex(uninstall, uninstallIdleCheck) < strings.Index(uninstall, stop) {
 		t.Fatal("uninstall must check maintenance safety before and after strictly stopping units")
+	}
+	main := installer[uninstallEnd:]
+	if strings.Index(main, "operation=${1:-}") > strings.Index(main, "preflight_install") {
+		t.Fatal("installer must parse its operation before applying mode-specific preflight")
 	}
 }
 

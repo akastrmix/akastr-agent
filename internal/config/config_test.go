@@ -67,6 +67,19 @@ func TestValidateRequiresFixedChangeIPProgram(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresDedicatedChangeIPProviderRoot(t *testing.T) {
+	input := strings.Replace(validConfig, `"change_ip":{"enabled":false}`, `"change_ip":{"enabled":true,"program":"/usr/local/bin/changeip","args":[],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
+	_, err := Load(writeConfig(t, input))
+	if err == nil || !strings.Contains(err.Error(), ChangeIPProviderRoot) {
+		t.Fatalf("Load() error = %v, want dedicated provider root error", err)
+	}
+
+	input = strings.Replace(validConfig, `"change_ip":{"enabled":false}`, `"change_ip":{"enabled":true,"program":"/usr/local/lib/akastr-agent-providers/changeip","args":[],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
+	if _, err := Load(writeConfig(t, input)); err != nil {
+		t.Fatalf("Load() rejected dedicated provider path: %v", err)
+	}
+}
+
 func TestValidateRunnerConcurrencyIsOne(t *testing.T) {
 	input := strings.Replace(validConfig, `"ipquality_runner":{"enabled":false}`, `"ipquality_runner":{"enabled":true,"script_path":"/opt/akastr-agent/tools/ipquality/ip.sh","proxy_profiles_file":"/etc/akastr-agent/proxies.json","timeout_seconds":600,"max_concurrency":2,"script_version":"v2026.08.13","script_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`, 1)
 	_, err := Load(writeConfig(t, input))

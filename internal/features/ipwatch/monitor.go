@@ -38,6 +38,7 @@ type Monitor struct {
 	observer AddressObserver
 	interval time.Duration
 	now      func() time.Time
+	wake     chan struct{}
 	snapshot monitorSnapshot
 }
 
@@ -54,6 +55,7 @@ func OpenMonitor(filePath string, observer AddressObserver, interval time.Durati
 	}
 	monitor := &Monitor{
 		file: state.NewJSONFile(filePath), observer: observer, interval: interval, now: time.Now,
+		wake:     make(chan struct{}, 1),
 		snapshot: monitorSnapshot{SchemaVersion: 1},
 	}
 	found, err := monitor.file.Load(&monitor.snapshot)
@@ -165,9 +167,24 @@ func (m *Monitor) Run(ctx context.Context, publishSnapshot func(protocol.IPSnaps
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
+		case <-m.wake:
+			timer.Stop()
 		case <-timer.C:
 		}
 	}
+}
+
+func (m *Monitor) NotifyControlReady() {
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *Monitor) SnapshotReady() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.snapshot.LastIPv4 != "" && m.snapshot.PendingSnapshot == nil
 }
 
 func (m *Monitor) ArmChange(commandID, address string, startedAt time.Time) error {
@@ -219,13 +236,6 @@ func (m *Monitor) CancelChange(commandID string) error {
 	}
 	m.snapshot = next
 	return nil
-}
-
-func (m *Monitor) HasChange(commandID string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return (m.snapshot.ChangeAttempt != nil && m.snapshot.ChangeAttempt.CommandID == commandID) ||
-		(m.snapshot.PendingUnchanged != nil && m.snapshot.PendingUnchanged.CommandID == commandID)
 }
 
 func (m *Monitor) ChangeAddress(commandID string) (string, bool) {

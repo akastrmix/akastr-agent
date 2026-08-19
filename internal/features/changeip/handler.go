@@ -24,7 +24,6 @@ type Handler struct {
 type changeReconciler interface {
 	ArmChange(commandID, address string, startedAt time.Time) error
 	CancelChange(commandID string) error
-	HasChange(commandID string) bool
 	ChangeAddress(commandID string) (string, bool)
 }
 
@@ -45,16 +44,16 @@ func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 	}
 	if _, err := h.engine.Begin(offer.CommandID, "changeip.execute", "target-network"); err != nil {
 		if _, active := h.engine.Active(offer.CommandID); active {
-			result := failure("interrupted_unknown", nil, time.Now().UTC())
-			status := operation.StatusFailed
-			if h.reconciler != nil && h.reconciler.HasChange(offer.CommandID) {
-				address, _ := h.reconciler.ChangeAddress(offer.CommandID)
-				result = reconciliationPending(&address, time.Now().UTC())
-				status = operation.StatusSucceeded
+			address := offer.ChangeIP.ExpectedIPv4
+			if h.reconciler != nil {
+				if persistedAddress, found := h.reconciler.ChangeAddress(offer.CommandID); found {
+					address = persistedAddress
+				}
 			}
+			result := reconciliationPending(&address, time.Now().UTC())
 			persisted, _ := json.Marshal(result)
 			if _, finishError := h.engine.FinishWithResult(
-				offer.CommandID, status, result.Code, persisted,
+				offer.CommandID, operation.StatusSucceeded, result.Code, persisted,
 			); finishError == nil {
 				return result, nil
 			} else {

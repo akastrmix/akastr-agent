@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"path"
 	"regexp"
 	"strings"
 
@@ -129,12 +128,11 @@ func (c ChangeIP) validate() error {
 			return errors.New("HTTP ChangeIP provider configuration is invalid")
 		}
 	case "command":
-		if !path.IsAbs(c.Program) || path.Clean(c.Program) != c.Program || len(c.Program) > 4096 || strings.ContainsRune(c.Program, '\x00') {
-			return errors.New("ChangeIP program must be a clean absolute path")
+		if len(c.Program) > 4096 {
+			return errors.New("ChangeIP program path is too long")
 		}
-		switch c.Program {
-		case "/bin/sh", "/bin/bash", "/usr/bin/env":
-			return errors.New("generic shell ChangeIP programs are forbidden")
+		if err := config.ValidateChangeIPCommandProgram(c.Program); err != nil {
+			return err
 		}
 		if c.URL != "" || c.BearerToken != "" || len(c.Args) > 32 {
 			return errors.New("command ChangeIP provider configuration is invalid")
