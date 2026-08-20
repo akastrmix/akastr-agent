@@ -19,6 +19,7 @@ SYSTEMD_ROOT=/etc/systemd/system
 SERVICE_FILE=/etc/systemd/system/akastr-agent.service
 
 temporary=''
+preserved_identity=''
 transaction_started=false
 backup_complete=false
 transaction_complete=false
@@ -187,7 +188,8 @@ preflight_install() {
     *) fail 'only Debian 12 and Debian 13 are supported' ;;
   esac
   require_systemd
-  command -v wget >/dev/null 2>&1 || fail 'install wget before running the installer'
+  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
+    || fail 'install curl or wget before running the installer'
   command -v sha256sum >/dev/null 2>&1 || fail 'sha256sum is required'
 }
 
@@ -213,17 +215,99 @@ download_https() {
     https://*) ;;
     *) fail "$label download URL must use HTTPS" ;;
   esac
-  if wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$destination" "$url"; then
+  if command -v curl >/dev/null 2>&1; then
+    if curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
+        --retry 2 --connect-timeout 30 --max-time 120 --output "$destination" "$url"; then
+      :
+    else
+      download_code=$?
+      rm -f -- "$destination"
+      fail "$label download failed (curl exit code $download_code)"
+    fi
+  elif wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$destination" "$url"; then
     :
   else
-    wget_code=$?
+    download_code=$?
     rm -f -- "$destination"
-    fail "$label download failed (wget exit code $wget_code)"
+    fail "$label download failed (wget exit code $download_code)"
   fi
   [ -s "$destination" ] || {
     rm -f -- "$destination"
     fail "$label download is empty"
   }
+}
+
+read_identity_agent_id() {
+  LC_ALL=C tr -d '[:space:]' < "$1" \
+    | sed -n 's/^{"schema_version":[0-9][0-9]*,"enrollment_state":"[^"]*","agent_id":"\([^"]*\)",.*$/\1/p' \
+    | sed -n '1p'
+}
+
+read_config_agent_id() {
+  LC_ALL=C tr -d '[:space:]' < "$1" \
+    | sed -n 's/^{"schema_version":[0-9][0-9]*,.*"node":{"id":"\([^"]*\)",.*$/\1/p' \
+    | sed -n '1p'
+}
+
+version_is_newer() {
+  left=${1#v}
+  right=${2#v}
+  old_ifs=$IFS
+  IFS=.
+  set -- $left $right
+  IFS=$old_ifs
+  [ "$1" -gt "$4" ] || { [ "$1" -eq "$4" ] && [ "$2" -gt "$5" ]; } \
+    || { [ "$1" -eq "$4" ] && [ "$2" -eq "$5" ] && [ "$3" -gt "$6" ]; }
+}
+
+inspect_existing_install() {
+  requested_id=$1
+  existing_identity="$CONFIG_DIR/identity.json"
+  existing_config="$CONFIG_DIR/config.json"
+  existing_binary="$RELEASE_ROOT/current/akastr-agent"
+  identity_id=''
+  config_id=''
+
+  if [ -e "$existing_identity" ] || [ -L "$existing_identity" ]; then
+    [ -f "$existing_identity" ] && [ ! -L "$existing_identity" ] \
+      || fail "existing identity is not a regular file: $existing_identity"
+    identity_id=$(read_identity_agent_id "$existing_identity")
+    require_uuid "$identity_id"
+    grep -Eq '"schema_version"[[:space:]]*:[[:space:]]*2([,}])' "$existing_identity" \
+      && grep -Eq '"enrollment_state"[[:space:]]*:[[:space:]]*"(pending|confirmed)"' "$existing_identity" \
+      || fail 'existing identity schema or enrollment state is invalid'
+  fi
+  if [ -e "$existing_config" ] || [ -L "$existing_config" ]; then
+    [ -f "$existing_config" ] && [ ! -L "$existing_config" ] \
+      || fail "existing configuration is not a regular file: $existing_config"
+    config_id=$(read_config_agent_id "$existing_config")
+    require_uuid "$config_id"
+  fi
+  if [ -n "$identity_id" ] && [ -n "$config_id" ] && [ "$identity_id" != "$config_id" ]; then
+    fail 'existing Agent identity and configuration refer to different nodes'
+  fi
+  existing_id=${identity_id:-$config_id}
+  if [ -n "$existing_id" ] && [ "$existing_id" != "$requested_id" ]; then
+    fail 'the install command belongs to a different Agent node'
+  fi
+
+  if [ -e "$existing_binary" ] || [ -L "$existing_binary" ]; then
+    [ -f "$existing_binary" ] && [ ! -L "$existing_binary" ] && [ -x "$existing_binary" ] \
+      || fail "existing Agent binary is not a regular executable: $existing_binary"
+    existing_version=$($existing_binary version)
+    printf '%s\n' "$existing_version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+      || fail 'existing Agent reported an invalid release version'
+    if version_is_newer "$existing_version" "$AGENT_RELEASE_VERSION"; then
+      fail "refusing to downgrade Agent from $existing_version to $AGENT_RELEASE_VERSION"
+    fi
+  fi
+
+  if [ -x "$existing_binary" ] && [ -f "$existing_config" ]; then
+    maintenance_safe_check "$existing_binary" "$existing_config"
+  fi
+  if [ -f "$existing_identity" ]; then
+    preserved_identity=$existing_identity
+  fi
 }
 
 install_packages() {
@@ -273,15 +357,6 @@ maintenance_safe_check() {
   "$maintenance_binary" check-idle --config "$maintenance_config"
 }
 
-check_existing_install_idle() {
-  existing_binary="$RELEASE_ROOT/current/akastr-agent"
-  existing_config="$CONFIG_DIR/config.json"
-  if [ -e "$existing_binary" ] || [ -L "$existing_binary" ] \
-      || [ -e "$existing_config" ] || [ -L "$existing_config" ]; then
-    maintenance_safe_check "$existing_binary" "$existing_config"
-  fi
-}
-
 write_service_unit() {
   cat > "$SERVICE_FILE" <<'UNIT'
 [Unit]
@@ -329,9 +404,12 @@ fresh_install() {
   printf '%s\n' "$machine_token" | grep -Eq '^[A-Za-z0-9_-]{43}$' \
     || fail 'invalid machine token'
 
-  check_existing_install_idle
-
   make_temporary
+  inspect_existing_install "$agent_id"
+  if [ -n "$preserved_identity" ]; then
+    install -m 0600 "$preserved_identity" "$temporary/identity.json"
+    preserved_identity="$temporary/identity.json"
+  fi
   token_file="$temporary/machine-token"
   printf '%s\n' "$machine_token" > "$token_file"
   chmod 0600 "$token_file"
@@ -372,6 +450,9 @@ fresh_install() {
   install -m 0755 "$binary_path" "$release_dir/akastr-agent"
   install -m 0600 "$bootstrap_dir/config.json" "$CONFIG_DIR/config.json"
   install -m 0600 "$bootstrap_dir/machine-token" "$CONFIG_DIR/machine-token"
+  if [ -n "$preserved_identity" ]; then
+    install -m 0600 "$preserved_identity" "$CONFIG_DIR/identity.json"
+  fi
   if [ -f "$bootstrap_dir/changeip-curl.conf" ]; then
     install -m 0600 "$bootstrap_dir/changeip-curl.conf" "$CONFIG_DIR/changeip-curl.conf"
   fi
@@ -386,11 +467,20 @@ fresh_install() {
   write_service_unit
   if "$RELEASE_ROOT/current/akastr-agent" enroll --config "$CONFIG_DIR/config.json"; then
     enrollment_irreversible=true
-  elif [ -f "$CONFIG_DIR/identity.json" ] && [ ! -L "$CONFIG_DIR/identity.json" ]; then
-    enrollment_irreversible=true
-    fail 'enrollment outcome is uncertain; rerun the one-click install command'
   else
-    fail 'enrollment was rejected; the original Agent installation will be restored'
+    enrollment_code=$?
+    case "$enrollment_code" in
+      21)
+        enrollment_irreversible=true
+        fail 'enrollment outcome is uncertain; rerun the one-click install command'
+        ;;
+      20)
+        fail 'enrollment was rejected; the original Agent installation will be restored'
+        ;;
+      *)
+        fail 'enrollment failed before acceptance; the original Agent installation will be restored'
+        ;;
+    esac
   fi
   rm -f -- "$CONFIG_DIR/machine-token" "$token_file"
 

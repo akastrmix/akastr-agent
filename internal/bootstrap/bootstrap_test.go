@@ -78,7 +78,7 @@ func encryptedEnvelope(t *testing.T, token []byte, payload Payload) []byte {
 	nonce := []byte("0123456789ab")
 	ciphertext := aead.Seal(nil, nonce, plaintext, []byte(payload.AgentID))
 	encoded, err := json.Marshal(fetchResponse{
-		Schema:     "akastr-agent-bootstrap.v2",
+		Schema:     "akastr-agent-bootstrap.v3",
 		Nonce:      base64.RawURLEncoding.EncodeToString(nonce),
 		Ciphertext: base64.RawURLEncoding.EncodeToString(ciphertext),
 	})
@@ -128,7 +128,7 @@ func fetchFixture(t *testing.T, payload Payload, mutate func([]byte) []byte) (Pa
 
 func TestFetchAndWriteTargetBootstrap(t *testing.T) {
 	payload := Payload{
-		SchemaVersion: 2, Mode: "target", AgentID: testAgentID,
+		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "target", AgentID: testAgentID,
 		Name: "HKT", ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Target: &Target{
 			IPWatchIntervalSeconds: 60,
@@ -158,7 +158,7 @@ func TestFetchAndWriteTargetBootstrap(t *testing.T) {
 
 func TestFetchAndWriteRunnerBootstrap(t *testing.T) {
 	payload := Payload{
-		SchemaVersion: 2, Mode: "runner", AgentID: testAgentID,
+		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID,
 		Name: "Runner", ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Runner: &Runner{Profiles: []ProxyProfile{{ID: "hkt", Username: "proxy-user", Password: "proxy-pass"}}},
 	}
@@ -174,7 +174,7 @@ func TestFetchAndWriteRunnerBootstrap(t *testing.T) {
 
 func TestFetchRejectsTamperedCiphertext(t *testing.T) {
 	payload := Payload{
-		SchemaVersion: 2, Mode: "runner", AgentID: testAgentID,
+		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID,
 		Name: "Runner", ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Runner: &Runner{Profiles: []ProxyProfile{{ID: "hkt", Username: "u", Password: "p"}}},
 	}
@@ -208,7 +208,7 @@ func TestFetchRejectsTamperedCiphertext(t *testing.T) {
 
 func TestPayloadValidationRejectsGenericShellAndDuplicateProfiles(t *testing.T) {
 	target := Payload{
-		SchemaVersion: 2, Mode: "target", AgentID: testAgentID, Name: "Target",
+		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "target", AgentID: testAgentID, Name: "Target",
 		ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Target:          &Target{IPWatchIntervalSeconds: 60, ChangeIP: ChangeIP{Provider: "command", Program: "/bin/sh"}, SOCKS5: SOCKS5{}},
 	}
@@ -228,7 +228,7 @@ func TestPayloadValidationRejectsGenericShellAndDuplicateProfiles(t *testing.T) 
 		t.Fatal("IP watch interval above five minutes must be rejected")
 	}
 	runner := Payload{
-		SchemaVersion: 2, Mode: "runner", AgentID: testAgentID, Name: "Runner",
+		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID, Name: "Runner",
 		ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Runner:          &Runner{Profiles: []ProxyProfile{{ID: "hkt", Username: "u", Password: "p"}, {ID: "hkt", Username: "u2", Password: "p2"}}},
 	}

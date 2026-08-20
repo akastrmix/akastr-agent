@@ -8,7 +8,8 @@ import (
 )
 
 const validConfig = `{
-  "schema_version": 2,
+  "schema_version": 3,
+  "configuration_revision": 1,
   "node": {"id":"123e4567-e89b-42d3-a456-426614174000","name":"HKT"},
   "control": {"endpoint":"wss://origin.example.com/internal/agents/ws","credential_file":"/etc/akastr-agent/identity.json","machine_token_file":"/etc/akastr-agent/machine-token"},
   "state_file":"/var/lib/akastr-agent/state.json",
@@ -16,7 +17,7 @@ const validConfig = `{
   "recent_operation_limit":64,
   "capabilities": {
     "ip_watch":{"enabled":true,"interval_seconds":60,"observe_ipv6":false},
-    "change_ip":{"enabled":false},
+    "change_ip":{"provider":"disabled"},
     "socks5":{"enabled":false},
     "ipquality_runner":{"enabled":false}
   }
@@ -33,7 +34,7 @@ func TestLoadValidConfig(t *testing.T) {
 }
 
 func TestLoadRejectsUnknownFields(t *testing.T) {
-	input := strings.Replace(validConfig, `"schema_version": 2`, `"schema_version": 2, "unexpected": true`, 1)
+	input := strings.Replace(validConfig, `"schema_version": 3`, `"schema_version": 3, "unexpected": true`, 1)
 	_, err := Load(writeConfig(t, input))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("Load() error = %v, want unknown field", err)
@@ -60,7 +61,7 @@ func TestLoadAcceptsSOCKS5PortOnly(t *testing.T) {
 }
 
 func TestValidateRequiresFixedChangeIPProgram(t *testing.T) {
-	input := strings.Replace(validConfig, `"change_ip":{"enabled":false}`, `"change_ip":{"enabled":true,"program":"bash","args":["/root/changeip.sh"]}`, 1)
+	input := strings.Replace(validConfig, `"change_ip":{"provider":"disabled"}`, `"change_ip":{"provider":"command","program":"bash","args":["/root/changeip.sh"],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
 	_, err := Load(writeConfig(t, input))
 	if err == nil || !strings.Contains(err.Error(), "absolute Linux path") {
 		t.Fatalf("Load() error = %v, want absolute path error", err)
@@ -68,13 +69,13 @@ func TestValidateRequiresFixedChangeIPProgram(t *testing.T) {
 }
 
 func TestValidateRequiresDedicatedChangeIPProviderRoot(t *testing.T) {
-	input := strings.Replace(validConfig, `"change_ip":{"enabled":false}`, `"change_ip":{"enabled":true,"program":"/usr/local/bin/changeip","args":[],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
+	input := strings.Replace(validConfig, `"change_ip":{"provider":"disabled"}`, `"change_ip":{"provider":"command","program":"/usr/local/bin/changeip","args":[],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
 	_, err := Load(writeConfig(t, input))
 	if err == nil || !strings.Contains(err.Error(), ChangeIPProviderRoot) {
 		t.Fatalf("Load() error = %v, want dedicated provider root error", err)
 	}
 
-	input = strings.Replace(validConfig, `"change_ip":{"enabled":false}`, `"change_ip":{"enabled":true,"program":"/usr/local/lib/akastr-agent-providers/changeip","args":[],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
+	input = strings.Replace(validConfig, `"change_ip":{"provider":"disabled"}`, `"change_ip":{"provider":"command","program":"/usr/local/lib/akastr-agent-providers/changeip","args":[],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
 	if _, err := Load(writeConfig(t, input)); err != nil {
 		t.Fatalf("Load() rejected dedicated provider path: %v", err)
 	}

@@ -2,11 +2,15 @@ package release
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 	"unicode"
+
+	"github.com/akastrmix/akastr-agent/internal/identity"
+	"github.com/akastrmix/akastr-agent/internal/state"
 )
 
 func repositoryFile(t *testing.T, parts ...string) string {
@@ -21,6 +25,82 @@ func repositoryFile(t *testing.T, parts ...string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(contents)
+}
+
+func TestInstallerReadsPersistedIdentityAndBootstrapConfiguration(t *testing.T) {
+	bash, commandPrefix, shellPath := installerTestShell(t)
+	installer := repositoryFile(t, "scripts", "install.sh")
+	start := strings.Index(installer, "read_identity_agent_id() {")
+	end := strings.Index(installer, "\nversion_is_newer() {")
+	if start < 0 || end <= start {
+		t.Fatal("cannot isolate installer identity readers")
+	}
+	const agentID = "123e4567-e89b-42d3-a456-426614174000"
+	root := t.TempDir()
+	identityPath := filepath.Join(root, "identity.json")
+	configPath := filepath.Join(root, "config.json")
+	if err := state.NewJSONFile(identityPath).Save(identity.Identity{
+		SchemaVersion:   identity.SchemaVersion,
+		EnrollmentState: identity.EnrollmentConfirmed,
+		AgentID:         agentID,
+		PublicKey:       "a",
+		PrivateKey:      "b",
+	}); err != nil {
+		t.Fatalf("persist identity: %v", err)
+	}
+	identityContents, err := os.ReadFile(identityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(identityContents), "\n  \"agent_id\":") {
+		t.Fatalf("identity fixture does not use the production indented format: %q", identityContents)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"schema_version":3,"configuration_revision":2,"node":{"id":"`+agentID+`","name":"target"},"control":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	helperPath := filepath.Join(root, "readers.sh")
+	helper := installer[start:end] + `
+identity_id=$(read_identity_agent_id "$1")
+config_id=$(read_config_agent_id "$2")
+printf '%s|%s\n' "$identity_id" "$config_id"
+`
+	if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	arguments := append(commandPrefix, shellPath(helperPath), shellPath(identityPath), shellPath(configPath))
+	output, err := exec.Command(bash, arguments...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("execute installer readers: %v: %s", err, output)
+	}
+	if got := strings.TrimSpace(string(output)); got != agentID+"|"+agentID {
+		t.Fatalf("installer readers = %q", got)
+	}
+}
+
+func installerTestShell(t *testing.T) (string, []string, func(string) string) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		bash, err := exec.LookPath("bash")
+		if err != nil {
+			t.Skip("bash is unavailable")
+		}
+		return bash, nil, func(path string) string { return path }
+	}
+
+	wsl, err := exec.LookPath("wsl.exe")
+	if err != nil {
+		t.Skip("WSL is unavailable")
+	}
+	translate := func(path string) string {
+		t.Helper()
+		volume := filepath.VolumeName(path)
+		if len(volume) != 2 || volume[1] != ':' {
+			t.Fatalf("test path is not on a Windows drive: %q", path)
+		}
+		remainder := strings.TrimPrefix(path, volume)
+		return "/mnt/" + strings.ToLower(volume[:1]) + filepath.ToSlash(remainder)
+	}
+	return wsl, []string{"bash"}, translate
 }
 
 func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
@@ -45,10 +125,18 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 			t.Fatalf("PowerShell release builder missing contract %q", required)
 		}
 	}
+	for _, required := range []string{"go -C $repository build", "Join-Path $repository 'scripts\\install.sh'"} {
+		if !strings.Contains(powerShellBuild, required) {
+			t.Fatalf("PowerShell release builder must be independent of the caller directory: %q", required)
+		}
+	}
 	for _, forbidden := range []string{"arm64", ".sha256"} {
 		if strings.Contains(powerShellBuild, forbidden) {
 			t.Fatalf("PowerShell release builder contains obsolete contract %q", forbidden)
 		}
+	}
+	if strings.Contains(powerShellBuild, "Get-FileHash") {
+		t.Fatal("PowerShell release builder must not depend on optional hashing cmdlets")
 	}
 }
 
@@ -71,16 +159,22 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'",
 		"IPQUALITY_SHA256='9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb'",
 		"download_https()",
+		"curl --fail --location --silent --show-error --proto '=https' --tlsv1.2",
 		"wget --no-hsts --https-only --tries=3 --timeout=30 -qO",
 		"os_identity=$(",
 		"debian:12|debian:13)",
-		"wget exit code $wget_code",
+		"wget exit code $download_code",
 		"BASE_PACKAGES='ca-certificates curl wget'",
 		"RUNNER_PACKAGES='bash bc dnsutils iproute2 jq netcat-openbsd'",
 		"RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'",
 		"command -v \"$command\"",
 		"backup_existing \"$CONFIG_DIR\" \"$CONFIG_BACKUP\"",
-		"check_existing_install_idle",
+		"inspect_existing_install \"$agent_id\"",
+		"refusing to downgrade Agent",
+		"the install command belongs to a different Agent node",
+		`"(pending|confirmed)"`,
+		"existing identity schema or enrollment state is invalid",
+		"install -m 0600 \"$preserved_identity\" \"$CONFIG_DIR/identity.json\"",
 		"maintenance_safe_check \"$binary_path\" \"$bootstrap_dir/config.json\"",
 		"preflight_install",
 		"preflight_status",
@@ -143,7 +237,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		t.Fatal("cannot isolate fresh_install")
 	}
 	freshInstall := installer[freshStart:freshEnd]
-	if strings.Index(freshInstall, "check_existing_install_idle") > strings.Index(freshInstall, "download_binary") {
+	if strings.Index(freshInstall, "inspect_existing_install \"$agent_id\"") > strings.Index(freshInstall, "download_binary") {
 		t.Fatal("fresh install must check the existing runtime before downloads or package changes")
 	}
 	idleCheck := "maintenance_safe_check \"$binary_path\" \"$bootstrap_dir/config.json\""

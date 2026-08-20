@@ -45,7 +45,7 @@ func buildCapabilities(cfg config.CapabilitiesConfig, runnerProfileIDs []string)
 			},
 		})
 	}
-	if cfg.ChangeIP.Enabled {
+	if cfg.ChangeIP.Provider != "disabled" {
 		descriptors = append(descriptors, capability.Descriptor{
 			Name:            "changeip.command",
 			Version:         1,

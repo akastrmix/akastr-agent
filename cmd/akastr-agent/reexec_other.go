@@ -4,6 +4,6 @@ package main
 
 import "errors"
 
-func reexecAgent(string, string) error {
+func reexecAgent(string, string, string) error {
 	return errors.New("automatic process replacement is supported only on Linux")
 }

@@ -34,15 +34,16 @@ type ObservationSource interface {
 }
 
 type Client struct {
-	endpoint     string
-	identity     identity.Identity
-	version      string
-	capabilities []capability.Descriptor
-	executor     Executor
-	observations ObservationSource
-	lifecycle    *lifecycle.Gate
-	onReady      func() error
-	logger       *slog.Logger
+	endpoint              string
+	identity              identity.Identity
+	version               string
+	configurationRevision int64
+	capabilities          []capability.Descriptor
+	executor              Executor
+	observations          ObservationSource
+	lifecycle             *lifecycle.Gate
+	onReady               func() error
+	logger                *slog.Logger
 
 	mu       sync.Mutex
 	active   *session
@@ -62,15 +63,16 @@ type session struct {
 }
 
 func New(options struct {
-	Endpoint     string
-	Identity     identity.Identity
-	Version      string
-	Capabilities []capability.Descriptor
-	Executor     Executor
-	Observations ObservationSource
-	Lifecycle    *lifecycle.Gate
-	OnReady      func() error
-	Logger       *slog.Logger
+	Endpoint              string
+	Identity              identity.Identity
+	Version               string
+	ConfigurationRevision int64
+	Capabilities          []capability.Descriptor
+	Executor              Executor
+	Observations          ObservationSource
+	Lifecycle             *lifecycle.Gate
+	OnReady               func() error
+	Logger                *slog.Logger
 }) (*Client, error) {
 	if options.Executor == nil {
 		return nil, errors.New("WSS executor is required")
@@ -87,6 +89,9 @@ func New(options struct {
 	if err := options.Identity.Validate(); err != nil {
 		return nil, err
 	}
+	if options.ConfigurationRevision < 1 {
+		return nil, errors.New("Agent configuration revision is invalid")
+	}
 	parsed, err := url.Parse(options.Endpoint)
 	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" ||
 		parsed.Path != "/internal/agents/ws" || parsed.User != nil ||
@@ -95,8 +100,9 @@ func New(options struct {
 	}
 	return &Client{
 		endpoint: options.Endpoint, identity: options.Identity, version: options.Version,
-		capabilities: append([]capability.Descriptor(nil), options.Capabilities...),
-		executor:     options.Executor, observations: options.Observations,
+		configurationRevision: options.ConfigurationRevision,
+		capabilities:          append([]capability.Descriptor(nil), options.Capabilities...),
+		executor:              options.Executor, observations: options.Observations,
 		lifecycle: options.Lifecycle, onReady: options.OnReady, logger: options.Logger,
 		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
 	}, nil
@@ -191,7 +197,9 @@ func (c *Client) runSession(ctx context.Context) error {
 	}
 	if c.onReady != nil {
 		if err := c.onReady(); err != nil {
-			return fmt.Errorf("notify service readiness: %w", err)
+			fatal := fmt.Errorf("complete service readiness: %w", err)
+			c.recordFatal(fatal)
+			return fatal
 		}
 	}
 	c.setActive(session)
@@ -366,7 +374,8 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 		return errors.New("authentication acknowledgement agent mismatch")
 	}
 	if err := session.write(ctx, "agent.hello", protocol.HelloBody{
-		AgentVersion: c.version, Capabilities: c.capabilities,
+		AgentVersion: c.version, ConfigurationRevision: c.configurationRevision,
+		Capabilities: c.capabilities,
 	}); err != nil {
 		return err
 	}
@@ -406,7 +415,7 @@ func (c *Client) acceptOffer(ctx context.Context, session *session, offer protoc
 	lease, acquired := c.lifecycle.TryOperation()
 	if !acquired {
 		c.mu.Unlock()
-		return errors.New("automatic update is in progress")
+		return nil
 	}
 	c.pending[offer.CommandID] = pendingOperation{offer: offer, lease: lease}
 	c.mu.Unlock()
@@ -475,6 +484,14 @@ func (c *Client) executionFailure() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.fatalErr
+}
+
+func (c *Client) recordFatal(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.fatalErr == nil {
+		c.fatalErr = err
+	}
 }
 
 func (c *Client) releasePending() {

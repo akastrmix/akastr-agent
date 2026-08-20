@@ -10,7 +10,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/config"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 const (
 	IPQualityCommit  = "0ee5f192fed70c04615852efba0e4b8bd43546c7"
@@ -35,13 +35,14 @@ var (
 )
 
 type Payload struct {
-	SchemaVersion   int     `json:"schema_version"`
-	Mode            string  `json:"mode"`
-	AgentID         string  `json:"agent_id"`
-	Name            string  `json:"name"`
-	ControlEndpoint string  `json:"control_endpoint"`
-	Target          *Target `json:"target,omitempty"`
-	Runner          *Runner `json:"runner,omitempty"`
+	SchemaVersion         int     `json:"schema_version"`
+	ConfigurationRevision int64   `json:"configuration_revision"`
+	Mode                  string  `json:"mode"`
+	AgentID               string  `json:"agent_id"`
+	Name                  string  `json:"name"`
+	ControlEndpoint       string  `json:"control_endpoint"`
+	Target                *Target `json:"target,omitempty"`
+	Runner                *Runner `json:"runner,omitempty"`
 }
 
 type Target struct {
@@ -76,6 +77,9 @@ type ProxyProfile struct {
 func (p Payload) Validate(expectedAgentID string) error {
 	if p.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("bootstrap schema_version must be %d", SchemaVersion)
+	}
+	if p.ConfigurationRevision < 1 {
+		return errors.New("bootstrap configuration_revision must be a positive integer")
 	}
 	if !canonicalUUID.MatchString(p.AgentID) || p.AgentID != expectedAgentID {
 		return errors.New("bootstrap agent_id is invalid or mismatched")
@@ -180,18 +184,21 @@ func (r Runner) validate() error {
 
 func (p Payload) AgentConfig(ipQualityVersion, ipQualitySHA256 string) config.Config {
 	cfg := config.Config{
-		SchemaVersion: SchemaVersion,
-		Node:          config.NodeConfig{ID: p.AgentID, Name: p.Name},
-		Control:       config.ControlConfig{Endpoint: p.ControlEndpoint, CredentialFile: identityPath, MachineTokenFile: tokenPath},
-		StateFile:     statePath, IPStateFile: ipStatePath, RecentOperationLimit: 64,
+		SchemaVersion: config.SchemaVersion, ConfigurationRevision: p.ConfigurationRevision,
+		Node:      config.NodeConfig{ID: p.AgentID, Name: p.Name},
+		Control:   config.ControlConfig{Endpoint: p.ControlEndpoint, CredentialFile: identityPath, MachineTokenFile: tokenPath},
+		StateFile: statePath, IPStateFile: ipStatePath, RecentOperationLimit: 64,
 	}
+	cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Provider: "disabled"}
 	if p.Mode == "target" {
 		cfg.Capabilities.IPWatch = config.IPWatchConfig{Enabled: true, IntervalSeconds: p.Target.IPWatchIntervalSeconds, ObserveIPv6: false}
 		switch p.Target.ChangeIP.Provider {
 		case "http_bearer":
-			cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Enabled: true, Program: "/usr/bin/curl", Args: []string{"--config", curlPath}, TimeoutSeconds: 60, ObserveTimeoutSeconds: 300}
+			cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Provider: "http_bearer", Program: "/usr/bin/curl", Args: []string{"--config", curlPath}, TimeoutSeconds: 60, ObserveTimeoutSeconds: 300}
 		case "command":
-			cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Enabled: true, Program: p.Target.ChangeIP.Program, Args: p.Target.ChangeIP.Args, TimeoutSeconds: 60, ObserveTimeoutSeconds: 300}
+			cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Provider: "command", Program: p.Target.ChangeIP.Program, Args: p.Target.ChangeIP.Args, TimeoutSeconds: 60, ObserveTimeoutSeconds: 300}
+		default:
+			cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Provider: "disabled"}
 		}
 		cfg.Capabilities.SOCKS5 = config.SOCKS5Config{Enabled: p.Target.SOCKS5.Enabled, Port: p.Target.SOCKS5.Port}
 	} else {

@@ -42,10 +42,11 @@ type Identity struct {
 }
 
 type enrollmentRequest struct {
-	MachineToken string                  `json:"machine_token"`
-	PublicKey    string                  `json:"public_key"`
-	AgentVersion string                  `json:"agent_version"`
-	Capabilities []capability.Descriptor `json:"capabilities"`
+	MachineToken          string                  `json:"machine_token"`
+	PublicKey             string                  `json:"public_key"`
+	AgentVersion          string                  `json:"agent_version"`
+	ConfigurationRevision int64                   `json:"configuration_revision"`
+	Capabilities          []capability.Descriptor `json:"capabilities"`
 }
 
 type enrollmentResponse struct {
@@ -64,11 +65,16 @@ var definitiveEnrollmentErrors = map[string]int{
 	"agent_enrollment_invalid":            http.StatusForbidden,
 	"agent_enrollment_public_key_invalid": http.StatusBadRequest,
 	"agent_version_invalid":               http.StatusBadRequest,
+	"agent_release_required":              http.StatusConflict,
+	"agent_configuration_stale":           http.StatusConflict,
 	"agent_capabilities_invalid":          http.StatusBadRequest,
 	"agent_role_capabilities_invalid":     http.StatusConflict,
 	"agent_runner_conflict":               http.StatusConflict,
 	"agent_node_busy":                     http.StatusConflict,
 }
+
+var ErrEnrollmentRejected = errors.New("enrollment definitively rejected")
+var ErrEnrollmentOutcomeUncertain = errors.New("enrollment outcome uncertain")
 
 func Load(filePath string) (Identity, error) {
 	identity, err := loadStored(filePath)
@@ -143,14 +149,18 @@ func (i Identity) Ed25519PrivateKey() ed25519.PrivateKey {
 }
 
 func Enroll(ctx context.Context, options struct {
-	Endpoint        string
-	TokenFile       string
-	IdentityFile    string
-	ExpectedAgentID string
-	AgentVersion    string
-	Capabilities    []capability.Descriptor
-	HTTPClient      *http.Client
+	Endpoint              string
+	TokenFile             string
+	IdentityFile          string
+	ExpectedAgentID       string
+	AgentVersion          string
+	ConfigurationRevision int64
+	Capabilities          []capability.Descriptor
+	HTTPClient            *http.Client
 }) (Identity, error) {
+	if options.ConfigurationRevision < 1 {
+		return Identity{}, errors.New("configuration revision must be a positive integer")
+	}
 	tokenInfo, err := os.Stat(options.TokenFile)
 	if err != nil {
 		return Identity{}, fmt.Errorf("stat machine token: %w", err)
@@ -168,14 +178,16 @@ func Enroll(ctx context.Context, options struct {
 		return Identity{}, errors.New("machine token must be canonical base64url for 32 bytes")
 	}
 	var identity Identity
+	identityWasConfirmed := false
 	if _, statError := os.Stat(options.IdentityFile); statError == nil {
 		identity, err = loadStored(options.IdentityFile)
 		if err != nil {
 			return Identity{}, err
 		}
-		if identity.EnrollmentState != EnrollmentPending || identity.AgentID != options.ExpectedAgentID {
-			return Identity{}, errors.New("confirmed or mismatched identity already exists")
+		if identity.AgentID != options.ExpectedAgentID {
+			return Identity{}, errors.New("mismatched identity already exists")
 		}
+		identityWasConfirmed = identity.EnrollmentState == EnrollmentConfirmed
 	} else if !errors.Is(statError, os.ErrNotExist) {
 		return Identity{}, fmt.Errorf("stat identity: %w", statError)
 	} else {
@@ -195,9 +207,8 @@ func Enroll(ctx context.Context, options struct {
 		}
 	}
 	body, err := json.Marshal(enrollmentRequest{
-		MachineToken: token,
-		PublicKey:    identity.PublicKey,
-		AgentVersion: options.AgentVersion,
+		MachineToken: token, PublicKey: identity.PublicKey,
+		AgentVersion: options.AgentVersion, ConfigurationRevision: options.ConfigurationRevision,
 		Capabilities: options.Capabilities,
 	})
 	if err != nil {
@@ -221,36 +232,39 @@ func Enroll(ctx context.Context, options struct {
 	strictClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := strictClient.Do(request)
 	if err != nil {
-		return Identity{}, fmt.Errorf("enroll identity: %w", err)
+		return Identity{}, fmt.Errorf("%w: enroll identity: %v", ErrEnrollmentOutcomeUncertain, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		if enrollmentRejected(response) {
-			if removeError := state.NewJSONFile(options.IdentityFile).Remove(); removeError != nil {
-				return Identity{}, fmt.Errorf(
-					"enroll identity: server returned HTTP %d and pending identity removal failed: %w",
-					response.StatusCode, removeError,
-				)
+			if !identityWasConfirmed {
+				if removeError := state.NewJSONFile(options.IdentityFile).Remove(); removeError != nil {
+					return Identity{}, fmt.Errorf(
+						"%w: server returned HTTP %d and pending identity removal failed: %v",
+						ErrEnrollmentOutcomeUncertain, response.StatusCode, removeError,
+					)
+				}
 			}
+			return Identity{}, fmt.Errorf("%w: server returned HTTP %d", ErrEnrollmentRejected, response.StatusCode)
 		}
-		return Identity{}, fmt.Errorf("enroll identity: server returned HTTP %d", response.StatusCode)
+		return Identity{}, fmt.Errorf("%w: server returned HTTP %d", ErrEnrollmentOutcomeUncertain, response.StatusCode)
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 4097))
 	decoder.DisallowUnknownFields()
 	var result enrollmentResponse
 	if err := decoder.Decode(&result); err != nil {
-		return Identity{}, fmt.Errorf("decode enrollment response: %w", err)
+		return Identity{}, fmt.Errorf("%w: decode enrollment response: %v", ErrEnrollmentOutcomeUncertain, err)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Identity{}, errors.New("enrollment response contains trailing JSON")
+		return Identity{}, fmt.Errorf("%w: enrollment response contains trailing JSON", ErrEnrollmentOutcomeUncertain)
 	}
 	if !result.OK || result.Protocol != protocol.Version || result.AgentID != options.ExpectedAgentID {
-		return Identity{}, errors.New("enrollment response identity or protocol mismatch")
+		return Identity{}, fmt.Errorf("%w: enrollment response identity or protocol mismatch", ErrEnrollmentOutcomeUncertain)
 	}
 	identity.EnrollmentState = EnrollmentConfirmed
 	if err := state.NewJSONFile(options.IdentityFile).Save(identity); err != nil {
-		return Identity{}, fmt.Errorf("persist confirmed identity: %w", err)
+		return Identity{}, fmt.Errorf("%w: persist confirmed identity: %v", ErrEnrollmentOutcomeUncertain, err)
 	}
 	return identity, nil
 }

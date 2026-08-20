@@ -32,7 +32,7 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 	}
 	runtime := &Runtime{operations: engine}
 	var observer *ipwatch.Observer
-	if model.Config.Capabilities.ChangeIP.Enabled || model.Config.Capabilities.IPWatch.Enabled {
+	if model.Config.Capabilities.ChangeIP.Provider != "disabled" || model.Config.Capabilities.IPWatch.Enabled {
 		observer, err = ipwatch.New(10*time.Second, "Akastr-Agent")
 		if err != nil {
 			return nil, err
@@ -47,19 +47,22 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 			return nil, err
 		}
 	}
-	if model.Config.Capabilities.ChangeIP.Enabled {
+	if model.Config.Capabilities.ChangeIP.Provider != "disabled" {
 		cfg := model.Config.Capabilities.ChangeIP
 		var provider changeprovider.Provider
-		if cfg.Program == "/usr/bin/curl" && len(cfg.Args) == 2 && cfg.Args[0] == "--config" && cfg.Args[1] == "/etc/akastr-agent/changeip-curl.conf" {
+		switch cfg.Provider {
+		case "http_bearer":
 			provider, err = changehttp.New(changehttp.Config{
 				Program: cfg.Program, ConfigFile: cfg.Args[1],
 				Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
 			})
-		} else {
+		case "command":
 			provider, err = changecommand.New(changecommand.Config{
 				Program: cfg.Program, Args: cfg.Args,
 				Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second,
 			})
+		default:
+			return nil, errors.New("enabled ChangeIP provider type is unsupported")
 		}
 		if err != nil {
 			return nil, err

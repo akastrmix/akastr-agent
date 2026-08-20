@@ -8,7 +8,7 @@ import (
 
 func TestBuildCapabilitiesOmitsSecretsAndLocalPaths(t *testing.T) {
 	registry, err := buildCapabilities(config.CapabilitiesConfig{
-		ChangeIP: config.ChangeIPConfig{Enabled: true, Program: "/bin/bash", Args: []string{"/root/changeip.sh"}},
+		ChangeIP: config.ChangeIPConfig{Provider: "command", Program: "/bin/bash", Args: []string{"/root/changeip.sh"}},
 		SOCKS5:   config.SOCKS5Config{Enabled: true, Port: 1080},
 		IPQualityRunner: config.IPQualityRunnerConfig{
 			Enabled: true, ScriptPath: "/opt/ipquality/ip.sh", ProxyProfilesFile: "/etc/proxies.json", MaxConcurrency: 1, ScriptVersion: "v2026.08.13",

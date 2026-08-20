@@ -60,27 +60,27 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 
 点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、机器 token 和版本由后台填写：
 
-```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' && env AKASTR_AGENT_ID='<uuid>' AKASTR_AGENT_MACHINE_TOKEN='<machine-token>' AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' sh "$installer" --install )
+```text
+mktemp → curl（不可用时 wget）下载版本化 install.sh → 校验后台固定的 installer SHA-256 → 带节点 UUID、机器 token 与 bootstrap endpoint 执行 --install
 ```
 
 上面只展示命令结构；实际安装必须完整复制后台生成的命令，不要手工替换占位符。
 
-不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令以 `mktemp` 创建唯一入口文件，并在子 shell 退出时自动删除；wget 使用 `--no-hsts`，不会创建或更新用户级 HSTS 数据库。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证，但可重新下载密封配置并为重装后的主机注册新公钥。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
+不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令优先使用严格 HTTPS 的 curl，不可用时回退到禁用持久 HSTS 的 wget；installer 完整落盘并通过独立 SHA-256 后才执行。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
-需要修复、覆盖或重装时，在列表中点击“安装命令”即可重新显示该节点的命令。binary、bootstrap、依赖和本地空闲状态全部验证成功后，安装器才停止 Agent，并暂存 Agent 自己的配置、状态、release 与 unit。每次安装都会注册全新的 identity，不保留既有 private key 或 operation state。主控有未完成 command 或 active ChangeIP session 时拒绝重装，避免切断正在执行或等待 IP 事实确认的操作。怀疑命令泄露时点击“轮换密钥”，原命令立即失效；删除节点只用于永久移除。
+需要修改配置时点击“修改配置”，重新填写完整参数和 secret。后台不会回显旧 secret；保存会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，断开旧连接，并在新 revision 安装完成前暂停派发。随后执行页面显示的安装命令。普通修复或重装可直接再次获取同一命令。安装器拒绝覆盖不同节点或降级已装版本；同节点完整安装复用已确认 identity，残缺安装通过同一事务修复。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
 
 安装过程完全非交互。它会：
 
 1. 按 `--install` 模式检查 root、Debian 12/13、amd64、systemd 和下载校验工具；`--status` 只要求 systemd，`--uninstall` 只要求 root 与 systemd；
-2. 若本机已有 Agent，在任何下载或包变更前先检查 operation journal 与全部待对账 IP 状态均为空；
+2. 检查既有 identity/config 的节点 ID 与版本；拒绝跨节点覆盖和降级，完整旧安装还要先确认 operation journal 与待对账 IP 状态为空；
 3. 下载同版本 amd64 binary，并自动完成内部完整性校验；
 4. 使用节点 UUID 与机器 token 通过 HTTPS 取得持久密封配置；
 5. 在本机以 AES-256-GCM 验证并解密，生成 root-only 配置与 secret 文件；
 6. 安装所需 Debian 包；Runner 再下载并自动校验固定 commit 的 IPQuality 脚本；
 7. 用新 binary 和新配置再次执行 maintenance-safe 检查；
 8. 严格停止全部 Agent unit，再对稳定状态执行相同检查；任一检查失败或 unit 未进入 inactive 都恢复原 unit 并中止；
-9. 运行 `check-config`，生成新 identity 并完成注册，再删除本机机器 token 副本；
+9. 运行 `check-config`；首次安装生成 identity，同节点重装复用已确认 identity，并以配置 revision 完成注册，再删除本机机器 token 副本；
 10. 把 Agent systemd 命名空间收敛为唯一的 `akastr-agent.service`；服务只有完成 WSS 认证和 hello 后才向 systemd 报告 ready。
 
 成功时最后显示：
@@ -142,24 +142,24 @@ systemctl restart akastr-agent.service
 
 ## 7. 更新、状态与卸载
 
-正常情况下不需要手动更新：唯一的 Agent 主进程每六小时检查一次 AkastrCloud 已批准版本。主控有未完成命令时返回 `busy`；Agent 看到可用版本后，必须先取得与 command 共用的进程级更新 lease。执行中的 command 会阻止更新，更新持锁期间不会接受新 command。下载、版本、内部完整性或当前配置任一验证失败都不会切换。通过验证后 Agent 原子切换 `current`、删除旧 release，并以同一 PID 重执行新 binary。可在主 service 日志中查看稳定更新错误码：
+正常情况下不需要手动更新：Agent 首次完成控制通道 readiness 后等待 1–5 分钟随机延迟，再每六小时检查一次批准版本。执行中的 command 会阻止更新；更新持锁时新 offer 留在主控等待，不会关闭健康连接。新 binary 先下载到独立 release 并验证，再作为 trial 原位执行；只有 45 秒内重新完成 WSS readiness 才提交并 fsync `current`，否则 systemd 仍从旧 `current` 重启。提交后保留当前与前一 release。
 
 ```bash
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-Agent 只维护 `current` release，不提供 `--update` 或本地回退 CLI。自动更新失败时当前进程继续运行；如果 `current` 已切换但原位执行失败，systemd 会从唯一的 current 重启。需要人工修复时，维护者让 AkastrCloud 批准修复版本，或由操作者从后台复制该节点的一键命令并重新运行 `--install`。安装器会重新下载完整配置、确认双端空闲并重新注册 identity。
+Agent 不提供 `--update` 或本地回退 CLI。trial 失败不会改变 `current`；提交后的旧 release 清理失败只记录告警。需要人工修复时，运行后台的一键命令；配置 schema 的破坏性变化也通过完整重装而非自动更新完成。
 
-安装器的 `--status` 只读取 systemd 状态，不需要机器 token。把下方 `<release-version>` 替换为节点正在使用的完整版本标签：
+日常状态直接从 systemd 读取，不需要再次下载安装器或使用机器 token：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' && sh "$installer" --status )
+systemctl --no-pager --full status akastr-agent.service
 ```
 
-永久卸载必须使用显式销毁参数，并使用节点正在运行的完整版本标签：
+永久卸载必须使用版本化 installer、后台公布的精确 installer SHA-256 和显式销毁参数：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' && sh "$installer" --uninstall --confirm-destroy-local-agent )
+( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --output "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' && printf '%s  %s\n' '<installer-sha256>' "$installer" | sha256sum --check --status && sh "$installer" --uninstall --confirm-destroy-local-agent )
 ```
 
 卸载会在停止服务前后执行相同的 maintenance-safe 检查；检查失败或 systemd 未能严格停止 unit 时不会删除本地状态。检查通过后才永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；操作者管理的 `/usr/local/lib/akastr-agent-providers` 保留。它不会自动删除后台节点。确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
@@ -169,7 +169,7 @@ Agent 只维护 `current` release，不提供 `--update` 或本地回退 CLI。�
 | 现象 | 处理 |
 | --- | --- |
 | 拒绝系统或架构 | 只支持 Debian 12/13 amd64；不要绕过检测或使用 ARM asset |
-| 下载失败并显示 `wget exit code` | `4` 通常表示网络/TLS，`8` 表示服务器返回错误；不要反复消耗 token，先核对版本化 Release 地址 |
+| 下载失败并显示 `curl` 或 `wget exit code` | 先核对网络/TLS 与版本化 Release 地址；不要跳过 installer 或 binary 摘要校验 |
 | 缺少 `AKASTR_AGENT_*` | 命令被截断或手工改写；回后台重新生成，不要自行拼装 |
 | bootstrap 返回 403 | 机器 token 已轮换、节点已删除或 UUID 不匹配；回后台重新取得有效命令 |
 | bootstrap authentication failed | 密文、token 或 UUID 不匹配；停止操作，不要尝试绕过认证 |
@@ -182,11 +182,14 @@ Agent 只维护 `current` release，不提供 `--update` 或本地回退 CLI。�
 | `proxy_preflight_failed` / `proxy_postflight_failed` | 检查目标 SOCKS5 host、端口、凭据和代理稳定性，不要打印密码 |
 | `runner_busy` | Runner 单执行槽正忙，应由主控排队 |
 | enrollment 返回 `agent_node_busy` / HTTP 409 | 主控仍有 pending、offered、accepted command 或 active ChangeIP session；等待其终结后重新运行同一安装命令 |
+| enrollment 返回 `agent_release_required` | 安装命令引用的 binary 不是主控当前批准 release；回后台重新获取命令 |
+| enrollment 返回 `agent_configuration_stale` | 本地配置 revision 已过期；执行“修改配置”返回的新安装命令 |
 | service 启动超时 | WSS auth 或 hello 未完成；查看唯一主 service 日志，修复主控、网络或 identity 问题后重跑同一安装命令 |
 | service 反复重启 | 查看 `systemctl show`、`journalctl` 并运行 `check-config`；不要删除 state 逃避错误 |
 | 日志出现 `update_check_failed` | 主控或网络暂时不可用；运行版本继续工作，下一个六小时周期重试 |
-| 日志出现 `update_apply_failed` | 下载、版本、配置或内部完整性验证失败；运行版本不受影响，不要改地址或跳过校验 |
-| 日志出现 `update_reexec_failed` | current 已切换但进程替换失败；保留日志，等待 systemd 从 current 重启；仍失败则重跑后台一键安装命令 |
+| 日志出现 `update_stage_failed` | 下载、版本、配置或内部完整性验证失败；`current` 未改变，不要跳过校验 |
+| 日志出现 `update_reexec_failed` | trial 进程替换失败；`current` 未改变，保留日志并重跑后台一键安装命令 |
+| 日志出现 `update_cleanup_failed` | 新版本已提交，但第三个及更旧 release 未完全清理；保留 current/previous 并检查文件权限或磁盘 |
 
 ## 9. 维护者发布版本
 

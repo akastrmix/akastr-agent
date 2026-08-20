@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -41,21 +42,25 @@ func TestEnrollDoesNotFollowRedirectAndRetainsPendingIdentity(t *testing.T) {
 	defer server.Close()
 	identityFile := filepath.Join(root, "identity.json")
 	_, err := Enroll(t.Context(), struct {
-		Endpoint        string
-		TokenFile       string
-		IdentityFile    string
-		ExpectedAgentID string
-		AgentVersion    string
-		Capabilities    []capability.Descriptor
-		HTTPClient      *http.Client
+		Endpoint              string
+		TokenFile             string
+		IdentityFile          string
+		ExpectedAgentID       string
+		AgentVersion          string
+		ConfigurationRevision int64
+		Capabilities          []capability.Descriptor
+		HTTPClient            *http.Client
 	}{
 		Endpoint:  "wss" + strings.TrimPrefix(server.URL, "https") + "/internal/agents/ws",
 		TokenFile: tokenFile, IdentityFile: identityFile,
 		ExpectedAgentID: "123e4567-e89b-42d3-a456-426614174000",
-		AgentVersion:    "v0.8.0", HTTPClient: server.Client(),
+		AgentVersion:    "v0.8.0", ConfigurationRevision: 1, HTTPClient: server.Client(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
 		t.Fatalf("redirect error = %v, want HTTP 307 rejection", err)
+	}
+	if !errors.Is(err, ErrEnrollmentOutcomeUncertain) {
+		t.Fatalf("redirect error class = %v, want uncertain", err)
 	}
 	if redirectedRequests.Load() != 0 {
 		t.Fatal("enrollment client followed a redirect")
@@ -149,21 +154,25 @@ func TestEnrollRemovesPendingIdentityAfterExplicitBusinessRejection(t *testing.T
 	defer server.Close()
 	identityFile := filepath.Join(root, "identity.json")
 	_, err := Enroll(t.Context(), struct {
-		Endpoint        string
-		TokenFile       string
-		IdentityFile    string
-		ExpectedAgentID string
-		AgentVersion    string
-		Capabilities    []capability.Descriptor
-		HTTPClient      *http.Client
+		Endpoint              string
+		TokenFile             string
+		IdentityFile          string
+		ExpectedAgentID       string
+		AgentVersion          string
+		ConfigurationRevision int64
+		Capabilities          []capability.Descriptor
+		HTTPClient            *http.Client
 	}{
 		Endpoint:  "wss" + strings.TrimPrefix(server.URL, "https") + "/internal/agents/ws",
 		TokenFile: tokenFile, IdentityFile: identityFile,
 		ExpectedAgentID: "123e4567-e89b-42d3-a456-426614174000",
-		AgentVersion:    "v1.0.0", HTTPClient: server.Client(),
+		AgentVersion:    "v1.0.0", ConfigurationRevision: 1, HTTPClient: server.Client(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 403") {
 		t.Fatalf("Enroll() error = %v, want HTTP 403", err)
+	}
+	if !errors.Is(err, ErrEnrollmentRejected) {
+		t.Fatalf("rejection error class = %v, want rejected", err)
 	}
 	if _, err := os.Stat(identityFile); !os.IsNotExist(err) {
 		t.Fatalf("definitively rejected enrollment identity stat error = %v", err)
@@ -225,13 +234,20 @@ func TestEnrollReusesPendingIdentityAfterAmbiguousFailure(t *testing.T) {
 			response.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		if requests.Add(1) == 1 {
+		requestNumber := requests.Add(1)
+		if requestNumber == 1 {
 			firstPublicKey = body.PublicKey
 			response.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		if body.PublicKey != firstPublicKey {
 			t.Error("retry generated a different enrollment identity")
+		}
+		if requestNumber == 3 {
+			response.Header().Set("Content-Type", "application/json")
+			response.WriteHeader(http.StatusConflict)
+			_, _ = response.Write([]byte(`{"error":"agent_node_busy"}`))
+			return
 		}
 		response.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(response).Encode(enrollmentResponse{
@@ -241,20 +257,22 @@ func TestEnrollReusesPendingIdentityAfterAmbiguousFailure(t *testing.T) {
 	defer server.Close()
 	identityFile := filepath.Join(root, "identity.json")
 	options := struct {
-		Endpoint        string
-		TokenFile       string
-		IdentityFile    string
-		ExpectedAgentID string
-		AgentVersion    string
-		Capabilities    []capability.Descriptor
-		HTTPClient      *http.Client
+		Endpoint              string
+		TokenFile             string
+		IdentityFile          string
+		ExpectedAgentID       string
+		AgentVersion          string
+		ConfigurationRevision int64
+		Capabilities          []capability.Descriptor
+		HTTPClient            *http.Client
 	}{
 		Endpoint:  "wss" + strings.TrimPrefix(server.URL, "https") + "/internal/agents/ws",
 		TokenFile: tokenFile, IdentityFile: identityFile,
 		ExpectedAgentID: "123e4567-e89b-42d3-a456-426614174000",
-		AgentVersion:    "v1.0.0", HTTPClient: server.Client(),
+		AgentVersion:    "v1.0.0", ConfigurationRevision: 1, HTTPClient: server.Client(),
 	}
-	if _, err := Enroll(t.Context(), options); err == nil || !strings.Contains(err.Error(), "HTTP 503") {
+	if _, err := Enroll(t.Context(), options); err == nil || !strings.Contains(err.Error(), "HTTP 503") ||
+		!errors.Is(err, ErrEnrollmentOutcomeUncertain) {
 		t.Fatalf("first Enroll() error = %v", err)
 	}
 	pending, err := loadStored(identityFile)
@@ -267,5 +285,15 @@ func TestEnrollReusesPendingIdentityAfterAmbiguousFailure(t *testing.T) {
 	}
 	if confirmed.EnrollmentState != EnrollmentConfirmed || confirmed.PublicKey != firstPublicKey {
 		t.Fatalf("confirmed identity = %#v", confirmed)
+	}
+	if _, err := Enroll(t.Context(), options); !errors.Is(err, ErrEnrollmentRejected) {
+		t.Fatalf("confirmed identity rejection = %v, want rejected", err)
+	}
+	preserved, err := loadStored(identityFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preserved.EnrollmentState != EnrollmentConfirmed || preserved.PublicKey != firstPublicKey {
+		t.Fatalf("preserved confirmed identity = %#v", preserved)
 	}
 }

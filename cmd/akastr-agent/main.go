@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,7 +32,13 @@ var version = "dev"
 func main() {
 	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "akastr-agent:", err)
-		os.Exit(1)
+		exitCode := 1
+		if errors.Is(err, identity.ErrEnrollmentRejected) {
+			exitCode = 20
+		} else if errors.Is(err, identity.ErrEnrollmentOutcomeUncertain) {
+			exitCode = 21
+		}
+		os.Exit(exitCode)
 	}
 }
 
@@ -103,20 +110,22 @@ func run(arguments []string, output io.Writer) error {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			created, err := identity.Enroll(ctx, struct {
-				Endpoint        string
-				TokenFile       string
-				IdentityFile    string
-				ExpectedAgentID string
-				AgentVersion    string
-				Capabilities    []capability.Descriptor
-				HTTPClient      *http.Client
+				Endpoint              string
+				TokenFile             string
+				IdentityFile          string
+				ExpectedAgentID       string
+				AgentVersion          string
+				ConfigurationRevision int64
+				Capabilities          []capability.Descriptor
+				HTTPClient            *http.Client
 			}{
-				Endpoint:        model.Config.Control.Endpoint,
-				TokenFile:       model.Config.Control.MachineTokenFile,
-				IdentityFile:    model.Config.Control.CredentialFile,
-				ExpectedAgentID: model.Config.Node.ID,
-				AgentVersion:    version,
-				Capabilities:    model.Capabilities.List(),
+				Endpoint:              model.Config.Control.Endpoint,
+				TokenFile:             model.Config.Control.MachineTokenFile,
+				IdentityFile:          model.Config.Control.CredentialFile,
+				ExpectedAgentID:       model.Config.Node.ID,
+				AgentVersion:          version,
+				ConfigurationRevision: model.Config.ConfigurationRevision,
+				Capabilities:          model.Capabilities.List(),
 			})
 			if err != nil {
 				return err
@@ -125,6 +134,7 @@ func run(arguments []string, output io.Writer) error {
 			return err
 		}
 		if arguments[0] == "run" {
+			const releaseRoot = "/usr/local/lib/akastr-agent"
 			credentials, err := identity.Load(model.Config.Control.CredentialFile)
 			if err != nil {
 				return err
@@ -138,25 +148,54 @@ func run(arguments []string, output io.Writer) error {
 			}
 			logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
 			lifecycleGate := lifecycle.New()
+			trial, err := autoupdate.LoadTrial(version, releaseRoot)
+			if err != nil {
+				return err
+			}
+			ready := make(chan struct{})
+			var readyOnce sync.Once
+			var readyError error
+			onReady := func() error {
+				readyOnce.Do(func() {
+					if trial != nil {
+						result, commitError := trial.Commit()
+						if commitError != nil {
+							readyError = fmt.Errorf("commit automatic update trial: %w", commitError)
+							return
+						}
+						if result.CleanupFailed {
+							logger.Warn("old Agent release cleanup incomplete", "code", "update_cleanup_failed")
+						}
+					}
+					if notifyError := systemdnotify.Ready(); notifyError != nil {
+						readyError = notifyError
+						return
+					}
+					close(ready)
+				})
+				return readyError
+			}
 			var observations transportws.ObservationSource
 			if monitor := runtime.IPMonitor(); monitor != nil {
 				observations = monitor
 			}
 			client, err := transportws.New(struct {
-				Endpoint     string
-				Identity     identity.Identity
-				Version      string
-				Capabilities []capability.Descriptor
-				Executor     transportws.Executor
-				Observations transportws.ObservationSource
-				Lifecycle    *lifecycle.Gate
-				OnReady      func() error
-				Logger       *slog.Logger
+				Endpoint              string
+				Identity              identity.Identity
+				Version               string
+				ConfigurationRevision int64
+				Capabilities          []capability.Descriptor
+				Executor              transportws.Executor
+				Observations          transportws.ObservationSource
+				Lifecycle             *lifecycle.Gate
+				OnReady               func() error
+				Logger                *slog.Logger
 			}{
 				Endpoint: model.Config.Control.Endpoint, Identity: credentials,
-				Version: version, Capabilities: model.Capabilities.List(),
-				Executor: runtime, Observations: observations,
-				Lifecycle: lifecycleGate, OnReady: systemdnotify.Ready, Logger: logger,
+				Version: version, ConfigurationRevision: model.Config.ConfigurationRevision,
+				Capabilities: model.Capabilities.List(),
+				Executor:     runtime, Observations: observations,
+				Lifecycle: lifecycleGate, OnReady: onReady, Logger: logger,
 			})
 			if err != nil {
 				return err
@@ -167,16 +206,35 @@ func run(arguments []string, output io.Writer) error {
 			defer cancelRun()
 			updateDone := make(chan error, 1)
 			controlDone := make(chan error, 1)
+			var trialExpired <-chan time.Time
+			if trial != nil {
+				trialTimer := time.NewTimer(autoupdate.TrialReadinessTimeout)
+				defer trialTimer.Stop()
+				trialExpired = trialTimer.C
+				go func() {
+					select {
+					case <-ready:
+						if !trialTimer.Stop() {
+							select {
+							case <-trialTimer.C:
+							default:
+							}
+						}
+					case <-runContext.Done():
+					}
+				}()
+			}
 			go func() {
 				updateDone <- autoupdate.RunLoop(runContext, autoupdate.LoopOptions{
 					ControlEndpoint: model.Config.Control.Endpoint,
 					CurrentVersion:  version,
 					Credentials:     credentials,
 					ConfigPath:      *configPath,
-					ReleaseRoot:     "/usr/local/lib/akastr-agent",
+					ReleaseRoot:     releaseRoot,
 					Lifecycle:       lifecycleGate,
-					Reexec: func(binary string) error {
-						return reexecAgent(binary, *configPath)
+					Ready:           ready,
+					Reexec: func(binary, targetVersion string) error {
+						return reexecAgent(binary, *configPath, targetVersion)
 					},
 					Logger: logger,
 				})
@@ -184,6 +242,11 @@ func run(arguments []string, output io.Writer) error {
 			go func() { controlDone <- client.Run(runContext) }()
 			var firstError error
 			select {
+			case <-trialExpired:
+				cancelRun()
+				<-updateDone
+				<-controlDone
+				return errors.New("automatic update trial did not reach control readiness")
 			case firstError = <-updateDone:
 				cancelRun()
 				<-controlDone

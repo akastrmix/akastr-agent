@@ -31,7 +31,8 @@ func TestCheckIdleRejectsAnActiveOperation(t *testing.T) {
 func TestCheckConfigValidatesRuntimeDependencies(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	config := `{
-  "schema_version": 2,
+  "schema_version": 3,
+  "configuration_revision": 1,
   "node": {"id": "123e4567-e89b-42d3-a456-426614174000", "name": "test-node"},
   "control": {
     "endpoint": "wss://control.example/internal/agents/ws",
@@ -44,7 +45,7 @@ func TestCheckConfigValidatesRuntimeDependencies(t *testing.T) {
   "capabilities": {
     "ip_watch": {"enabled": true, "interval_seconds": 60, "observe_ipv6": false},
     "change_ip": {
-      "enabled": true,
+      "provider": "command",
       "program": "/usr/local/lib/akastr-agent-providers/definitely-missing",
       "args": ["change"],
       "timeout_seconds": 30,

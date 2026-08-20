@@ -12,19 +12,20 @@ import (
 	"strings"
 )
 
-const SchemaVersion = 2
+const SchemaVersion = 3
 const ChangeIPProviderRoot = "/usr/local/lib/akastr-agent-providers"
 
 var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Config struct {
-	SchemaVersion        int                `json:"schema_version"`
-	Node                 NodeConfig         `json:"node"`
-	Control              ControlConfig      `json:"control"`
-	StateFile            string             `json:"state_file"`
-	IPStateFile          string             `json:"ip_state_file"`
-	RecentOperationLimit int                `json:"recent_operation_limit"`
-	Capabilities         CapabilitiesConfig `json:"capabilities"`
+	SchemaVersion         int                `json:"schema_version"`
+	ConfigurationRevision int64              `json:"configuration_revision"`
+	Node                  NodeConfig         `json:"node"`
+	Control               ControlConfig      `json:"control"`
+	StateFile             string             `json:"state_file"`
+	IPStateFile           string             `json:"ip_state_file"`
+	RecentOperationLimit  int                `json:"recent_operation_limit"`
+	Capabilities          CapabilitiesConfig `json:"capabilities"`
 }
 
 type NodeConfig struct {
@@ -52,7 +53,7 @@ type IPWatchConfig struct {
 }
 
 type ChangeIPConfig struct {
-	Enabled               bool     `json:"enabled"`
+	Provider              string   `json:"provider"`
 	Program               string   `json:"program"`
 	Args                  []string `json:"args"`
 	TimeoutSeconds        int      `json:"timeout_seconds"`
@@ -107,6 +108,9 @@ func (c Config) Validate() error {
 	if c.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema_version must be %d", SchemaVersion)
 	}
+	if c.ConfigurationRevision < 1 {
+		return errors.New("configuration_revision must be a positive integer")
+	}
 	if !canonicalUUID.MatchString(c.Node.ID) || c.Node.ID == "00000000-0000-0000-0000-000000000000" {
 		return errors.New("node.id must be a non-zero canonical lowercase UUID")
 	}
@@ -159,7 +163,13 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 			return errors.New("capabilities.ip_watch.interval_seconds must be between 10 and 300")
 		}
 	}
-	if capabilities.ChangeIP.Enabled {
+	switch capabilities.ChangeIP.Provider {
+	case "disabled":
+		if capabilities.ChangeIP.Program != "" || len(capabilities.ChangeIP.Args) != 0 ||
+			capabilities.ChangeIP.TimeoutSeconds != 0 || capabilities.ChangeIP.ObserveTimeoutSeconds != 0 {
+			return errors.New("disabled ChangeIP provider must not contain configuration")
+		}
+	case "http_bearer", "command":
 		enabled++
 		if !capabilities.IPWatch.Enabled {
 			return errors.New("capabilities.change_ip requires capabilities.ip_watch")
@@ -167,7 +177,10 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 		if err := validateAbsoluteLinuxPath("capabilities.change_ip.program", capabilities.ChangeIP.Program); err != nil {
 			return err
 		}
-		if capabilities.ChangeIP.Program == "/usr/bin/curl" {
+		if capabilities.ChangeIP.Provider == "http_bearer" {
+			if capabilities.ChangeIP.Program != "/usr/bin/curl" {
+				return errors.New("capabilities.change_ip HTTP provider program is invalid")
+			}
 			if len(capabilities.ChangeIP.Args) != 2 || capabilities.ChangeIP.Args[0] != "--config" ||
 				capabilities.ChangeIP.Args[1] != "/etc/akastr-agent/changeip-curl.conf" {
 				return errors.New("capabilities.change_ip curl provider configuration is invalid")
@@ -189,6 +202,8 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 		if capabilities.ChangeIP.ObserveTimeoutSeconds < 30 || capabilities.ChangeIP.ObserveTimeoutSeconds > 900 {
 			return errors.New("capabilities.change_ip.observe_timeout_seconds must be between 30 and 900")
 		}
+	default:
+		return errors.New("capabilities.change_ip.provider must be disabled, http_bearer, or command")
 	}
 	if capabilities.SOCKS5.Enabled {
 		enabled++
@@ -208,7 +223,7 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 			return errors.New("capabilities.ipquality_runner.timeout_seconds must be between 60 and 1800")
 		}
 		if capabilities.IPQualityRunner.MaxConcurrency != 1 {
-			return errors.New("capabilities.ipquality_runner.max_concurrency must be 1 in the first release")
+			return errors.New("capabilities.ipquality_runner.max_concurrency must be 1")
 		}
 		if !regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`).MatchString(capabilities.IPQualityRunner.ScriptVersion) {
 			return errors.New("capabilities.ipquality_runner.script_version must be a stable lowercase token")

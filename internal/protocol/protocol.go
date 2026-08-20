@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	Version     = "2026-08-18.v4"
+	Version     = "2026-08-20.v5"
 	AuthContext = "akastr-agent-auth-v1"
 	MaxMessage  = 64 * 1024
 )
@@ -289,8 +289,9 @@ func AuthSigningText(challenge AuthChallenge) ([]byte, error) {
 }
 
 type HelloBody struct {
-	AgentVersion string                  `json:"agent_version"`
-	Capabilities []capability.Descriptor `json:"capabilities"`
+	AgentVersion          string                  `json:"agent_version"`
+	ConfigurationRevision int64                   `json:"configuration_revision"`
+	Capabilities          []capability.Descriptor `json:"capabilities"`
 }
 
 type AuthResponseBody struct {

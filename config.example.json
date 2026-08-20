@@ -1,5 +1,6 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
+  "configuration_revision": 1,
   "node": {
     "id": "00000000-0000-4000-8000-000000000001",
     "name": "example-node"
@@ -19,7 +20,11 @@
       "observe_ipv6": false
     },
     "change_ip": {
-      "enabled": false
+      "provider": "disabled",
+      "program": "",
+      "args": [],
+      "timeout_seconds": 0,
+      "observe_timeout_seconds": 0
     },
     "socks5": {
       "enabled": false

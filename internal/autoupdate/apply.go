@@ -22,33 +22,54 @@ type CommandRunner interface {
 }
 
 type ApplyOptions struct {
-	Manifest    Manifest
-	ConfigPath  string
-	ReleaseRoot string
-	HTTPClient  *http.Client
-	Runner      CommandRunner
+	Manifest      Manifest
+	ConfigPath    string
+	ReleaseRoot   string
+	HTTPClient    *http.Client
+	Runner        CommandRunner
+	SyncDirectory func(string) error
 }
 
-func Apply(ctx context.Context, options ApplyOptions) error {
+type StagedRelease struct {
+	Version string
+	Binary  string
+}
+
+type CommitOptions struct {
+	Version       string
+	ReleaseRoot   string
+	SyncDirectory func(string) error
+	RemoveAll     func(string) error
+}
+
+type CommitResult struct {
+	Committed     bool
+	CleanupFailed bool
+}
+
+func Stage(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
 	if runtime.GOOS != "linux" {
-		return errors.New("automatic updates are supported only on Linux")
+		return StagedRelease{}, errors.New("automatic updates are supported only on Linux")
 	}
 	if options.Manifest.Status != "update_available" {
-		return errors.New("automatic update apply requires an available update")
+		return StagedRelease{}, errors.New("automatic update stage requires an available update")
 	}
 	if options.ConfigPath == "" || options.ReleaseRoot == "" || !filepath.IsAbs(options.ConfigPath) || !filepath.IsAbs(options.ReleaseRoot) {
-		return errors.New("automatic update paths must be absolute")
+		return StagedRelease{}, errors.New("automatic update paths must be absolute")
 	}
 	releaseRoot, err := filepath.Abs(options.ReleaseRoot)
 	if err != nil {
-		return err
+		return StagedRelease{}, err
 	}
 	if info, err := os.Lstat(releaseRoot); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("Agent release root is not a safe directory")
+		return StagedRelease{}, errors.New("Agent release root is not a safe directory")
 	}
 	releasesRoot := filepath.Join(releaseRoot, "releases")
 	if info, err := os.Lstat(releasesRoot); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("Agent releases root is not a safe directory")
+		return StagedRelease{}, errors.New("Agent releases root is not a safe directory")
+	}
+	if _, err := safeCurrentTarget(filepath.Join(releaseRoot, "current"), releasesRoot); err != nil {
+		return StagedRelease{}, err
 	}
 	runner := options.Runner
 	if runner == nil {
@@ -56,63 +77,92 @@ func Apply(ctx context.Context, options ApplyOptions) error {
 	}
 	staging, err := os.MkdirTemp(releasesRoot, ".update-")
 	if err != nil {
-		return fmt.Errorf("create Agent update staging directory: %w", err)
+		return StagedRelease{}, fmt.Errorf("create Agent update staging directory: %w", err)
 	}
-	createdRelease := false
 	defer func() { _ = os.RemoveAll(staging) }()
 	if err := os.Chmod(staging, 0o700); err != nil {
-		return err
+		return StagedRelease{}, err
 	}
 	stagedBinary := filepath.Join(staging, "akastr-agent")
 	if err := downloadBinary(ctx, options.HTTPClient, options.Manifest, stagedBinary); err != nil {
-		return err
+		return StagedRelease{}, err
 	}
 	if err := verifyBinary(ctx, runner, stagedBinary, options.Manifest.Version, options.ConfigPath); err != nil {
-		return err
+		return StagedRelease{}, err
 	}
 
 	targetRelease := filepath.Join(releasesRoot, options.Manifest.Version)
 	if info, err := os.Lstat(targetRelease); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("target Agent release path is unsafe")
+			return StagedRelease{}, errors.New("target Agent release path is unsafe")
 		}
 		existingBinary := filepath.Join(targetRelease, "akastr-agent")
 		if err := verifyFileChecksum(existingBinary, options.Manifest.BinarySHA256); err != nil {
-			return errors.New("existing target Agent release is not immutable")
+			return StagedRelease{}, errors.New("existing target Agent release is not immutable")
 		}
 		if err := verifyBinary(ctx, runner, existingBinary, options.Manifest.Version, options.ConfigPath); err != nil {
-			return errors.New("existing target Agent release failed validation")
+			return StagedRelease{}, errors.New("existing target Agent release failed validation")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+		return StagedRelease{}, err
 	} else {
+		syncFn := options.SyncDirectory
+		if syncFn == nil {
+			syncFn = syncDirectory
+		}
+		if err := syncFn(staging); err != nil {
+			return StagedRelease{}, fmt.Errorf("sync Agent update staging directory: %w", err)
+		}
 		if err := os.Rename(staging, targetRelease); err != nil {
-			return fmt.Errorf("install Agent update release: %w", err)
+			return StagedRelease{}, fmt.Errorf("install Agent update release: %w", err)
 		}
-		if err := syncDirectory(releasesRoot); err != nil {
-			return fmt.Errorf("sync Agent releases directory: %w", err)
-		}
-		createdRelease = true
 		staging = ""
+		if err := syncFn(releasesRoot); err != nil {
+			return StagedRelease{}, fmt.Errorf("sync Agent releases directory: %w", err)
+		}
 	}
+	return StagedRelease{Version: options.Manifest.Version, Binary: filepath.Join(targetRelease, "akastr-agent")}, nil
+}
 
-	currentLink := filepath.Join(releaseRoot, "current")
-	_, err = safeCurrentTarget(currentLink, releasesRoot)
+func Commit(options CommitOptions) (CommitResult, error) {
+	if runtime.GOOS != "linux" {
+		return CommitResult{}, errors.New("automatic updates are supported only on Linux")
+	}
+	if !semanticVersion.MatchString(options.Version) || options.ReleaseRoot == "" || !filepath.IsAbs(options.ReleaseRoot) {
+		return CommitResult{}, errors.New("automatic update commit options are invalid")
+	}
+	releaseRoot, err := filepath.Abs(options.ReleaseRoot)
 	if err != nil {
-		if createdRelease {
-			_ = os.RemoveAll(targetRelease)
-		}
-		return err
+		return CommitResult{}, err
 	}
-	if err := replaceSymlink(currentLink, targetRelease); err != nil {
-		if createdRelease {
-			_ = os.RemoveAll(targetRelease)
-		}
-		return err
+	releasesRoot := filepath.Join(releaseRoot, "releases")
+	currentLink := filepath.Join(releaseRoot, "current")
+	previous, err := safeCurrentTarget(currentLink, releasesRoot)
+	if err != nil {
+		return CommitResult{}, err
 	}
-
-	pruneOldReleases(releasesRoot, targetRelease)
-	return nil
+	target := filepath.Join(releasesRoot, options.Version)
+	if info, statError := os.Lstat(target); statError != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return CommitResult{}, errors.New("staged Agent release is not a safe directory")
+	}
+	if previous == target {
+		return CommitResult{Committed: true}, nil
+	}
+	syncFn := options.SyncDirectory
+	if syncFn == nil {
+		syncFn = syncDirectory
+	}
+	committed, err := replaceSymlink(currentLink, target, syncFn)
+	result := CommitResult{Committed: committed}
+	if err != nil {
+		return result, err
+	}
+	removeAll := options.RemoveAll
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
+	result.CleanupFailed = pruneOldReleases(releasesRoot, target, previous, removeAll)
+	return result, nil
 }
 
 func downloadBinary(ctx context.Context, httpClient *http.Client, manifest Manifest, destination string) error {
@@ -215,20 +265,20 @@ func safeCurrentTarget(currentLink, releasesRoot string) (string, error) {
 	return target, nil
 }
 
-func replaceSymlink(path, target string) error {
+func replaceSymlink(path, target string, syncFn func(string) error) (bool, error) {
 	temporary := fmt.Sprintf("%s.update-%d", path, os.Getpid())
 	_ = os.Remove(temporary)
 	if err := os.Symlink(target, temporary); err != nil {
-		return fmt.Errorf("create Agent current symlink: %w", err)
+		return false, fmt.Errorf("create Agent current symlink: %w", err)
 	}
 	if err := os.Rename(temporary, path); err != nil {
 		_ = os.Remove(temporary)
-		return fmt.Errorf("replace Agent current symlink: %w", err)
+		return false, fmt.Errorf("replace Agent current symlink: %w", err)
 	}
-	if err := syncDirectory(filepath.Dir(path)); err != nil {
-		return fmt.Errorf("sync Agent current directory: %w", err)
+	if err := syncFn(filepath.Dir(path)); err != nil {
+		return true, fmt.Errorf("sync Agent current directory: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 func syncDirectory(path string) error {
@@ -243,22 +293,26 @@ func syncDirectory(path string) error {
 	return directory.Close()
 }
 
-func pruneOldReleases(releasesRoot, current string) {
+func pruneOldReleases(releasesRoot, current, previous string, removeAll func(string) error) bool {
 	entries, err := os.ReadDir(releasesRoot)
 	if err != nil {
-		return
+		return true
 	}
+	failed := false
 	for _, entry := range entries {
 		path := filepath.Join(releasesRoot, entry.Name())
-		if path == current || !semanticVersion.MatchString(entry.Name()) {
+		if path == current || path == previous || !semanticVersion.MatchString(entry.Name()) {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			continue
 		}
-		_ = os.RemoveAll(path)
+		if err := removeAll(path); err != nil {
+			failed = true
+		}
 	}
+	return failed
 }
 
 func bytesEqual(left, right []byte) bool {

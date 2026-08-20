@@ -147,17 +147,19 @@ func (*nilObservationSource) SnapshotReady() bool       { return false }
 func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 	var observations *nilObservationSource
 	_, err := New(struct {
-		Endpoint     string
-		Identity     identity.Identity
-		Version      string
-		Capabilities []capability.Descriptor
-		Executor     Executor
-		Observations ObservationSource
-		Lifecycle    *lifecycle.Gate
-		OnReady      func() error
-		Logger       *slog.Logger
+		Endpoint              string
+		Identity              identity.Identity
+		Version               string
+		ConfigurationRevision int64
+		Capabilities          []capability.Descriptor
+		Executor              Executor
+		Observations          ObservationSource
+		Lifecycle             *lifecycle.Gate
+		OnReady               func() error
+		Logger                *slog.Logger
 	}{
-		Endpoint: "wss://control.example/internal/agents/ws", Executor: &recordingExecutor{},
+		Endpoint: "wss://control.example/internal/agents/ws", ConfigurationRevision: 1,
+		Executor:     &recordingExecutor{},
 		Observations: observations, Lifecycle: lifecycle.New(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "nil implementation") {
@@ -240,6 +242,30 @@ func TestChangeIPOfferWaitsForSnapshotAcknowledgement(t *testing.T) {
 		t.Fatal("ignored ChangeIP offer retained an operation lease")
 	}
 	update.Release()
+}
+
+func TestOfferDuringAutomaticUpdateIsDeferredWithoutClosingTheSession(t *testing.T) {
+	gate := lifecycle.New()
+	update, acquired := gate.TryUpdate()
+	if !acquired {
+		t.Fatal("update lease was rejected")
+	}
+	defer update.Release()
+	client := &Client{
+		executor: &recordingExecutor{}, lifecycle: gate,
+		running: map[string]*lifecycle.Lease{}, pending: map[string]pendingOperation{},
+	}
+	err := client.acceptOffer(t.Context(), nil, protocol.OperationOffer{
+		CommandID:   "123e4567-e89b-42d3-a456-426614174007",
+		CommandType: "ipquality.execute",
+		NotBefore:   time.Now().Add(-time.Second), ExpiresAt: time.Now().Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("offer during update closed the session: %v", err)
+	}
+	if len(client.pending) != 0 {
+		t.Fatal("offer during update was accepted")
+	}
 }
 
 func TestChangeIPOfferFailsWhenObservationSourceIsUnavailable(t *testing.T) {
