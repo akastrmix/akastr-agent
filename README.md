@@ -93,7 +93,7 @@ go build ./cmd/akastr-agent
 .\release.cmd agent -AgentVersion vX.Y.Z -Execute
 ```
 
-该命令要求两个仓库都位于 `main`、已经提交且工作树干净；它验证双方协议与 Agent 源码，直接推送 Agent `main`，创建并验证 `vX.Y.Z` 标签，等待 GitHub Actions 发布不可变的 Linux amd64 binary 与版本专用 `install.sh`，再把精确版本、URL 和内部摘要提交到 Cloud，并调用正常 backend 发布。流程不创建 PR；同一版本和 commit 可在中断后直接重跑，已发布资产不会被覆盖。
+该命令要求两个仓库都位于 `main`、已经提交且工作树干净；它验证双方协议与 Agent 源码，直接推送 Agent `main`，创建并验证 `vX.Y.Z` 标签，等待 GitHub Actions 发布不可变的 Linux amd64 binary 与版本专用 `install.sh`，再把精确版本、URL 和内部摘要提交到 Cloud，并按 Cloud 差异自动选择 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段；只有确实要停下来审查候选时才显式使用 `-PrepareOnly`。流程不创建 PR；同一版本和 commit 可在中断后直接重跑，已发布资产不会被覆盖。
 
 本地排查发布构建时可以运行：
 

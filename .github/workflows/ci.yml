@@ -41,6 +41,20 @@ jobs:
           bash -n scripts/verify-ipquality-source.sh
           bash -n scripts/verify-debian-runtime-dependencies.sh
 
+      - name: Build and verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_root=$(mktemp -d)
+          trap 'rm -rf -- "$release_root"' EXIT
+          scripts/build-release.sh v0.0.0 "$release_root/release"
+          test "$("$release_root/release/akastr-agent-linux-amd64" version)" = v0.0.0
+          bash -n "$release_root/release/install.sh"
+          binary_sha=$(sha256sum "$release_root/release/akastr-agent-linux-amd64" | awk '{print $1}')
+          grep -Fq "AGENT_RELEASE_VERSION='v0.0.0'" "$release_root/release/install.sh"
+          grep -Fq "BINARY_SHA256='$binary_sha'" "$release_root/release/install.sh"
+          ! grep -Eq '@AKASTR_AGENT_(VERSION|BINARY_SHA256)@' "$release_root/release/install.sh"
+
       - name: Verify Debian runtime dependencies
         shell: bash
         run: |

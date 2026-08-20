@@ -106,6 +106,7 @@ func installerTestShell(t *testing.T) (string, []string, func(string) string) {
 func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	build := repositoryFile(t, "scripts", "build-release.sh")
 	powerShellBuild := repositoryFile(t, "scripts", "build-release.ps1")
+	ci := repositoryFile(t, ".github", "workflows", "ci.yml")
 	if !strings.Contains(build, "GOARCH=amd64") {
 		t.Fatal("release builder must target amd64")
 	}
@@ -137,6 +138,17 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	}
 	if strings.Contains(powerShellBuild, "Get-FileHash") {
 		t.Fatal("PowerShell release builder must not depend on optional hashing cmdlets")
+	}
+	for _, required := range []string{
+		"scripts/build-release.sh v0.0.0",
+		`akastr-agent-linux-amd64" version`,
+		"bash -n \"$release_root/release/install.sh\"",
+		"BINARY_SHA256='$binary_sha'",
+		"@AKASTR_AGENT_(VERSION|BINARY_SHA256)@",
+	} {
+		if !strings.Contains(ci, required) {
+			t.Fatalf("CI must execute and verify generated release assets: %q", required)
+		}
 	}
 }
 
