@@ -103,6 +103,62 @@ func installerTestShell(t *testing.T) (string, []string, func(string) string) {
 	return wsl, []string{"bash"}, translate
 }
 
+func TestInstallerStopsUnloadedAndFailedServiceIdempotently(t *testing.T) {
+	bash, commandPrefix, shellPath := installerTestShell(t)
+	installer := repositoryFile(t, "scripts", "install.sh")
+	start := strings.Index(installer, "stop_agent_service() {")
+	end := strings.Index(installer, "\nrequire_uuid() {")
+	if start < 0 || end <= start {
+		t.Fatal("cannot isolate installer service stop function")
+	}
+	root := t.TempDir()
+	helperPath := filepath.Join(root, "stop-service.sh")
+	helper := `set -eu
+fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+` + installer[start:end] + `
+mode=$1
+log=$2
+marker=$3
+SERVICE_FILE=$4
+service_stopped=false
+systemctl() {
+  printf '%s\n' "$*" >> "$log"
+  case "$1" in
+    is-enabled) return 1 ;;
+    is-active)
+      if [ "$mode" = failed ] && [ ! -e "$marker" ]; then printf 'failed\n'; else printf 'unknown\n'; fi
+      return 3 ;;
+    is-failed) [ "$mode" = failed ] && [ ! -e "$marker" ] ;;
+    reset-failed) : > "$marker" ;;
+    *) return 0 ;;
+  esac
+}
+stop_agent_service
+[ "$service_stopped" = true ]
+`
+	if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"unloaded", "failed"} {
+		logPath := filepath.Join(root, mode+".log")
+		markerPath := filepath.Join(root, mode+".marker")
+		servicePath := filepath.Join(root, mode+".service")
+		arguments := append(commandPrefix, shellPath(helperPath), mode, shellPath(logPath), shellPath(markerPath), shellPath(servicePath))
+		output, err := exec.Command(bash, arguments...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("stop %s service: %v: %s", mode, err, output)
+		}
+		logContents, err := os.ReadFile(logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resetCalled := strings.Contains(string(logContents), "reset-failed")
+		if resetCalled != (mode == "failed") {
+			t.Fatalf("%s service reset-failed called = %v, log = %s", mode, resetCalled, logContents)
+		}
+	}
+}
+
 func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	build := repositoryFile(t, "scripts", "build-release.sh")
 	powerShellBuild := repositoryFile(t, "scripts", "build-release.ps1")
@@ -171,16 +227,13 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'",
 		"IPQUALITY_SHA256='9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb'",
 		"download_https()",
-		"curl --fail --location --silent --show-error --proto '=https' --tlsv1.2",
-		"wget --no-hsts --https-only --tries=3 --timeout=30 -qO",
+		"curl -fsSL --output",
 		"os_identity=$(",
 		"debian:12|debian:13)",
-		"wget exit code $download_code",
-		"BASE_PACKAGES='ca-certificates curl wget'",
+		"curl exit code $download_code",
 		"RUNNER_PACKAGES='bash bc dnsutils iproute2 jq netcat-openbsd'",
 		"RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'",
 		"command -v \"$command\"",
-		"backup_existing \"$CONFIG_DIR\" \"$CONFIG_BACKUP\"",
 		"inspect_existing_install \"$agent_id\"",
 		"refusing to downgrade Agent",
 		"the install command belongs to a different Agent node",
@@ -191,16 +244,16 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"preflight_install",
 		"preflight_status",
 		"preflight_uninstall",
-		"capture_agent_units",
-		"$SYSTEMD_ROOT\"/akastr-agent*.service",
-		"$SYSTEMD_ROOT\"/akastr-agent*.timer",
+		"stop_agent_service",
+		"systemctl is-failed --quiet akastr-agent.service",
+		"fix the reported error and rerun the same command",
+		"installed_binary_sha",
+		"reuse_ipquality=true",
 		"ReadWritePaths=/var/lib/akastr-agent /usr/local/lib/akastr-agent",
 		"Type=notify",
 		"NotifyAccess=main",
 		"TimeoutStartSec=45s",
 		"Akastr Agent $AGENT_RELEASE_VERSION installed successfully.",
-		"rollback_directory \"$CONFIG_BACKUP\" \"$CONFIG_DIR\"",
-		"installer rollback or cleanup was incomplete",
 	} {
 		if !strings.Contains(installer, required) {
 			t.Fatalf("installer missing contract %q", required)
@@ -217,8 +270,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"eval ",
 		"printf 'fail\\nsilent\\nshow-error\\nlocation\\n'",
 		"curl --fail --silent --show-error --location",
-		"wget -qO-",
-		"wget --https-only --tries=3 --timeout=30 -qO",
+		"wget ",
 		"\nVERSION='@AKASTR_AGENT_VERSION@'",
 		"$RELEASE_BASE_URL/$VERSION/$ASSET",
 		"$CONFIG_DIR 已存在；请先核对现有安装",
@@ -237,6 +289,16 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"systemctl daemon-reload >/dev/null 2>&1 || true",
 		"systemctl enable \"$unit_name\" >/dev/null 2>&1 || true",
 		"systemctl start \"$unit_name\" >/dev/null 2>&1 || true",
+		"CONFIG_BACKUP",
+		"STATE_BACKUP",
+		"RELEASE_BACKUP",
+		"UNITS_BACKUP",
+		"capture_agent_units",
+		"restore_agent_units",
+		"rollback_directory",
+		"akastr-agent*.service",
+		"akastr-agent*.timer",
+		"BASE_PACKAGES",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("installer contains forbidden contract %q", forbidden)
@@ -252,7 +314,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		t.Fatal("fresh install must check the existing runtime before downloads or package changes")
 	}
 	idleCheck := "maintenance_safe_check \"$binary_path\" \"$bootstrap_dir/config.json\""
-	stop := "capture_agent_units"
+	stop := "stop_agent_service"
 	if strings.Count(freshInstall, idleCheck) != 2 ||
 		strings.Index(freshInstall, idleCheck) > strings.Index(freshInstall, stop) ||
 		strings.LastIndex(freshInstall, idleCheck) < strings.Index(freshInstall, stop) {
@@ -307,7 +369,7 @@ func TestRunnerDependencyContractIsVerifiedOnEverySupportedDebian(t *testing.T) 
 		t.Fatal("IPQuality runtime command contract changed without updating the installer dependency gate")
 	}
 	for _, required := range []string{
-		"apt-get install -y --no-install-recommends $base_packages $runner_packages",
+		"apt-get install -y --no-install-recommends ca-certificates curl $runner_packages",
 		"command -v \"$command\"",
 		"debian:12|debian:13)",
 	} {

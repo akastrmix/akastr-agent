@@ -23,11 +23,11 @@ ps -p 1 -o comm=
 printf '%s %s\n' "$ID" "$VERSION_ID"
 ```
 
-预期依次看到 `x86_64`、`systemd`、`debian 12` 或 `debian 13`。如果主机还没有 `curl` 或 `wget`：
+预期依次看到 `x86_64`、`systemd`、`debian 12` 或 `debian 13`。如果主机还没有 `curl`：
 
 ```bash
 apt-get update
-apt-get install --yes ca-certificates curl wget
+apt-get install --yes ca-certificates curl
 ```
 
 ## 2. 在后台填写全部参数
@@ -52,7 +52,7 @@ apt-get install --yes ca-certificates curl wget
 
 Runner 不绑定单一服务器。勾选需要检测的目标服务器，逐项填写 SOCKS5 用户名和密码。后台以稳定 server key 生成 1–128 个本地 profile；密码不会进入安装命令、列表、capability、Agent 日志或 command payload。
 
-Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) commit `0ee5f192fed70c04615852efba0e4b8bd43546c7`，并发严格为 1。安装器会自动安装 `bash`、`jq`、`curl`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。多个检测由 AkastrCloud 持久排队，不能同时运行。
+Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) commit `0ee5f192fed70c04615852efba0e4b8bd43546c7`，并发严格为 1。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。多个检测由 AkastrCloud 持久排队，不能同时运行。
 
 “每个服务节点每天一次真实 IPQuality”由主控执行：香港时间同一天的后续请求读取缓存；到 `00:00` 或目标 IPv4 变化后开启新代际。重装 Runner 或新增 profile 不能绕过此限制。
 
@@ -61,27 +61,27 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、机器 token 和版本由后台填写：
 
 ```text
-mktemp → curl（不可用时 wget）下载版本化 install.sh → 校验后台固定的 installer SHA-256 → 带节点 UUID、机器 token 与 bootstrap endpoint 执行 --install
+curl -fsSL <固定版本 install.sh> | env <节点 UUID、机器 token、bootstrap endpoint> sh -s -- --install
 ```
 
 上面只展示命令结构；实际安装必须完整复制后台生成的命令，不要手工替换占位符。
 
-不要改写、拆分或公开这行命令，也不要把 wget/curl 的网络输出直接通过管道交给 shell。命令优先使用严格 HTTPS 的 curl，不可用时回退到禁用持久 HSTS 的 wget；installer 完整落盘并通过独立 SHA-256 后才执行。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
+不要改写、拆分或公开这行命令。Cloud 固定 installer 的版本和发布摘要，节点通过 HTTPS 从该精确 GitHub Release 取得脚本；installer 随后仍会校验 Agent binary 的 SHA-256。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
-需要修改配置时点击“修改配置”，重新填写完整参数和 secret。后台不会回显旧 secret；保存会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，断开旧连接，并在新 revision 安装完成前暂停派发。随后执行页面显示的安装命令。普通修复或重装可直接再次获取同一命令。安装器拒绝覆盖不同节点或降级已装版本；同节点完整安装复用已确认 identity，残缺安装通过同一事务修复。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
+需要修改配置时点击“修改配置”，重新填写完整参数和 secret。后台不会回显旧 secret；保存会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，断开旧连接，并在新 revision 安装完成前暂停派发。随后执行页面显示的安装命令。普通修复或重装可直接再次获取同一命令。安装器拒绝覆盖不同节点或降级已装版本；同节点安装复用 identity，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
 
 安装过程完全非交互。它会：
 
 1. 按 `--install` 模式检查 root、Debian 12/13、amd64、systemd 和下载校验工具；`--status` 只要求 systemd，`--uninstall` 只要求 root 与 systemd；
-2. 检查既有 identity/config 的节点 ID 与版本；拒绝跨节点覆盖和降级，完整旧安装还要先确认 operation journal 与待对账 IP 状态为空；
-3. 下载同版本 amd64 binary，并自动完成内部完整性校验；
+2. 检查既有 identity/config 的节点 ID 与版本；拒绝跨节点覆盖和降级，已有安装还要先确认 operation journal 与待对账 IP 状态为空；
+3. 复用摘要正确的同版本 binary，否则下载并自动完成内部完整性校验；
 4. 使用节点 UUID 与机器 token 通过 HTTPS 取得持久密封配置；
 5. 在本机以 AES-256-GCM 验证并解密，生成 root-only 配置与 secret 文件；
-6. 安装所需 Debian 包；Runner 再下载并自动校验固定 commit 的 IPQuality 脚本；
+6. Runner 仅在命令缺失时安装 Debian 包；本机已有的 IPQuality 脚本摘要正确就复用，否则下载并校验固定 commit；
 7. 用新 binary 和新配置再次执行 maintenance-safe 检查；
-8. 严格停止全部 Agent unit，再对稳定状态执行相同检查；任一检查失败或 unit 未进入 inactive 都恢复原 unit 并中止；
+8. 只停止唯一的 `akastr-agent.service`，仅在 unit 确实 failed 时清除 failed 状态，再对稳定状态执行相同检查；
 9. 运行 `check-config`；首次安装生成 identity，同节点重装复用已确认 identity，并以配置 revision 完成注册，再删除本机机器 token 副本；
-10. 把 Agent systemd 命名空间收敛为唯一的 `akastr-agent.service`；服务只有完成 WSS 认证和 hello 后才向 systemd 报告 ready。
+10. 启用唯一的 `akastr-agent.service`；服务只有完成 WSS 认证和 hello 后才向 systemd 报告 ready。
 
 成功时最后显示：
 
@@ -89,7 +89,7 @@ mktemp → curl（不可用时 wget）下载版本化 install.sh → 校验后�
 Akastr Agent <release-version> installed successfully.
 ```
 
-公钥注册前的失败会保持事务开始前的 Agent 文件、unit 与启停状态；已经由 apt 安装的通用依赖可能保留。主控公钥注册成功后，安装器会保留新 identity 和安装文件；此后的故障通过重跑同一条命令修复。
+所有下载、bootstrap、依赖和新配置检查都在停止现有 service 前完成。停止后的安装采用 fix-forward：失败不会尝试启动已经被 Cloud 判定为旧 revision 的配置，而是保留已写入的新文件并明确要求修复报错后重跑同一命令。新节点、配置变更和残缺安装使用相同收敛路径。
 
 ## 4. 文件与权限
 
@@ -155,20 +155,20 @@ Agent 不提供 `--update` 或本地回退 CLI。trial 失败不会改变 `curre
 systemctl --no-pager --full status akastr-agent.service
 ```
 
-永久卸载必须使用版本化 installer、后台公布的精确 installer SHA-256 和显式销毁参数：
+永久卸载必须使用版本化 installer 和显式销毁参数：
 
 ```bash
-( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --output "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' && printf '%s  %s\n' '<installer-sha256>' "$installer" | sha256sum --check --status && sh "$installer" --uninstall --confirm-destroy-local-agent )
+curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' | sh -s -- --uninstall --confirm-destroy-local-agent
 ```
 
-卸载会在停止服务前后执行相同的 maintenance-safe 检查；检查失败或 systemd 未能严格停止 unit 时不会删除本地状态。检查通过后才永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；操作者自行管理的固定 ChangeIP 程序不受影响。它不会自动删除后台节点。确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
+完整 runtime 的卸载会在停止服务前后执行 maintenance-safe 检查；残缺安装没有可执行检查时直接停止唯一 service。随后永久删除该 unit、`/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；中途失败直接重跑同一卸载命令。操作者自行管理的固定 ChangeIP 程序不受影响。它不会自动删除后台节点。
 
 ## 8. 常见故障
 
 | 现象 | 处理 |
 | --- | --- |
 | 拒绝系统或架构 | 只支持 Debian 12/13 amd64；不要绕过检测或使用 ARM asset |
-| 下载失败并显示 `curl` 或 `wget exit code` | 先核对网络/TLS 与版本化 Release 地址；不要跳过 installer 或 binary 摘要校验 |
+| 下载失败并显示 `curl exit code` | 先核对网络/TLS 与版本化 Release 地址；不要改用浮动或 raw 地址 |
 | 缺少 `AKASTR_AGENT_*` | 命令被截断或手工改写；回后台重新生成，不要自行拼装 |
 | bootstrap 返回 403 | 机器 token 已轮换、节点已删除或 UUID 不匹配；回后台重新取得有效命令 |
 | bootstrap authentication failed | 密文、token 或 UUID 不匹配；停止操作，不要尝试绕过认证 |

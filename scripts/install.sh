@@ -7,153 +7,61 @@ ASSET='akastr-agent-linux-amd64'
 RELEASE_BASE_URL=${AKASTR_RELEASE_BASE_URL:-https://github.com/akastrmix/akastr-agent/releases/download}
 IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'
 IPQUALITY_SHA256='9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb'
-BASE_PACKAGES='ca-certificates curl wget'
 RUNNER_PACKAGES='bash bc dnsutils iproute2 jq netcat-openbsd'
 RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'
 
 CONFIG_DIR=/etc/akastr-agent
 STATE_DIR=/var/lib/akastr-agent
 RELEASE_ROOT=/usr/local/lib/akastr-agent
-SYSTEMD_ROOT=/etc/systemd/system
 SERVICE_FILE=/etc/systemd/system/akastr-agent.service
 
 temporary=''
 preserved_identity=''
-transaction_started=false
-backup_complete=false
-transaction_complete=false
-units_captured=false
-enrollment_irreversible=false
-
-CONFIG_BACKUP="/etc/akastr-agent.install-backup.$$"
-STATE_BACKUP="/var/lib/akastr-agent.install-backup.$$"
-RELEASE_BACKUP="/usr/local/lib/akastr-agent.install-backup.$$"
-UNITS_BACKUP="/etc/akastr-agent-units.install-backup.$$"
+service_stopped=false
+installation_complete=false
+machine_token_installed=false
+reuse_ipquality=false
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
 
 cleanup() {
   cleanup_status=$?
-  cleanup_failed=false
   trap - EXIT HUP INT TERM
-  if [ "$transaction_started" = true ] && [ "$transaction_complete" != true ]; then
-    if [ "$enrollment_irreversible" = true ]; then
-      rm -f -- "$CONFIG_DIR/machine-token" || cleanup_failed=true
-      rm -rf -- "$CONFIG_BACKUP" "$STATE_BACKUP" "$RELEASE_BACKUP" "$UNITS_BACKUP" \
-        || cleanup_failed=true
-    else
-      if [ "$units_captured" = true ]; then
-        remove_agent_units || cleanup_failed=true
-        rollback_directory "$CONFIG_BACKUP" "$CONFIG_DIR" || cleanup_failed=true
-        rollback_directory "$STATE_BACKUP" "$STATE_DIR" || cleanup_failed=true
-        rollback_directory "$RELEASE_BACKUP" "$RELEASE_ROOT" || cleanup_failed=true
-      fi
-      restore_agent_units || cleanup_failed=true
-    fi
-    transaction_complete=true
+  if [ "$machine_token_installed" = true ]; then
+    rm -f -- "$CONFIG_DIR/machine-token" || true
   fi
   if [ -n "$temporary" ] && [ -d "$temporary" ]; then
-    rm -rf -- "$temporary" || cleanup_failed=true
+    rm -rf -- "$temporary" || true
   fi
-  if [ "$cleanup_failed" = true ]; then
-    printf 'Error: installer rollback or cleanup was incomplete; preserve the install-backup paths and inspect systemd.\n' >&2
-    exit 1
+  if [ "$cleanup_status" -ne 0 ] && [ "$service_stopped" = true ] && [ "$installation_complete" != true ]; then
+    printf 'Error: Agent operation is incomplete; fix the reported error and rerun the same command.\n' >&2
   fi
   exit "$cleanup_status"
 }
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-rollback_directory() {
-  backup=$1
-  destination=$2
-  if [ -e "$backup" ] || [ -L "$backup" ]; then
-    rm -rf -- "$destination" || return 1
-    mv -- "$backup" "$destination" || return 1
-  elif [ "$backup_complete" = true ]; then
-    rm -rf -- "$destination" || return 1
+stop_agent_service() {
+  if [ -e "$SERVICE_FILE" ] || [ -L "$SERVICE_FILE" ]; then
+    [ -f "$SERVICE_FILE" ] && [ ! -L "$SERVICE_FILE" ] \
+      || fail "Agent systemd unit is not a regular file: $SERVICE_FILE"
   fi
-}
-
-backup_existing() {
-  source=$1
-  backup=$2
-  [ ! -e "$backup" ] && [ ! -L "$backup" ] || fail "transaction backup path already exists: $backup"
-  if [ -e "$source" ] || [ -L "$source" ]; then
-    mv -- "$source" "$backup"
+  if systemctl is-enabled --quiet akastr-agent.service 2>/dev/null; then
+    systemctl disable akastr-agent.service >/dev/null
   fi
-}
-
-remove_agent_units() {
-  for unit_path in "$SYSTEMD_ROOT"/akastr-agent*.service "$SYSTEMD_ROOT"/akastr-agent*.timer; do
-    if [ -e "$unit_path" ] || [ -L "$unit_path" ]; then
-      unit_name=$(basename "$unit_path")
-      if ! systemctl disable --now "$unit_name" >/dev/null; then
-        printf 'Error: failed to disable and stop %s.\n' "$unit_name" >&2
-        return 1
-      fi
-      unit_state=$(systemctl is-active "$unit_name" 2>/dev/null || true)
-      if [ "$unit_state" != 'inactive' ]; then
-        printf 'Error: Agent systemd unit did not stop: %s.\n' "$unit_name" >&2
-        return 1
-      fi
-      rm -f -- "$unit_path" || return 1
-    fi
-  done
-  systemctl daemon-reload >/dev/null || return 1
-}
-
-capture_agent_units() {
-  [ ! -e "$UNITS_BACKUP" ] && [ ! -L "$UNITS_BACKUP" ] \
-    || fail "transaction backup path already exists: $UNITS_BACKUP"
-  install -d -m 0700 "$UNITS_BACKUP/files"
-  : > "$UNITS_BACKUP/enabled"
-  : > "$UNITS_BACKUP/active"
-  for unit_path in "$SYSTEMD_ROOT"/akastr-agent*.service "$SYSTEMD_ROOT"/akastr-agent*.timer; do
-    if [ -e "$unit_path" ] || [ -L "$unit_path" ]; then
-      [ -f "$unit_path" ] && [ ! -L "$unit_path" ] \
-        || fail "Agent systemd unit is not a regular file: $unit_path"
-      unit_name=$(basename "$unit_path")
-      if systemctl is-enabled --quiet "$unit_name" 2>/dev/null; then
-        printf '%s\n' "$unit_name" >> "$UNITS_BACKUP/enabled"
-      fi
-      if systemctl is-active --quiet "$unit_name" 2>/dev/null; then
-        printf '%s\n' "$unit_name" >> "$UNITS_BACKUP/active"
-      fi
-      systemctl disable "$unit_name" >/dev/null
-      systemctl stop "$unit_name" >/dev/null
-      systemctl reset-failed "$unit_name" >/dev/null
-      unit_state=$(systemctl is-active "$unit_name" 2>/dev/null || true)
-      [ "$unit_state" = 'inactive' ] || fail "Agent systemd unit did not stop: $unit_name"
-    fi
-  done
-  for unit_path in "$SYSTEMD_ROOT"/akastr-agent*.service "$SYSTEMD_ROOT"/akastr-agent*.timer; do
-    if [ -e "$unit_path" ] || [ -L "$unit_path" ]; then
-      unit_name=$(basename "$unit_path")
-      mv -- "$unit_path" "$UNITS_BACKUP/files/$unit_name"
-    fi
-  done
-  systemctl daemon-reload
-  units_captured=true
-}
-
-restore_agent_units() {
-  [ -d "$UNITS_BACKUP" ] || return 0
-  for unit_path in "$UNITS_BACKUP"/files/*; do
-    [ -f "$unit_path" ] || continue
-    mv -- "$unit_path" "$SYSTEMD_ROOT/$(basename "$unit_path")" || return 1
-  done
-  systemctl daemon-reload >/dev/null || return 1
-  while read -r unit_name; do
-    [ -n "$unit_name" ] || continue
-    systemctl enable "$unit_name" >/dev/null || return 1
-  done < "$UNITS_BACKUP/enabled"
-  while read -r unit_name; do
-    [ -n "$unit_name" ] || continue
-    systemctl start "$unit_name" >/dev/null || return 1
-  done < "$UNITS_BACKUP/active"
-  rm -rf -- "$UNITS_BACKUP" || return 1
+  if systemctl is-active --quiet akastr-agent.service 2>/dev/null; then
+    systemctl stop akastr-agent.service >/dev/null
+  fi
+  if systemctl is-failed --quiet akastr-agent.service 2>/dev/null; then
+    systemctl reset-failed akastr-agent.service >/dev/null
+  fi
+  unit_state=$(systemctl is-active akastr-agent.service 2>/dev/null || true)
+  case "$unit_state" in
+    inactive|unknown) ;;
+    *) fail "Agent systemd unit did not stop: akastr-agent.service ($unit_state)" ;;
+  esac
+  service_stopped=true
 }
 
 require_uuid() {
@@ -187,8 +95,7 @@ preflight_install() {
     *) fail 'only Debian 12 and Debian 13 are supported' ;;
   esac
   require_systemd
-  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 \
-    || fail 'install curl or wget before running the installer'
+  command -v curl >/dev/null 2>&1 || fail 'curl is required'
   command -v sha256sum >/dev/null 2>&1 || fail 'sha256sum is required'
 }
 
@@ -214,21 +121,12 @@ download_https() {
     https://*) ;;
     *) fail "$label download URL must use HTTPS" ;;
   esac
-  if command -v curl >/dev/null 2>&1; then
-    if curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 \
-        --retry 2 --connect-timeout 30 --max-time 120 --output "$destination" "$url"; then
-      :
-    else
-      download_code=$?
-      rm -f -- "$destination"
-      fail "$label download failed (curl exit code $download_code)"
-    fi
-  elif wget --no-hsts --https-only --tries=3 --timeout=30 -qO "$destination" "$url"; then
+  if curl -fsSL --output "$destination" "$url"; then
     :
   else
     download_code=$?
     rm -f -- "$destination"
-    fail "$label download failed (wget exit code $download_code)"
+    fail "$label download failed (curl exit code $download_code)"
   fi
   [ -s "$destination" ] || {
     rm -f -- "$destination"
@@ -310,23 +208,31 @@ inspect_existing_install() {
 }
 
 install_packages() {
-  packages=$BASE_PACKAGES
-  if [ "$1" = 'runner' ]; then
-    packages="$packages $RUNNER_PACKAGES"
-  fi
+  [ "$1" = 'runner' ] || return 0
+  missing_runner_command=false
+  for command in $RUNNER_COMMANDS; do
+    command -v "$command" >/dev/null 2>&1 || missing_runner_command=true
+  done
+  [ "$missing_runner_command" = true ] || return 0
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
   # shellcheck disable=SC2086
-  apt-get install -y --no-install-recommends $packages
-  if [ "$1" = 'runner' ]; then
-    for command in $RUNNER_COMMANDS; do
-      command -v "$command" >/dev/null 2>&1 \
-        || fail "Runner dependency command is unavailable after package installation: $command"
-    done
-  fi
+  apt-get install -y --no-install-recommends $RUNNER_PACKAGES
+  for command in $RUNNER_COMMANDS; do
+    command -v "$command" >/dev/null 2>&1 \
+      || fail "Runner dependency command is unavailable after package installation: $command"
+  done
 }
 
 download_binary() {
+  installed_binary="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION/akastr-agent"
+  if [ -f "$installed_binary" ] && [ ! -L "$installed_binary" ] && [ -x "$installed_binary" ]; then
+    installed_binary_sha=$(sha256sum "$installed_binary" | awk '{print $1}')
+    if [ "$installed_binary_sha" = "$BINARY_SHA256" ]; then
+      binary_path=$installed_binary
+      return 0
+    fi
+  fi
   binary_path="$temporary/$ASSET"
   download_https "$RELEASE_BASE_URL/$AGENT_RELEASE_VERSION/$ASSET" "$binary_path" 'Agent binary'
   actual_sha256=$(sha256sum "$binary_path" | awk '{print $1}')
@@ -336,6 +242,14 @@ download_binary() {
 
 prepare_ipquality() {
   [ "$install_mode" = 'runner' ] || return 0
+  installed_ipquality="$RELEASE_ROOT/ipquality/ip.sh"
+  if [ -f "$installed_ipquality" ] && [ ! -L "$installed_ipquality" ]; then
+    installed_ipquality_sha=$(sha256sum "$installed_ipquality" | awk '{print $1}')
+    if [ "$installed_ipquality_sha" = "$IPQUALITY_SHA256" ]; then
+      reuse_ipquality=true
+      return 0
+    fi
+  fi
   ipquality_path="$temporary/ip.sh"
   download_https \
     "https://raw.githubusercontent.com/xykt/IPQuality/$IPQUALITY_COMMIT/ip.sh" \
@@ -357,7 +271,8 @@ maintenance_safe_check() {
 }
 
 write_service_unit() {
-  cat > "$SERVICE_FILE" <<'UNIT'
+  service_temporary="$temporary/akastr-agent.service"
+  cat > "$service_temporary" <<'UNIT'
 [Unit]
 Description=Akastr Agent
 After=network-online.target
@@ -388,7 +303,7 @@ MemoryDenyWriteExecute=true
 [Install]
 WantedBy=multi-user.target
 UNIT
-  chmod 0644 "$SERVICE_FILE"
+  install -m 0644 "$service_temporary" "$SERVICE_FILE"
   systemctl daemon-reload
 }
 
@@ -434,61 +349,65 @@ fresh_install() {
   prepare_ipquality
 
   maintenance_safe_check "$binary_path" "$bootstrap_dir/config.json"
-  transaction_started=true
-  capture_agent_units
+  stop_agent_service
   maintenance_safe_check "$binary_path" "$bootstrap_dir/config.json"
-  backup_existing "$CONFIG_DIR" "$CONFIG_BACKUP"
-  backup_existing "$STATE_DIR" "$STATE_BACKUP"
-  backup_existing "$RELEASE_ROOT" "$RELEASE_BACKUP"
-  backup_complete=true
 
   release_dir="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION"
   install -d -m 0700 "$CONFIG_DIR" "$STATE_DIR"
   install -d -m 0755 "$release_dir"
-  install -m 0755 "$binary_path" "$release_dir/akastr-agent"
+  install -m 0755 "$binary_path" "$release_dir/.akastr-agent.$$"
+  mv -f -- "$release_dir/.akastr-agent.$$" "$release_dir/akastr-agent"
   install -m 0600 "$bootstrap_dir/config.json" "$CONFIG_DIR/config.json"
   install -m 0600 "$bootstrap_dir/machine-token" "$CONFIG_DIR/machine-token"
+  machine_token_installed=true
   if [ -n "$preserved_identity" ]; then
     install -m 0600 "$preserved_identity" "$CONFIG_DIR/identity.json"
   fi
   if [ -f "$bootstrap_dir/changeip-curl.conf" ]; then
     install -m 0600 "$bootstrap_dir/changeip-curl.conf" "$CONFIG_DIR/changeip-curl.conf"
+  else
+    rm -f -- "$CONFIG_DIR/changeip-curl.conf"
   fi
   if [ "$install_mode" = 'runner' ]; then
     install -m 0600 "$bootstrap_dir/proxy-profiles.json" "$CONFIG_DIR/proxy-profiles.json"
-    install -d -m 0755 "$RELEASE_ROOT/ipquality"
-    install -m 0755 "$ipquality_path" "$RELEASE_ROOT/ipquality/ip.sh"
+    if [ "$reuse_ipquality" != true ]; then
+      install -d -m 0755 "$RELEASE_ROOT/ipquality"
+      install -m 0755 "$ipquality_path" "$RELEASE_ROOT/ipquality/ip.sh"
+    fi
+  else
+    rm -f -- "$CONFIG_DIR/proxy-profiles.json"
   fi
-  ln -sfn "$release_dir" "$RELEASE_ROOT/current"
+  current_temporary="$RELEASE_ROOT/.current.$$"
+  rm -f -- "$current_temporary"
+  ln -s "$release_dir" "$current_temporary"
+  mv -Tf -- "$current_temporary" "$RELEASE_ROOT/current"
 
   "$RELEASE_ROOT/current/akastr-agent" check-config --config "$CONFIG_DIR/config.json"
   write_service_unit
   if "$RELEASE_ROOT/current/akastr-agent" enroll --config "$CONFIG_DIR/config.json"; then
-    enrollment_irreversible=true
+    :
   else
     enrollment_code=$?
     case "$enrollment_code" in
       21)
-        enrollment_irreversible=true
         fail 'enrollment outcome is uncertain; rerun the one-click install command'
         ;;
       20)
-        fail 'enrollment was rejected; the original Agent installation will be restored'
+        fail 'enrollment was rejected; fix the control-plane state and rerun the same install command'
         ;;
       *)
-        fail 'enrollment failed before acceptance; the original Agent installation will be restored'
+        fail 'enrollment failed; rerun the same install command'
         ;;
     esac
   fi
   rm -f -- "$CONFIG_DIR/machine-token" "$token_file"
+  machine_token_installed=false
 
   systemctl enable --now akastr-agent.service
   systemctl is-active --quiet akastr-agent.service \
     || fail 'the Agent service did not reach control-plane readiness'
 
-  transaction_complete=true
-  rm -rf -- "$CONFIG_BACKUP" "$STATE_BACKUP" "$RELEASE_BACKUP"
-  rm -rf -- "$UNITS_BACKUP"
+  installation_complete=true
   say "Akastr Agent $AGENT_RELEASE_VERSION installed successfully."
 }
 
@@ -504,14 +423,20 @@ uninstall_existing() {
 
   maintenance_binary="$RELEASE_ROOT/current/akastr-agent"
   maintenance_config="$CONFIG_DIR/config.json"
-  maintenance_safe_check "$maintenance_binary" "$maintenance_config"
-  transaction_started=true
-  capture_agent_units
-  maintenance_safe_check "$maintenance_binary" "$maintenance_config"
-  enrollment_irreversible=true
+  complete_runtime=false
+  if [ -f "$maintenance_binary" ] && [ ! -L "$maintenance_binary" ] && [ -x "$maintenance_binary" ] \
+      && [ -f "$maintenance_config" ] && [ ! -L "$maintenance_config" ]; then
+    complete_runtime=true
+    maintenance_safe_check "$maintenance_binary" "$maintenance_config"
+  fi
+  stop_agent_service
+  if [ "$complete_runtime" = true ]; then
+    maintenance_safe_check "$maintenance_binary" "$maintenance_config"
+  fi
+  rm -f -- "$SERVICE_FILE"
+  systemctl daemon-reload
   rm -rf -- "$CONFIG_DIR" "$STATE_DIR" "$RELEASE_ROOT"
-  rm -rf -- "$UNITS_BACKUP"
-  transaction_complete=true
+  installation_complete=true
   say 'Akastr Agent uninstalled successfully.'
 }
 

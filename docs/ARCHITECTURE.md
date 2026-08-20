@@ -11,7 +11,7 @@
 
 运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。后台只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
 
-项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。配置有单调递增的 desired/applied revision；两者不相等时 Cloud 不派发操作。配置更新保持节点角色、服务器绑定、token 与 identity，只替换密封 bootstrap 并要求重跑安装命令。安装器拒绝跨节点覆盖和版本降级；同节点重装复用已确认 identity，残缺安装也走同一事务修复。下载使用 curl 优先、wget 回退，严格 HTTPS 且完整落盘；后台命令另行验证 installer SHA-256，网络响应不直接进入 shell。Runner 依赖在变更本地 Agent 前逐项验证。
+项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。配置有单调递增的 desired/applied revision；两者不相等时 Cloud 不派发操作。配置更新保持节点角色、服务器绑定、token 与 identity，只替换密封 bootstrap 并要求重跑安装命令。后台短命令以一个 HTTPS curl 从固定 release 取得 installer；安装器拒绝跨节点覆盖和版本降级，同节点复用 identity，残缺状态通过重跑原命令 fix-forward。Runner 依赖齐全时不运行 apt，固定脚本摘要正确时不重复下载。
 
 ## 2. 主控边界
 
@@ -84,9 +84,9 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 通过代理运行不等于直接在目标主机运行：依赖 Runner DNS 或直连网络的脚本检查应在验收时识别，并标记或省略。
 
-## 8. 事务安装与自动更新
+## 8. Fix-forward 安装与自动更新
 
-后台的一键命令描述节点的期望安装状态，可用于空白主机、同节点覆盖安装和残缺安装修复。覆盖安装先核对已有 identity/config 的节点 ID 和已装版本；不同节点或降级直接拒绝。完整旧安装先检查 operation journal 与待对账 IP 状态，随后下载并验证 bootstrap、binary、依赖和 Runner 脚本；残缺安装跳过无法成立的旧运行时检查，但仍纳入目录与 unit 事务。新 binary 在停 unit 前后检查稳定状态。任一可逆阶段失败就恢复原目录与 unit；同节点已确认 identity 会复制到新配置并用新 configuration revision 重新 enrollment，不重新生成 private key。主控在未完成 command、active ChangeIP session 或目标 IPQuality run 存在时拒绝配置更新和注册。
+后台的一键命令描述节点的期望安装状态，可用于空白主机、同节点覆盖安装和残缺安装修复。覆盖安装先核对已有 identity/config 的节点 ID 和已装版本；不同节点或降级直接拒绝。installer 复用摘要正确的同版本 binary 和 Runner 脚本，在停止唯一 `akastr-agent.service` 前完成其余下载、bootstrap、依赖与 maintenance-safe 检查，停止后再对稳定状态检查并写入新配置。配置 revision 已前进时旧配置不能重新 ready，因此本机不维护目录或 unit 回滚事务；后续失败保留可重跑状态，由同一命令 fix-forward。同节点 identity 会复制到新配置并用新 configuration revision 重新 enrollment，不重新生成 private key。主控在未完成 command、active ChangeIP session 或目标 IPQuality run 存在时拒绝配置更新和注册。
 
 自动更新不由 GitHub `latest` 驱动。主进程首次完成 WSS readiness 后等待 1–5 分钟随机抖动，再按六小时周期使用当前 Ed25519 identity检查 Cloud 批准的同协议前向版本。取得 exclusive update lease 后，新 binary 下载、digest、版本与当前配置验证完成，只写入不可变 release 目录，不先改变 `current`；持锁期间的 offer 被静默延后，不关闭健康连接。进程带有一次性 trial 环境标记原位执行新 binary；它必须在 45 秒内重新完成 WSS auth/hello，才会原子替换并 fsync `current`。失败时 systemd 仍从旧 `current` 重启。提交后保留 current 与 previous 两个 release；多余 release 清理失败只记录告警，不撤销已提交版本。
 

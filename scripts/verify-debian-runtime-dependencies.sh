@@ -7,10 +7,9 @@ installer=${1:-scripts/install.sh}
   exit 1
 }
 
-base_packages=$(sed -n "s/^BASE_PACKAGES='\([^']*\)'$/\1/p" "$installer")
 runner_packages=$(sed -n "s/^RUNNER_PACKAGES='\([^']*\)'$/\1/p" "$installer")
 runner_commands=$(sed -n "s/^RUNNER_COMMANDS='\([^']*\)'$/\1/p" "$installer")
-[ -n "$base_packages" ] && [ -n "$runner_packages" ] && [ -n "$runner_commands" ] || {
+[ -n "$runner_packages" ] && [ -n "$runner_commands" ] || {
   echo 'installer runtime dependency contract is missing or invalid' >&2
   exit 1
 }
@@ -28,7 +27,7 @@ esac
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 # shellcheck disable=SC2086
-apt-get install -y --no-install-recommends $base_packages $runner_packages
+apt-get install -y --no-install-recommends ca-certificates curl $runner_packages
 for command in $runner_commands; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "runtime dependency command is unavailable: $command" >&2
