@@ -216,8 +216,8 @@ func TestPayloadValidationRejectsGenericShellAndDuplicateProfiles(t *testing.T) 
 		t.Fatal("generic shell command must be rejected")
 	}
 	target.Target.ChangeIP.Program = "/usr/local/bin/changeip"
-	if err := target.Validate(testAgentID); err == nil {
-		t.Fatal("command outside the dedicated provider root must be rejected")
+	if err := target.Validate(testAgentID); err != nil {
+		t.Fatalf("clean absolute command path must be accepted: %v", err)
 	}
 	target.Target = &Target{
 		IPWatchIntervalSeconds: 301,

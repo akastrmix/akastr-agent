@@ -36,9 +36,12 @@ func New(config Config) (*Provider, error) {
 	if config.Program == "" {
 		return nil, errors.New("ChangeIP program is required")
 	}
-	info, err := os.Stat(config.Program)
+	info, err := os.Lstat(config.Program)
 	if err != nil {
 		return nil, fmt.Errorf("stat ChangeIP program: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("ChangeIP program must not be a symbolic link")
 	}
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("ChangeIP program must be a regular file")

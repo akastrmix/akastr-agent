@@ -41,6 +41,22 @@ func TestProviderHonorsParentCancellation(t *testing.T) {
 	}
 }
 
+func TestProviderRejectsProgramSymlink(t *testing.T) {
+	directory := t.TempDir()
+	target := directory + string(os.PathSeparator) + "changeip-target"
+	link := directory + string(os.PathSeparator) + "changeip"
+	if err := os.WriteFile(target, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink creation is unavailable: %v", err)
+	}
+	_, err := New(Config{Program: link, Timeout: time.Second})
+	if err == nil || err.Error() != "ChangeIP program must not be a symbolic link" {
+		t.Fatalf("New() error = %v, want symbolic link rejection", err)
+	}
+}
+
 func TestCommandHelperProcess(t *testing.T) {
 	if os.Getenv("AKASTR_AGENT_HELPER_PROCESS") != "1" {
 		return

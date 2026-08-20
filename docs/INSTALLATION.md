@@ -44,7 +44,7 @@ apt-get install --yes ca-certificates curl wget
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于 root-only 的 `/etc/akastr-agent/changeip-curl.conf`。
 
-“固定本机程序”必须放在专用只读目录 `/usr/local/lib/akastr-agent-providers/` 下，例如 `/usr/local/lib/akastr-agent-providers/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。后台和 Agent 都拒绝目录外程序；它不接受 shell 命令串或通用 shell 入口。主控以后只能触发这组固定 argv，不能远程换程序或参数。
+“固定本机程序”填写节点上已有程序或脚本的干净绝对路径，例如 `/usr/local/bin/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。程序必须是 Agent service 可读取的非 symlink regular file 并具有执行权限；脚本需要有效 shebang。它不接受相对路径、控制字符、shell/env/busybox 入口，以及 sandbox 隐藏的 home、runtime user 或临时目录。主控以后只能触发这组固定 argv，不能远程换程序或参数。
 
 公布 SOCKS5 只描述已有代理，Agent 不安装代理服务，也不保存该代理的用户名和密码。只需填写 1–65535 的监听端口；主控始终使用 Agent 最近一次观测到的公网 IPv4，不接受 DDNS、固定主机名或手填 IP。尚未建立公网 IPv4 baseline 时不会派发 IPQuality。
 
@@ -101,11 +101,10 @@ Akastr Agent <release-version> installed successfully.
 /var/lib/akastr-agent/
 /usr/local/lib/akastr-agent/releases/<release-version>/
 /usr/local/lib/akastr-agent/current
-/usr/local/lib/akastr-agent-providers/
 /etc/systemd/system/akastr-agent.service
 ```
 
-HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/etc/akastr-agent/proxy-profiles.json` 与 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。固定程序由操作者预先放入 `/usr/local/lib/akastr-agent-providers/`，安装器只创建目录、不写入或卸载其中的程序。配置与 secret 文件权限为 `0600`，配置和状态目录为 root-only。唯一主进程可以写 `/var/lib/akastr-agent` 与自己的 release root；provider 目录和其他系统目录在 `ProtectSystem=strict` 下只读。
+HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/etc/akastr-agent/proxy-profiles.json` 与 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。固定程序由操作者在节点上管理，安装器不会写入或卸载。配置与 secret 文件权限为 `0600`，配置和状态目录为 root-only。唯一主进程可以写 `/var/lib/akastr-agent` 与自己的 release root；固定程序所在的其他系统目录在 `ProtectSystem=strict` 下只读，home 目录不对 service 开放。
 
 ## 5. 安装后验收
 
@@ -162,7 +161,7 @@ systemctl --no-pager --full status akastr-agent.service
 ( installer=$(mktemp /tmp/akastr-agent-install.XXXXXX.sh) && trap 'rm -f -- "$installer"' 0 && curl --fail --location --silent --show-error --proto '=https' --tlsv1.2 --output "$installer" 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' && printf '%s  %s\n' '<installer-sha256>' "$installer" | sha256sum --check --status && sh "$installer" --uninstall --confirm-destroy-local-agent )
 ```
 
-卸载会在停止服务前后执行相同的 maintenance-safe 检查；检查失败或 systemd 未能严格停止 unit 时不会删除本地状态。检查通过后才永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；操作者管理的 `/usr/local/lib/akastr-agent-providers` 保留。它不会自动删除后台节点。确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
+卸载会在停止服务前后执行相同的 maintenance-safe 检查；检查失败或 systemd 未能严格停止 unit 时不会删除本地状态。检查通过后才永久删除 `/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行证据；操作者自行管理的固定 ChangeIP 程序不受影响。它不会自动删除后台节点。确认不再需要现场证据后才能执行；需要永久移除时，再在后台删除节点。
 
 ## 8. 常见故障
 

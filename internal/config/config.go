@@ -13,9 +13,14 @@ import (
 )
 
 const SchemaVersion = 3
-const ChangeIPProviderRoot = "/usr/local/lib/akastr-agent-providers"
 
 var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+var changeIPCommandInterpreters = map[string]struct{}{
+	"bash": {}, "busybox": {}, "dash": {}, "env": {}, "sh": {},
+}
+
+var changeIPCommandHiddenRoots = []string{"/home", "/root", "/run/user", "/tmp", "/var/tmp"}
 
 type Config struct {
 	SchemaVersion         int                `json:"schema_version"`
@@ -242,8 +247,18 @@ func ValidateChangeIPCommandProgram(value string) error {
 	if err := validateAbsoluteLinuxPath("ChangeIP command program", value); err != nil {
 		return err
 	}
-	if !strings.HasPrefix(value, ChangeIPProviderRoot+"/") {
-		return fmt.Errorf("ChangeIP command program must be below %s", ChangeIPProviderRoot)
+	if strings.IndexFunc(value, func(character rune) bool {
+		return character < 0x20 || character == 0x7f
+	}) >= 0 {
+		return errors.New("ChangeIP command program must not contain ASCII control characters")
+	}
+	if _, denied := changeIPCommandInterpreters[path.Base(value)]; denied {
+		return errors.New("ChangeIP command program must not be a generic shell entry point")
+	}
+	for _, root := range changeIPCommandHiddenRoots {
+		if value == root || strings.HasPrefix(value, root+"/") {
+			return errors.New("ChangeIP command program must be visible to the Agent service sandbox")
+		}
 	}
 	return nil
 }

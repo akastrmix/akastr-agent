@@ -68,16 +68,37 @@ func TestValidateRequiresFixedChangeIPProgram(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresDedicatedChangeIPProviderRoot(t *testing.T) {
+func TestValidateAcceptsCleanAbsoluteChangeIPProgram(t *testing.T) {
 	input := strings.Replace(validConfig, `"change_ip":{"provider":"disabled"}`, `"change_ip":{"provider":"command","program":"/usr/local/bin/changeip","args":[],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
-	_, err := Load(writeConfig(t, input))
-	if err == nil || !strings.Contains(err.Error(), ChangeIPProviderRoot) {
-		t.Fatalf("Load() error = %v, want dedicated provider root error", err)
-	}
-
-	input = strings.Replace(validConfig, `"change_ip":{"provider":"disabled"}`, `"change_ip":{"provider":"command","program":"/usr/local/lib/akastr-agent-providers/changeip","args":[],"timeout_seconds":60,"observe_timeout_seconds":300}`, 1)
 	if _, err := Load(writeConfig(t, input)); err != nil {
-		t.Fatalf("Load() rejected dedicated provider path: %v", err)
+		t.Fatalf("Load() rejected clean absolute provider path: %v", err)
+	}
+}
+
+func TestValidateChangeIPCommandProgramRejectsUnsafeOrInvisiblePaths(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		program string
+		want    string
+	}{
+		{name: "bin sh", program: "/bin/sh", want: "generic shell"},
+		{name: "usr bin bash", program: "/usr/bin/bash", want: "generic shell"},
+		{name: "bin dash", program: "/bin/dash", want: "generic shell"},
+		{name: "busybox", program: "/usr/bin/busybox", want: "generic shell"},
+		{name: "env", program: "/bin/env", want: "generic shell"},
+		{name: "root home", program: "/root/changeip", want: "service sandbox"},
+		{name: "user home", program: "/home/agent/changeip", want: "service sandbox"},
+		{name: "runtime user", program: "/run/user/1000/changeip", want: "service sandbox"},
+		{name: "private tmp", program: "/tmp/changeip", want: "service sandbox"},
+		{name: "private var tmp", program: "/var/tmp/changeip", want: "service sandbox"},
+		{name: "control character", program: "/opt/changeip\nscript", want: "control characters"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateChangeIPCommandProgram(test.program)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ValidateChangeIPCommandProgram(%q) error = %v, want %q", test.program, err, test.want)
+			}
+		})
 	}
 }
 

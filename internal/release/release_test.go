@@ -179,7 +179,6 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"preflight_install",
 		"preflight_status",
 		"preflight_uninstall",
-		"PROVIDER_ROOT=/usr/local/lib/akastr-agent-providers",
 		"capture_agent_units",
 		"$SYSTEMD_ROOT\"/akastr-agent*.service",
 		"$SYSTEMD_ROOT\"/akastr-agent*.timer",

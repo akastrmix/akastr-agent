@@ -14,7 +14,6 @@ RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'
 CONFIG_DIR=/etc/akastr-agent
 STATE_DIR=/var/lib/akastr-agent
 RELEASE_ROOT=/usr/local/lib/akastr-agent
-PROVIDER_ROOT=/usr/local/lib/akastr-agent-providers
 SYSTEMD_ROOT=/etc/systemd/system
 SERVICE_FILE=/etc/systemd/system/akastr-agent.service
 
@@ -446,7 +445,6 @@ fresh_install() {
   release_dir="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION"
   install -d -m 0700 "$CONFIG_DIR" "$STATE_DIR"
   install -d -m 0755 "$release_dir"
-  install -d -m 0755 "$PROVIDER_ROOT"
   install -m 0755 "$binary_path" "$release_dir/akastr-agent"
   install -m 0600 "$bootstrap_dir/config.json" "$CONFIG_DIR/config.json"
   install -m 0600 "$bootstrap_dir/machine-token" "$CONFIG_DIR/machine-token"

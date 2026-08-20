@@ -92,7 +92,7 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 正式版本由 AkastrCloud 仓库的同步发布入口生成。发布器先验证并推送 Agent `main` 与不可变标签，等待 GitHub Release 的两个精确资产并核对 binary 版本与内部摘要，再提交 Cloud 的唯一更新目标并走正常 backend 发布。该顺序允许同一版本在任一阶段中断后续跑，但不会覆盖已发布资产或让 Cloud 指向尚未验真的 binary。
 
-唯一主 service 使用 `Type=notify`，只有 WSS 完成 auth、hello 并收到 `hello.accepted` 后才向 systemd 报告 ready。service 使用 `ProtectSystem=strict`，并明确允许写状态目录与 Agent release root；固定 ChangeIP 程序只允许位于 `/usr/local/lib/akastr-agent-providers/`，运行时只读。Agent 不提供手工 `--update` 或本地回退 CLI；更新故障由 AkastrCloud 批准修复版本，或由操作者重新运行后台的一键 `--install`。WSS、认证或配置的破坏性版本必须走人工维护 Gate，不能通过自动更新跨协议部署。
+唯一主 service 使用 `Type=notify`，只有 WSS 完成 auth、hello 并收到 `hello.accepted` 后才向 systemd 报告 ready。service 使用 `ProtectSystem=strict`，并明确允许写状态目录与 Agent release root；固定 ChangeIP 程序可使用 service 可见的任意干净绝对路径，运行时不经 shell 且系统目录只读。Agent 不提供手工 `--update` 或本地回退 CLI；更新故障由 AkastrCloud 批准修复版本，或由操作者重新运行后台的一键 `--install`。WSS、认证或配置的破坏性版本必须走人工维护 Gate，不能通过自动更新跨协议部署。
 
 ## 9. 节点接入边界
 
