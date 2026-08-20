@@ -163,6 +163,7 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	build := repositoryFile(t, "scripts", "build-release.sh")
 	powerShellBuild := repositoryFile(t, "scripts", "build-release.ps1")
 	ci := repositoryFile(t, ".github", "workflows", "ci.yml")
+	releaseWorkflow := repositoryFile(t, ".github", "workflows", "release.yml")
 	if !strings.Contains(build, "GOARCH=amd64") {
 		t.Fatal("release builder must target amd64")
 	}
@@ -205,6 +206,20 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 		if !strings.Contains(ci, required) {
 			t.Fatalf("CI must execute and verify generated release assets: %q", required)
 		}
+	}
+	for _, required := range []string{
+		"go test ./...",
+		"go vet ./...",
+		"scripts/build-release.sh \"$RELEASE_TAG\" dist",
+		`grep -Fq "curl -fsSL --output" dist/install.sh`,
+		`! grep -Fq "wget " dist/install.sh`,
+	} {
+		if !strings.Contains(releaseWorkflow, required) {
+			t.Fatalf("release workflow missing current installer contract %q", required)
+		}
+	}
+	if strings.Contains(releaseWorkflow, "go build ./cmd/akastr-agent") {
+		t.Fatal("release workflow must not compile a throwaway binary before building exact assets")
 	}
 }
 

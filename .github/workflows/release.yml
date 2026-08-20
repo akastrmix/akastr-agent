@@ -51,7 +51,6 @@ jobs:
           set -euo pipefail
           go test ./...
           go vet ./...
-          go build ./cmd/akastr-agent
           bash -n scripts/install.sh
           bash -n scripts/build-release.sh
           bash -n scripts/verify-ipquality-source.sh
@@ -92,8 +91,8 @@ jobs:
           test "$installer_status" -eq 1
           grep -Fq 'usage: install.sh' <<<"$installer_usage"
           ! grep -Eq '@AKASTR_AGENT_(VERSION|BINARY_SHA256)@' dist/install.sh
-          grep -Fq "wget --no-hsts --https-only --tries=3 --timeout=30 -qO" dist/install.sh
-          ! grep -Fq "curl --fail --silent --show-error --location" dist/install.sh
+          grep -Fq "curl -fsSL --output" dist/install.sh
+          ! grep -Fq "wget " dist/install.sh
 
       - name: Publish immutable GitHub release
         shell: bash
