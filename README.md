@@ -87,13 +87,26 @@ go vet ./...
 go build ./cmd/akastr-agent
 ```
 
-每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建和 shell 语法检查。正式版本不在本仓库手工拆成“打标签”和“再改 Cloud”两次操作；唯一入口位于 AkastrCloud 仓库：
+修改 installer 时，再在本机 Docker/WSL 运行一次性 Debian 12/13 回归；容器不连接 Cloud，也不使用真实 token：
+
+```bash
+for version in 12 13; do
+  docker run --rm \
+    -e AKASTR_INSTALLER_CONTAINER_TEST=1 \
+    --volume "$PWD:/source:ro" \
+    --workdir /source \
+    "debian:${version}-slim" \
+    sh scripts/test-installer-container.sh
+done
+```
+
+每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查和 Debian 12/13 installer 容器回归。正式版本不在本仓库手工拆成“打标签”和“再改 Cloud”两次操作；唯一入口位于 AkastrCloud 仓库：
 
 ```powershell
 .\release.cmd agent -AgentVersion vX.Y.Z -Execute
 ```
 
-该命令要求两个仓库都位于 `main`、已经提交且工作树干净；它验证双方协议与 Agent 源码，直接推送 Agent `main`，创建并验证 `vX.Y.Z` 标签，等待 GitHub Actions 发布不可变的 Linux amd64 binary 与版本专用 `install.sh`，再把精确版本、URL 和内部摘要提交到 Cloud，并按 Cloud 差异自动选择 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段；只有确实要停下来审查候选时才显式使用 `-PrepareOnly`。流程不创建 PR；同一版本和 commit 可在中断后直接重跑，已发布资产不会被覆盖。
+该命令要求两个仓库都位于 `main`、已经提交且工作树干净；它验证双方协议与 Agent 源码，直接推送 Agent `main`，创建并验证 `vX.Y.Z` 标签，等待 GitHub Actions 发布不可变的 Linux amd64 binary 与版本专用 `install.sh`，再把精确版本、URL 和内部摘要提交到 Cloud，并按 Cloud 差异自动选择 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段。流程不创建 PR；同一版本和 commit 可在中断后直接重跑，已发布资产不会被覆盖。
 
 本地排查发布构建时可以运行：
 

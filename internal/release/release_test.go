@@ -164,6 +164,7 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	powerShellBuild := repositoryFile(t, "scripts", "build-release.ps1")
 	ci := repositoryFile(t, ".github", "workflows", "ci.yml")
 	releaseWorkflow := repositoryFile(t, ".github", "workflows", "release.yml")
+	containerIntegration := repositoryFile(t, "scripts", "test-installer-container.sh")
 	if !strings.Contains(build, "GOARCH=amd64") {
 		t.Fatal("release builder must target amd64")
 	}
@@ -220,6 +221,32 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	}
 	if strings.Contains(releaseWorkflow, "go build ./cmd/akastr-agent") {
 		t.Fatal("release workflow must not compile a throwaway binary before building exact assets")
+	}
+	for name, workflow := range map[string]string{"CI": ci, "release": releaseWorkflow} {
+		for _, required := range []string{
+			"bash -n scripts/test-installer-container.sh",
+			"--env AKASTR_INSTALLER_CONTAINER_TEST=1",
+			"sh scripts/test-installer-container.sh",
+			"for version in 12 13",
+		} {
+			if !strings.Contains(workflow, required) {
+				t.Fatalf("%s workflow missing installer container integration %q", name, required)
+			}
+		}
+	}
+	for _, required := range []string{
+		`[ "${AKASTR_INSTALLER_CONTAINER_TEST:-}" = '1' ] && [ -e /.dockerenv ]`,
+		"run_install target",
+		"run_install runner",
+		"echo failed > \"$test_root/systemd-state\"",
+		"echo unknown > \"$test_root/systemd-state\"",
+		"enroll-fail-once",
+		"--uninstall --confirm-destroy-local-agent",
+		"installer_container_integration_ok",
+	} {
+		if !strings.Contains(containerIntegration, required) {
+			t.Fatalf("installer container integration missing contract %q", required)
+		}
 	}
 }
 

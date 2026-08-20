@@ -55,6 +55,7 @@ jobs:
           bash -n scripts/build-release.sh
           bash -n scripts/verify-ipquality-source.sh
           bash -n scripts/verify-debian-runtime-dependencies.sh
+          bash -n scripts/test-installer-container.sh
           bash scripts/verify-ipquality-source.sh
 
       - name: Verify Debian runtime dependencies
@@ -67,6 +68,19 @@ jobs:
               --workdir /source \
               "debian:${version}-slim" \
               sh scripts/verify-debian-runtime-dependencies.sh
+          done
+
+      - name: Verify installer convergence on Debian
+        shell: bash
+        run: |
+          set -euo pipefail
+          for version in 12 13; do
+            docker run --rm \
+              --env AKASTR_INSTALLER_CONTAINER_TEST=1 \
+              --volume "$PWD:/source:ro" \
+              --workdir /source \
+              "debian:${version}-slim" \
+              sh scripts/test-installer-container.sh
           done
 
       - name: Build release assets

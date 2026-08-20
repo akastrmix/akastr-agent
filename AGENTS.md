@@ -50,6 +50,7 @@
 - 使用固定参数向量；配置型 provider 不得调用 `/bin/sh -c`。
 - 严格校验配置，并拒绝未知字段。
 - 每个状态转换、冲突规则和解析行为变更都必须增加测试。
+- 修改 installer 或安装状态转换时，必须运行 `scripts/test-installer-container.sh` 的 Debian 12/13 一次性容器回归，覆盖首次安装、同节点覆盖、systemd failed/unloaded、失败后重跑、Target/Runner 与卸载收敛。
 - 交付前运行 `go test ./...`、`go vet ./...` 和 `go build ./cmd/akastr-agent`。
 - 行为或边界发生变化时，只更新对应的权威文档；只有项目入口或顶层产品边界变化时才同步修改 README。
 

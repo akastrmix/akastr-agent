@@ -198,6 +198,6 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 .\release.cmd agent -AgentVersion vX.Y.Z -Execute
 ```
 
-两个仓库都必须位于 `main`、已经提交且工作树干净。同步发布器验证双方协议与 Agent 源码，直接推送 Agent `main` 和语义化标签；GitHub Actions 从标签重新验证，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`。发布器验真两个不可变资产后，自动提交 Cloud 的精确更新目标，并根据 Cloud 差异执行 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段；只有确实要停下来审查候选时才显式使用 `-PrepareOnly`。流程不创建 PR；同一 tag 与 commit 可在中断后直接重跑，已存在的 Release 不允许覆盖或替换。
+两个仓库都必须位于 `main`、已经提交且工作树干净。同步发布器验证双方协议与 Agent 源码，直接推送 Agent `main` 和语义化标签；GitHub Actions 从标签重新验证，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`。发布器验真两个不可变资产后，自动提交 Cloud 的精确更新目标，并根据 Cloud 差异执行 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段。流程不创建 PR；同一 tag 与 commit 可在中断后直接重跑，已存在的 Release 不允许覆盖或替换。
 
 每个版本使用独立的 `releases/download/vX.Y.Z/...` 地址。只有同步流程中的 Cloud backend 激活成功，主进程的六小时循环才会收到 `update_available`；系统不跟随 GitHub `latest`。发布动作不会创建节点或触发 ChangeIP/IPQuality。
