@@ -136,7 +136,7 @@ func (o *Observer) fetch(ctx context.Context, client *http.Client, candidate sou
 		return netip.Addr{}, fmt.Errorf("response contains IPv%d instead of IPv%d", address.BitLen(), family)
 	}
 	if (family == IPv4 && !netpolicy.IsPublicIPv4(address)) ||
-		(family == IPv6 && (!address.IsGlobalUnicast() || address.IsPrivate() || address.IsLoopback() || address.IsLinkLocalUnicast())) {
+		(family == IPv6 && !netpolicy.IsPublicIPv6(address)) {
 		return netip.Addr{}, errors.New("response contains a non-public IP address")
 	}
 	return address, nil

@@ -42,6 +42,7 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 		runtime.ipMonitor, err = ipwatch.OpenMonitor(
 			model.Config.IPStateFile, observer,
 			time.Duration(model.Config.Capabilities.IPWatch.IntervalSeconds)*time.Second,
+			model.Config.Capabilities.IPWatch.ObserveIPv6,
 		)
 		if err != nil {
 			return nil, err

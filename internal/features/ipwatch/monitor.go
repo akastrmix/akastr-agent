@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/netpolicy"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/state"
 )
@@ -17,12 +18,15 @@ type AddressObserver interface {
 }
 
 type monitorSnapshot struct {
-	SchemaVersion    int                             `json:"schema_version"`
-	LastIPv4         string                          `json:"last_ipv4,omitempty"`
-	PendingSnapshot  *protocol.IPSnapshotBody        `json:"pending_snapshot,omitempty"`
-	Pending          *protocol.IPObservationBody     `json:"pending,omitempty"`
-	ChangeAttempt    *changeAttempt                  `json:"change_attempt,omitempty"`
-	PendingUnchanged *protocol.ChangeIPUnchangedBody `json:"pending_unchanged,omitempty"`
+	SchemaVersion       int                             `json:"schema_version"`
+	LastIPv4            string                          `json:"last_ipv4,omitempty"`
+	LastIPv6            string                          `json:"last_ipv6,omitempty"`
+	PendingSnapshot     *protocol.IPSnapshotBody        `json:"pending_snapshot,omitempty"`
+	Pending             *protocol.IPObservationBody     `json:"pending,omitempty"`
+	PendingIPv6Snapshot *protocol.IPSnapshotBody        `json:"pending_ipv6_snapshot,omitempty"`
+	PendingIPv6         *protocol.IPObservationBody     `json:"pending_ipv6,omitempty"`
+	ChangeAttempt       *changeAttempt                  `json:"change_attempt,omitempty"`
+	PendingUnchanged    *protocol.ChangeIPUnchangedBody `json:"pending_unchanged,omitempty"`
 }
 
 type changeAttempt struct {
@@ -33,13 +37,15 @@ type changeAttempt struct {
 }
 
 type Monitor struct {
-	mu       sync.Mutex
-	file     *state.JSONFile
-	observer AddressObserver
-	interval time.Duration
-	now      func() time.Time
-	wake     chan struct{}
-	snapshot monitorSnapshot
+	mu          sync.Mutex
+	file        *state.JSONFile
+	observer    AddressObserver
+	interval    time.Duration
+	now         func() time.Time
+	wake        chan struct{}
+	wakeIPv6    chan struct{}
+	observeIPv6 bool
+	snapshot    monitorSnapshot
 }
 
 var errTransientMonitor = errors.New("transient IP monitor failure")
@@ -49,14 +55,14 @@ const (
 	changeUnchangedConfirmations = 3
 )
 
-func OpenMonitor(filePath string, observer AddressObserver, interval time.Duration) (*Monitor, error) {
+func OpenMonitor(filePath string, observer AddressObserver, interval time.Duration, observeIPv6 bool) (*Monitor, error) {
 	if observer == nil || interval < 10*time.Second || interval > 5*time.Minute {
 		return nil, errors.New("IP monitor options are invalid")
 	}
 	monitor := &Monitor{
 		file: state.NewJSONFile(filePath), observer: observer, interval: interval, now: time.Now,
-		wake:     make(chan struct{}, 1),
-		snapshot: monitorSnapshot{SchemaVersion: 1},
+		wake: make(chan struct{}, 1), wakeIPv6: make(chan struct{}, 1), observeIPv6: observeIPv6,
+		snapshot: monitorSnapshot{SchemaVersion: 2},
 	}
 	found, err := monitor.file.Load(&monitor.snapshot)
 	if err != nil {
@@ -66,12 +72,18 @@ func OpenMonitor(filePath string, observer AddressObserver, interval time.Durati
 		if err := validateMonitorSnapshot(monitor.snapshot); err != nil {
 			return nil, err
 		}
+		if monitor.snapshot.SchemaVersion == 1 {
+			monitor.snapshot.SchemaVersion = 2
+			if err := monitor.file.Save(monitor.snapshot); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return monitor, nil
 }
 
 func CheckIdle(filePath string) error {
-	snapshot := monitorSnapshot{SchemaVersion: 1}
+	snapshot := monitorSnapshot{SchemaVersion: 2}
 	found, err := state.NewJSONFile(filePath).Load(&snapshot)
 	if err != nil {
 		return err
@@ -89,13 +101,19 @@ func CheckIdle(filePath string) error {
 }
 
 func validateMonitorSnapshot(snapshot monitorSnapshot) error {
-	if snapshot.SchemaVersion != 1 {
+	if snapshot.SchemaVersion != 1 && snapshot.SchemaVersion != 2 {
 		return errors.New("IP state schema is unsupported")
 	}
 	if snapshot.LastIPv4 != "" {
 		address, parseError := netip.ParseAddr(snapshot.LastIPv4)
 		if parseError != nil || !address.Is4() {
 			return errors.New("IP state last_ipv4 is invalid")
+		}
+	}
+	if snapshot.LastIPv6 != "" {
+		address, parseError := netip.ParseAddr(snapshot.LastIPv6)
+		if parseError != nil || !netpolicy.IsPublicIPv6(address) {
+			return errors.New("IP state last_ipv6 is invalid")
 		}
 	}
 	if pending := snapshot.PendingSnapshot; pending != nil {
@@ -115,6 +133,26 @@ func validateMonitorSnapshot(snapshot monitorSnapshot) error {
 			previousError != nil || !previous.Is4() || addressError != nil || !address.Is4() ||
 			previous == address || timeError != nil || observedAt.IsZero() {
 			return errors.New("IP state pending observation is invalid")
+		}
+	}
+	if pending := snapshot.PendingIPv6Snapshot; pending != nil {
+		address, addressError := netip.ParseAddr(pending.Address)
+		observedAt, timeError := time.Parse(time.RFC3339Nano, pending.ObservedAt)
+		if pending.Family != "ipv6" || !protocol.ValidUUID(pending.SnapshotID) ||
+			addressError != nil || !netpolicy.IsPublicIPv6(address) || timeError != nil || observedAt.IsZero() ||
+			snapshot.LastIPv6 != pending.Address {
+			return errors.New("IP state pending IPv6 snapshot is invalid")
+		}
+	}
+	if pending := snapshot.PendingIPv6; pending != nil {
+		previous, previousError := netip.ParseAddr(pending.PreviousAddress)
+		address, addressError := netip.ParseAddr(pending.Address)
+		observedAt, timeError := time.Parse(time.RFC3339Nano, pending.ObservedAt)
+		if pending.Family != "ipv6" || !protocol.ValidUUID(pending.ObservationID) ||
+			previousError != nil || !netpolicy.IsPublicIPv6(previous) ||
+			addressError != nil || !netpolicy.IsPublicIPv6(address) || previous == address ||
+			timeError != nil || observedAt.IsZero() {
+			return errors.New("IP state pending IPv6 observation is invalid")
 		}
 	}
 	pendingStates := 0
@@ -156,18 +194,46 @@ func (m *Monitor) Run(ctx context.Context, publishSnapshot func(protocol.IPSnaps
 	if publishSnapshot == nil || publish == nil || publishUnchanged == nil {
 		return errors.New("IP observation publishers are required")
 	}
+	if !m.observeIPv6 {
+		return m.runIPv4(ctx, publishSnapshot, publish, publishUnchanged)
+	}
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 2)
+	go func() { done <- m.runIPv4(runContext, publishSnapshot, publish, publishUnchanged) }()
+	go func() { done <- m.runIPv6(runContext, publishSnapshot, publish) }()
+	err := <-done
+	cancel()
+	<-done
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func (m *Monitor) runIPv4(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error, publishUnchanged func(protocol.ChangeIPUnchangedBody) error) error {
+	return m.runLoop(ctx, m.wake, func() error {
+		return m.step(ctx, publishSnapshot, publish, publishUnchanged)
+	})
+}
+
+func (m *Monitor) runIPv6(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error) error {
+	return m.runLoop(ctx, m.wakeIPv6, func() error {
+		return m.stepIPv6(ctx, publishSnapshot, publish)
+	})
+}
+
+func (m *Monitor) runLoop(ctx context.Context, wake <-chan struct{}, step func() error) error {
 	for {
-		if err := m.step(ctx, publishSnapshot, publish, publishUnchanged); err != nil && ctx.Err() == nil {
-			if !errors.Is(err, errTransientMonitor) {
-				return err
-			}
+		if err := step(); err != nil && ctx.Err() == nil && !errors.Is(err, errTransientMonitor) {
+			return err
 		}
 		timer := time.NewTimer(m.interval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
-		case <-m.wake:
+		case <-wake:
 			timer.Stop()
 		case <-timer.C:
 		}
@@ -178,6 +244,12 @@ func (m *Monitor) NotifyControlReady() {
 	select {
 	case m.wake <- struct{}{}:
 	default:
+	}
+	if m.observeIPv6 {
+		select {
+		case m.wakeIPv6 <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -253,11 +325,14 @@ func (m *Monitor) ChangeAddress(commandID string) (string, bool) {
 func (m *Monitor) Ack(observationID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.snapshot.Pending == nil || m.snapshot.Pending.ObservationID != observationID {
+	next := m.snapshot
+	if next.Pending != nil && next.Pending.ObservationID == observationID {
+		next.Pending = nil
+	} else if next.PendingIPv6 != nil && next.PendingIPv6.ObservationID == observationID {
+		next.PendingIPv6 = nil
+	} else {
 		return errors.New("IP observation acknowledgment does not match pending state")
 	}
-	next := m.snapshot
-	next.Pending = nil
 	if err := m.file.Save(next); err != nil {
 		return err
 	}
@@ -268,11 +343,14 @@ func (m *Monitor) Ack(observationID string) error {
 func (m *Monitor) AckSnapshot(snapshotID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.snapshot.PendingSnapshot == nil || m.snapshot.PendingSnapshot.SnapshotID != snapshotID {
+	next := m.snapshot
+	if next.PendingSnapshot != nil && next.PendingSnapshot.SnapshotID == snapshotID {
+		next.PendingSnapshot = nil
+	} else if next.PendingIPv6Snapshot != nil && next.PendingIPv6Snapshot.SnapshotID == snapshotID {
+		next.PendingIPv6Snapshot = nil
+	} else {
 		return errors.New("IP snapshot acknowledgment does not match pending state")
 	}
-	next := m.snapshot
-	next.PendingSnapshot = nil
 	if err := m.file.Save(next); err != nil {
 		return err
 	}
@@ -391,6 +469,75 @@ func (m *Monitor) step(ctx context.Context, publishSnapshot func(protocol.IPSnap
 	m.mu.Unlock()
 	if err := publish(*pending); err != nil {
 		return fmt.Errorf("%w: publish observation", errTransientMonitor)
+	}
+	return nil
+}
+
+func (m *Monitor) stepIPv6(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error) error {
+	m.mu.Lock()
+	if m.snapshot.PendingIPv6Snapshot != nil {
+		pending := *m.snapshot.PendingIPv6Snapshot
+		m.mu.Unlock()
+		if err := publishSnapshot(pending); err != nil {
+			return fmt.Errorf("%w: publish pending IPv6 snapshot", errTransientMonitor)
+		}
+		return nil
+	}
+	if m.snapshot.PendingIPv6 != nil {
+		pending := *m.snapshot.PendingIPv6
+		m.mu.Unlock()
+		if err := publish(pending); err != nil {
+			return fmt.Errorf("%w: publish pending IPv6 observation", errTransientMonitor)
+		}
+		return nil
+	}
+	m.mu.Unlock()
+
+	observation, err := m.observer.Observe(ctx, IPv6)
+	if err != nil {
+		return fmt.Errorf("%w: observe IPv6", errTransientMonitor)
+	}
+	current := observation.Address.String()
+	m.mu.Lock()
+	if m.snapshot.LastIPv6 == "" {
+		pending := &protocol.IPSnapshotBody{
+			SnapshotID: protocol.NewUUID(), Family: "ipv6", Address: current,
+			ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),
+		}
+		next := m.snapshot
+		next.LastIPv6 = current
+		next.PendingIPv6Snapshot = pending
+		if err := m.file.Save(next); err != nil {
+			m.mu.Unlock()
+			return fmt.Errorf("persist IPv6 snapshot: %w", err)
+		}
+		m.snapshot = next
+		m.mu.Unlock()
+		if err := publishSnapshot(*pending); err != nil {
+			return fmt.Errorf("%w: publish IPv6 snapshot", errTransientMonitor)
+		}
+		return nil
+	}
+	if m.snapshot.LastIPv6 == current {
+		m.mu.Unlock()
+		return nil
+	}
+	pending := &protocol.IPObservationBody{
+		ObservationID: protocol.NewUUID(), Family: "ipv6",
+		PreviousAddress: m.snapshot.LastIPv6, Address: current,
+		ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),
+	}
+	next := m.snapshot
+	next.LastIPv6 = current
+	next.PendingIPv6 = pending
+	if err := m.file.Save(next); err != nil {
+		m.mu.Unlock()
+		return fmt.Errorf("persist IPv6 observation: %w", err)
+	}
+	m.snapshot = next
+	m.mu.Unlock()
+	if err := publish(*pending); err != nil {
+		return fmt.Errorf("%w: publish IPv6 observation", errTransientMonitor)
 	}
 	return nil
 }

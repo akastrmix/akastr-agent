@@ -26,3 +26,28 @@ func TestIsPublicIPv4(t *testing.T) {
 		})
 	}
 }
+
+func TestIsPublicIPv6(t *testing.T) {
+	t.Parallel()
+	tests := map[string]bool{
+		"2606:4700:4700::1111":    true,
+		"2001:4860:4860::8888":    true,
+		"::":                      false,
+		"::1":                     false,
+		"::ffff:192.0.2.128":      false,
+		"0:0:0:0:0:ffff:c000:280": false,
+		"fd00::1":                 false,
+		"fe80::1":                 false,
+		"ff02::1":                 false,
+		"8.8.8.8":                 false,
+	}
+	for input, expected := range tests {
+		input, expected := input, expected
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
+			if actual := IsPublicIPv6(netip.MustParseAddr(input)); actual != expected {
+				t.Fatalf("IsPublicIPv6(%s) = %v, want %v", input, actual, expected)
+			}
+		})
+	}
+}

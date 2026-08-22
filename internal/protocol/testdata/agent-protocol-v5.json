@@ -108,7 +108,7 @@
               "version": 1,
               "properties": {
                 "interval_seconds": "60",
-                "observe_ipv6": "false"
+                "observe_ipv6": "true"
               }
             }
           ]
@@ -148,6 +148,23 @@
           "previous_address": "8.8.8.8",
           "address": "8.8.4.4",
           "observed_at": "2026-08-18T00:00:07.000Z"
+        }
+      }
+    },
+    {
+      "name": "agent-ipv6-observed",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-08-20.v5",
+        "message_id": "123e4567-e89b-42d3-a456-426614174126",
+        "type": "ip.observed",
+        "sent_at": "2026-08-18T00:00:08.000Z",
+        "body": {
+          "observation_id": "123e4567-e89b-42d3-a456-426614174127",
+          "family": "ipv6",
+          "previous_address": "2606:4700:4700::1111",
+          "address": "2001:4860:4860::8888",
+          "observed_at": "2026-08-18T00:00:08.000Z"
         }
       }
     }

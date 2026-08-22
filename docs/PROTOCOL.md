@@ -4,11 +4,11 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 
 ## Enrollment 与身份认证
 
-管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 `akastr-agent-bootstrap.v3` 配置，并生成版本化一键命令。bootstrap 明文必须使用 `schema_version=3`，并包含正整数 `configuration_revision`。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本机认证解密并生成 root-only config v3 与 secret 文件。
+管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 `akastr-agent-bootstrap.v4` 配置，并生成版本化一键命令。bootstrap 明文必须使用 `schema_version=4`，并包含正整数 `configuration_revision`；Target 还包含显式 `observe_ipv6`。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本机认证解密并生成 root-only config v3 与 secret 文件。
 
 `POST /internal/agents/enroll` 请求必须且只能包含 `machine_token`、raw 32-byte `public_key`、当前批准的语义化 `agent_version`、正整数 `configuration_revision` 和不含秘密的 `capabilities`。版本必须精确等于 Cloud 当前批准 release，revision 必须精确等于节点的 desired revision，否则分别返回 `agent_release_required` 或 `agent_configuration_stale`。首次安装生成 Ed25519 keypair；同节点完整重装复用已确认 identity，并再次提交同一公钥。注册成功把 applied revision 推进到 desired revision，并断开既有 WSS。只有状态码与已知 enrollment 业务错误严格匹配的 JSON 4xx 响应才会删除新生成的 pending identity；已确认 identity 不因重装被拒绝而删除。重定向、408、425、429、5xx、非 JSON 代理响应、网络中断和无法严格解析的响应均保留 identity 供重试。主控在该节点存在 pending、offered 或 accepted command，或 Target 对应服务器仍有 active ChangeIP session 时，以 `agent_node_busy` 拒绝注册。
 
-机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。配置更新保持节点 ID、target/Runner 角色、服务器绑定、机器 token 和 identity 不变；主控递增 desired revision、替换密封 bootstrap、断开连接，并在新 revision enrollment 完成前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受 bootstrap v3，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
+机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。配置更新保持节点 ID、target/Runner 角色、服务器绑定、机器 token 和 identity 不变；主控递增 desired revision、替换密封 bootstrap、断开连接，并在新 revision enrollment 完成前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换接受 bootstrap v3/v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -80,7 +80,11 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 只有精确来源 `https://report.check.place/...`、无用户信息和显式端口的 URL 加成功 postflight 才是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
 
-## ChangeIP 与 IPv4 核对
+## IP 观察、ChangeIP 与 IPv4 核对
+
+`ip.snapshot` 与 `ip.observed` 的 `family` 只允许 `ipv4` 或 `ipv6`，地址必须与 family 匹配且为对应协议族的公网地址。IPv4 与 IPv6 各自使用独立 baseline、待确认事实和 UUID 幂等重放；任一 family 的 ack 不得清除另一 family 的状态。
+
+Target 首次成功 IPv6 观察发送 `family=ipv6` 的 `ip.snapshot`，之后地址改变发送 `family=ipv6` 的 `ip.observed`。IPv6 snapshot 只建立主控 baseline，不设置 IPv4 readiness；无 IPv6、探测失败或暂时不可达不发送消失事件，也不影响 IPv4、ChangeIP、IPQuality 或 SOCKS5。
 
 首次成功观察必须先持久化并发送 `ip.snapshot`，body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；当前 identity 的 snapshot readiness 与该提交原子持久化，重连和进程重启保留，重新 enrollment 时清除。重装后的 snapshot 若与既有 baseline 不同且节点没有未终结 command，Cloud 以既有地址作为 previous address 原子记录一次自然变化。存在未终结 command 时地址冲突安全失败。Agent 在确认前不得接受 ChangeIP，并跨重连、重启重发尚未确认的 snapshot。
 
@@ -93,6 +97,10 @@ Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`
 ## 自然 IPv4 变化
 
 没有活动 ChangeIP session 的 `ip.observed` 是自然变化。AkastrCloud 应用既有私聊订阅条件并重置该 IP 代际的 IPQuality 缓存；协议没有 Telegram channel delivery。
+
+## 自然 IPv6 变化
+
+`family=ipv6` 的 `ip.observed` 始终是独立自然变化，不归因于 ChangeIP，也不重置 IPQuality。AkastrCloud 将变化写入 `/iplog` 数据源；主动通知只面向 Carpool 管理员，非管理员不会收到 IPv6 变化消息。
 
 ## 安全边界
 

@@ -78,7 +78,7 @@ func encryptedEnvelope(t *testing.T, token []byte, payload Payload) []byte {
 	nonce := []byte("0123456789ab")
 	ciphertext := aead.Seal(nil, nonce, plaintext, []byte(payload.AgentID))
 	encoded, err := json.Marshal(fetchResponse{
-		Schema:     "akastr-agent-bootstrap.v3",
+		Schema:     "akastr-agent-bootstrap.v4",
 		Nonce:      base64.RawURLEncoding.EncodeToString(nonce),
 		Ciphertext: base64.RawURLEncoding.EncodeToString(ciphertext),
 	})
@@ -128,13 +128,14 @@ func fetchFixture(t *testing.T, payload Payload, mutate func([]byte) []byte) (Pa
 }
 
 func TestFetchAndWriteTargetBootstrap(t *testing.T) {
+	observeIPv6 := true
 	payload := Payload{
-		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "target", AgentID: testAgentID,
+		SchemaVersion: SchemaVersion, ConfigurationRevision: 1, Mode: "target", AgentID: testAgentID,
 		Name: "HKT", ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Target: &Target{
-			IPWatchIntervalSeconds: 60,
-			ChangeIP:               ChangeIP{Provider: "http_bearer", URL: "https://provider.test/change", BearerToken: "secret-token"},
-			SOCKS5:                 SOCKS5{Enabled: true, Port: 38138},
+			IPWatchIntervalSeconds: 60, ObserveIPv6: &observeIPv6,
+			ChangeIP: ChangeIP{Provider: "http_bearer", URL: "https://provider.test/change", BearerToken: "secret-token"},
+			SOCKS5:   SOCKS5{Enabled: true, Port: 38138},
 		},
 	}
 	actual, output := fetchFixture(t, payload, nil)
@@ -151,6 +152,9 @@ func TestFetchAndWriteTargetBootstrap(t *testing.T) {
 	if !strings.Contains(string(configBytes), "/var/lib/akastr-agent/configurations/1/changeip-curl.conf") {
 		t.Fatal("generated Agent config does not reference its immutable revision directory")
 	}
+	if !strings.Contains(string(configBytes), `"observe_ipv6":true`) {
+		t.Fatal("generated Target config did not enable IPv6 observation")
+	}
 	curlBytes, err := os.ReadFile(filepath.Join(output, "changeip-curl.conf"))
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +169,7 @@ func TestFetchAndWriteTargetBootstrap(t *testing.T) {
 
 func TestFetchAndWriteRunnerBootstrap(t *testing.T) {
 	payload := Payload{
-		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID,
+		SchemaVersion: SchemaVersion, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID,
 		Name: "Runner", ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Runner: &Runner{Profiles: []ProxyProfile{{ID: "hkt", Username: "proxy-user", Password: "proxy-pass"}}},
 	}
@@ -181,7 +185,7 @@ func TestFetchAndWriteRunnerBootstrap(t *testing.T) {
 
 func TestFetchRejectsTamperedCiphertext(t *testing.T) {
 	payload := Payload{
-		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID,
+		SchemaVersion: SchemaVersion, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID,
 		Name: "Runner", ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Runner: &Runner{Profiles: []ProxyProfile{{ID: "hkt", Username: "u", Password: "p"}}},
 	}
@@ -214,10 +218,11 @@ func TestFetchRejectsTamperedCiphertext(t *testing.T) {
 }
 
 func TestPayloadValidationRejectsGenericShellAndDuplicateProfiles(t *testing.T) {
+	observeIPv6 := true
 	target := Payload{
-		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "target", AgentID: testAgentID, Name: "Target",
+		SchemaVersion: SchemaVersion, ConfigurationRevision: 1, Mode: "target", AgentID: testAgentID, Name: "Target",
 		ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
-		Target:          &Target{IPWatchIntervalSeconds: 60, ChangeIP: ChangeIP{Provider: "command", Program: "/bin/sh"}, SOCKS5: SOCKS5{}},
+		Target:          &Target{IPWatchIntervalSeconds: 60, ObserveIPv6: &observeIPv6, ChangeIP: ChangeIP{Provider: "command", Program: "/bin/sh"}, SOCKS5: SOCKS5{}},
 	}
 	if err := target.Validate(testAgentID); err == nil {
 		t.Fatal("generic shell command must be rejected")
@@ -228,6 +233,7 @@ func TestPayloadValidationRejectsGenericShellAndDuplicateProfiles(t *testing.T) 
 	}
 	target.Target = &Target{
 		IPWatchIntervalSeconds: 301,
+		ObserveIPv6:            &observeIPv6,
 		ChangeIP:               ChangeIP{Provider: "disabled"},
 		SOCKS5:                 SOCKS5{},
 	}
@@ -235,7 +241,7 @@ func TestPayloadValidationRejectsGenericShellAndDuplicateProfiles(t *testing.T) 
 		t.Fatal("IP watch interval above five minutes must be rejected")
 	}
 	runner := Payload{
-		SchemaVersion: 3, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID, Name: "Runner",
+		SchemaVersion: SchemaVersion, ConfigurationRevision: 1, Mode: "runner", AgentID: testAgentID, Name: "Runner",
 		ControlEndpoint: "wss://origin.akastrmix.com/internal/agents/ws",
 		Runner:          &Runner{Profiles: []ProxyProfile{{ID: "hkt", Username: "u", Password: "p"}, {ID: "hkt", Username: "u2", Password: "p2"}}},
 	}

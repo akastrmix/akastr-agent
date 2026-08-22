@@ -20,7 +20,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 
 目标节点参数包括：
 
-- 公网 IPv4 定时观察；
+- 公网 IPv4 与可选 IPv6 定时观察；
 - HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
 - 不含凭据的 SOCKS5 端口描述；代理地址始终使用 Agent 观测到的公网 IPv4。
 
@@ -32,7 +32,7 @@ Runner 可配置 1–128 个以 server key 索引的 SOCKS5 credential profile�
 
 Akastr Agent 只负责节点本地执行与观察：
 
-- 观察公网 IPv4；
+- 观察公网 IPv4，并在启用时独立观察 IPv6；
 - 执行本地固定的 ChangeIP provider；
 - 上报不含凭据的 SOCKS5 端点描述；
 - 在专用 Runner 上执行固定版本、固定 checksum 的 IPQuality 脚本。

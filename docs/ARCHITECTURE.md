@@ -46,7 +46,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
 - `internal/operation`：本地 exclusive group 和有界操作日志；不保存 command payload 或凭据。
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
-- `internal/features/ipwatch`：通过固定 HTTPS 来源观察公网 IP，并持久保存尚未确认的 IPv4 事件和活动 ChangeIP 核对状态。
+- `internal/features/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/providers/changeip`：统一描述明确触发、结果未知和明确失败；`httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
 - `internal/providers/ipquality/script`：通过秘密 SOCKS5 profile 执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
@@ -68,7 +68,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 观察器通过固定 HTTPS 来源 `api.ipify.org` 和 Cloudflare trace 获取公网地址，明确按 IPv4 或 IPv6 建立连接，拒绝重定向、非公网地址和过大响应。IPv4 的非公网范围包括 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 
-后台只生成 IPv4 watch：首次成功观察先把 baseline 与待确认 `ip.snapshot` 一起写入 `ip_state_file`，Cloud 持久确认前跨重连、重启重发；后续变化同样先持久化，再发送 `ip.observed`。未确认 snapshot 时不接受 ChangeIP。配置固定 `observe_ipv6=false`，运行时不生成自然 IPv6 变化事件。观察器发生不可恢复的状态错误时，整个 Agent 退出并由 systemd 重启，不会留下 WSS 在线但停止观察的半失效进程。
+Target 的 IPv4 watch 始终启用：首次成功观察先把 baseline 与待确认 `ip.snapshot` 一起写入 `ip_state_file`，Cloud 持久确认前跨重连、重启重发；后续变化同样先持久化，再发送 `ip.observed`。未确认 IPv4 snapshot 时不接受 ChangeIP。`observe_ipv6=true` 时，IPv6 使用同一间隔但独立循环、baseline 与待确认事实；无公网 IPv6 或探测失败只重试，不影响 IPv4 readiness、ChangeIP 或维护空闲判断。观察器发生不可恢复的状态错误时，整个 Agent 退出并由 systemd 重启，不会留下 WSS 在线但停止观察的半失效进程。
 
 ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对起点写入同一个 IP 状态文件。HTTP provider 只有收到 `200` 才返回 `change_triggered`；固定程序退出 `0` 也返回该结果。请求可能已经送达但响应、进程或 WSS 被换 IP 断开的情况返回 `change_trigger_unknown`，不会重发 provider。明确的非 `200`、非零退出或启动失败会取消核对并失败。
 

@@ -2,6 +2,7 @@ package ipwatch
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,32 @@ import (
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
+
+type familySequenceObserver struct {
+	v4      []string
+	v6      []string
+	v4Index int
+	v6Index int
+	v6Err   error
+}
+
+func (o *familySequenceObserver) Observe(_ context.Context, family Family) (Observation, error) {
+	if family == IPv6 && o.v6Err != nil {
+		return Observation{}, o.v6Err
+	}
+	values, index := o.v4, &o.v4Index
+	if family == IPv6 {
+		values, index = o.v6, &o.v6Index
+	}
+	value := values[*index]
+	if *index < len(values)-1 {
+		(*index)++
+	}
+	return Observation{
+		Address:    netip.MustParseAddr(value),
+		ObservedAt: time.Date(2026, 8, 22, 0, 0, *index, 0, time.UTC),
+	}, nil
+}
 
 type sequenceObserver struct {
 	values []string
@@ -29,7 +56,7 @@ func (o *sequenceObserver) Observe(_ context.Context, _ Family) (Observation, er
 func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "ip-state.json")
 	observer := &sequenceObserver{values: []string{"8.8.8.8", "8.8.4.4", "1.1.1.1"}}
-	monitor, err := OpenMonitor(filePath, observer, time.Minute)
+	monitor, err := OpenMonitor(filePath, observer, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +86,7 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 	if len(snapshots) != 2 || snapshots[1].SnapshotID != snapshots[0].SnapshotID {
 		t.Fatalf("pending snapshot was not retried: %#v", snapshots)
 	}
-	reopened, err := OpenMonitor(filePath, observer, time.Minute)
+	reopened, err := OpenMonitor(filePath, observer, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +122,7 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 func TestControlReadinessWakesPendingSnapshotImmediately(t *testing.T) {
 	monitor, err := OpenMonitor(
 		filepath.Join(t.TempDir(), "ip-state.json"),
-		&sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute,
+		&sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +166,7 @@ func TestControlReadinessWakesPendingSnapshotImmediately(t *testing.T) {
 func TestMonitorPersistsFastUnchangedReconciliation(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "ip-state.json")
 	observer := &sequenceObserver{values: []string{"8.8.8.8"}}
-	monitor, err := OpenMonitor(filePath, observer, time.Minute)
+	monitor, err := OpenMonitor(filePath, observer, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +206,7 @@ func TestMonitorPersistsFastUnchangedReconciliation(t *testing.T) {
 	if len(unchanged) != 1 || unchanged[0].CommandID != commandID || unchanged[0].Address != "8.8.8.8" {
 		t.Fatalf("unchanged events = %#v", unchanged)
 	}
-	reopened, err := OpenMonitor(filePath, observer, time.Minute)
+	reopened, err := OpenMonitor(filePath, observer, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +218,7 @@ func TestMonitorPersistsFastUnchangedReconciliation(t *testing.T) {
 func TestMonitorArmsBeforeInitialCycleAndObservesChangedAddress(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "ip-state.json")
 	observer := &sequenceObserver{values: []string{"8.8.4.4"}}
-	monitor, err := OpenMonitor(filePath, observer, time.Minute)
+	monitor, err := OpenMonitor(filePath, observer, time.Minute, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +256,7 @@ func TestMonitorArmsBeforeInitialCycleAndObservesChangedAddress(t *testing.T) {
 func TestCheckIdleIncludesPendingIPState(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "ip-state.json")
 	monitor, err := OpenMonitor(
-		filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute,
+		filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -250,9 +277,86 @@ func TestCheckIdleIncludesPendingIPState(t *testing.T) {
 func TestOpenMonitorRejectsIntervalsLongerThanFiveMinutes(t *testing.T) {
 	_, err := OpenMonitor(
 		filepath.Join(t.TempDir(), "ip-state.json"),
-		&sequenceObserver{values: []string{"8.8.8.8"}}, 5*time.Minute+time.Second,
+		&sequenceObserver{values: []string{"8.8.8.8"}}, 5*time.Minute+time.Second, false,
 	)
 	if err == nil {
 		t.Fatal("OpenMonitor accepted an interval longer than five minutes")
+	}
+}
+
+func TestMonitorPersistsIPv6IndependentlyFromIPv4Readiness(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "ip-state.json")
+	observer := &familySequenceObserver{
+		v4: []string{"8.8.8.8"},
+		v6: []string{"2606:4700:4700::1111", "2001:4860:4860::8888"},
+	}
+	monitor, err := OpenMonitor(filePath, observer, time.Minute, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshots []protocol.IPSnapshotBody
+	var observations []protocol.IPObservationBody
+	publishSnapshot := func(value protocol.IPSnapshotBody) error {
+		snapshots = append(snapshots, value)
+		return nil
+	}
+	publish := func(value protocol.IPObservationBody) error {
+		observations = append(observations, value)
+		return nil
+	}
+	if err := monitor.step(context.Background(), publishSnapshot, publish, func(protocol.ChangeIPUnchangedBody) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.stepIPv6(context.Background(), publishSnapshot, publish); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshots) != 2 || snapshots[0].Family != "ipv4" || snapshots[1].Family != "ipv6" {
+		t.Fatalf("snapshots = %#v", snapshots)
+	}
+	if err := monitor.AckSnapshot(snapshots[0].SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckIdle(filePath); err != nil {
+		t.Fatalf("pending IPv6 blocked operation/configuration idle state: %v", err)
+	}
+	if err := monitor.AckSnapshot(snapshots[1].SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.stepIPv6(context.Background(), publishSnapshot, publish); err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 1 || observations[0].Family != "ipv6" ||
+		observations[0].PreviousAddress != "2606:4700:4700::1111" ||
+		observations[0].Address != "2001:4860:4860::8888" {
+		t.Fatalf("IPv6 observations = %#v", observations)
+	}
+	reopened, err := OpenMonitor(filePath, observer, time.Minute, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.stepIPv6(context.Background(), publishSnapshot, publish); err != nil {
+		t.Fatal(err)
+	}
+	if len(observations) != 2 || observations[1].ObservationID != observations[0].ObservationID {
+		t.Fatalf("pending IPv6 observation was not retried: %#v", observations)
+	}
+}
+
+func TestIPv6ProbeFailureIsTransient(t *testing.T) {
+	monitor, err := OpenMonitor(
+		filepath.Join(t.TempDir(), "ip-state.json"),
+		&familySequenceObserver{v4: []string{"8.8.8.8"}, v6Err: errors.New("no IPv6 route")},
+		time.Minute, true,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = monitor.stepIPv6(
+		context.Background(),
+		func(protocol.IPSnapshotBody) error { return nil },
+		func(protocol.IPObservationBody) error { return nil },
+	)
+	if !errors.Is(err, errTransientMonitor) {
+		t.Fatalf("IPv6 probe error = %v", err)
 	}
 }

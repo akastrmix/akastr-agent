@@ -93,7 +93,7 @@ func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return Payload{}, errors.New("bootstrap response contains trailing JSON")
 	}
-	if envelope.Schema != "akastr-agent-bootstrap.v3" {
+	if envelope.Schema != "akastr-agent-bootstrap.v3" && envelope.Schema != "akastr-agent-bootstrap.v4" {
 		return Payload{}, errors.New("bootstrap response schema is unsupported")
 	}
 	nonce, err := base64.RawURLEncoding.DecodeString(envelope.Nonce)

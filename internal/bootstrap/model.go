@@ -11,7 +11,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/config"
 )
 
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 const (
 	IPQualityCommit  = "0ee5f192fed70c04615852efba0e4b8bd43546c7"
@@ -48,6 +48,7 @@ type Payload struct {
 
 type Target struct {
 	IPWatchIntervalSeconds int      `json:"ip_watch_interval_seconds"`
+	ObserveIPv6            *bool    `json:"observe_ipv6,omitempty"`
 	ChangeIP               ChangeIP `json:"change_ip"`
 	SOCKS5                 SOCKS5   `json:"socks5"`
 }
@@ -76,8 +77,8 @@ type ProxyProfile struct {
 }
 
 func (p Payload) Validate(expectedAgentID string) error {
-	if p.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("bootstrap schema_version must be %d", SchemaVersion)
+	if p.SchemaVersion != 3 && p.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("bootstrap schema_version must be 3 or %d", SchemaVersion)
 	}
 	if p.ConfigurationRevision < 1 {
 		return errors.New("bootstrap configuration_revision must be a positive integer")
@@ -96,6 +97,10 @@ func (p Payload) Validate(expectedAgentID string) error {
 	case "target":
 		if p.Target == nil || p.Runner != nil {
 			return errors.New("target bootstrap must contain only target configuration")
+		}
+		if (p.SchemaVersion == 3 && p.Target.ObserveIPv6 != nil) ||
+			(p.SchemaVersion == SchemaVersion && p.Target.ObserveIPv6 == nil) {
+			return errors.New("bootstrap observe_ipv6 does not match its schema")
 		}
 		return p.Target.validate()
 	case "runner":
@@ -204,7 +209,10 @@ func (p Payload) agentConfig(ipQualityVersion, ipQualitySHA256, curlPath, profil
 	}
 	cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Provider: "disabled"}
 	if p.Mode == "target" {
-		cfg.Capabilities.IPWatch = config.IPWatchConfig{Enabled: true, IntervalSeconds: p.Target.IPWatchIntervalSeconds, ObserveIPv6: false}
+		cfg.Capabilities.IPWatch = config.IPWatchConfig{
+			Enabled: true, IntervalSeconds: p.Target.IPWatchIntervalSeconds,
+			ObserveIPv6: p.Target.ObserveIPv6 != nil && *p.Target.ObserveIPv6,
+		}
 		switch p.Target.ChangeIP.Provider {
 		case "http_bearer":
 			cfg.Capabilities.ChangeIP = config.ChangeIPConfig{Provider: "http_bearer", Program: "/usr/bin/curl", Args: []string{"--config", curlPath}, TimeoutSeconds: 60, ObserveTimeoutSeconds: 300}

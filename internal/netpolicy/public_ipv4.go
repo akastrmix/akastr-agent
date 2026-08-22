@@ -32,3 +32,8 @@ func IsPublicIPv4(address netip.Addr) bool {
 	}
 	return true
 }
+
+func IsPublicIPv6(address netip.Addr) bool {
+	return address.Is6() && !address.Is4In6() && address.IsGlobalUnicast() && !address.IsPrivate() &&
+		!address.IsLoopback() && !address.IsLinkLocalUnicast()
+}

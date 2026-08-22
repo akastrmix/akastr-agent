@@ -38,7 +38,7 @@ apt-get install --yes ca-certificates curl
 
 必须填写节点名称并绑定对应服务器，然后设置：
 
-- 公网 IPv4 检查间隔：10–300 秒；一般保持 60 秒；
+- 公网 IP 检查间隔：10–300 秒；一般保持 60 秒。Target 同时尝试观察 IPv6，无公网 IPv6 时忽略；
 - ChangeIP：不启用、粘贴服务商完整 `curl` 命令，或固定本机程序；
 - SOCKS5 入口：不公布，或公布端口。
 
