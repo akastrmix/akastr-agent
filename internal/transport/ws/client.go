@@ -43,6 +43,7 @@ type Client struct {
 	observations          ObservationSource
 	lifecycle             *lifecycle.Gate
 	onReady               func() error
+	onMaintenanceCheck    func()
 	logger                *slog.Logger
 
 	mu       sync.Mutex
@@ -72,6 +73,7 @@ func New(options struct {
 	Observations          ObservationSource
 	Lifecycle             *lifecycle.Gate
 	OnReady               func() error
+	OnMaintenanceCheck    func()
 	Logger                *slog.Logger
 }) (*Client, error) {
 	if options.Executor == nil {
@@ -103,7 +105,8 @@ func New(options struct {
 		configurationRevision: options.ConfigurationRevision,
 		capabilities:          append([]capability.Descriptor(nil), options.Capabilities...),
 		executor:              options.Executor, observations: options.Observations,
-		lifecycle: options.Lifecycle, onReady: options.OnReady, logger: options.Logger,
+		lifecycle: options.Lifecycle, onReady: options.OnReady,
+		onMaintenanceCheck: options.OnMaintenanceCheck, logger: options.Logger,
 		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
 	}, nil
 }
@@ -224,6 +227,10 @@ func (c *Client) runSession(ctx context.Context) error {
 			return err
 		}
 		switch envelope.Type {
+		case "maintenance.check":
+			if err := c.handleMaintenanceCheck(envelope); err != nil {
+				return err
+			}
 		case "operation.offer":
 			offer, err := protocol.DecodeOperationOffer(envelope)
 			if err != nil {
@@ -298,6 +305,17 @@ func (c *Client) runSession(ctx context.Context) error {
 			return fmt.Errorf("unexpected control message %q", envelope.Type)
 		}
 	}
+}
+
+func (c *Client) handleMaintenanceCheck(envelope protocol.Envelope) error {
+	if _, err := protocol.DecodeBody[struct{}](envelope); err != nil {
+		return err
+	}
+	if c.onMaintenanceCheck == nil {
+		return errors.New("manual maintenance trigger is unavailable")
+	}
+	c.onMaintenanceCheck()
+	return nil
 }
 
 func (c *Client) publishUnchanged(result protocol.ChangeIPUnchangedBody) error {

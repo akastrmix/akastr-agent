@@ -108,6 +108,9 @@ func decodeCloudFixture(data []byte) error {
 			return errors.New("invalid Agent acknowledgement")
 		}
 		return nil
+	case "maintenance.check":
+		_, err := DecodeBody[struct{}](envelope)
+		return err
 	case "operation.offer":
 		_, err := DecodeOperationOffer(envelope)
 		return err

@@ -240,6 +240,7 @@ func run(arguments []string, output io.Writer) error {
 			if monitor := runtime.IPMonitor(); monitor != nil {
 				observations = monitor
 			}
+			maintenanceTriggers := make(chan struct{}, 1)
 			client, err := transportws.New(struct {
 				Endpoint              string
 				Identity              identity.Identity
@@ -250,13 +251,21 @@ func run(arguments []string, output io.Writer) error {
 				Observations          transportws.ObservationSource
 				Lifecycle             *lifecycle.Gate
 				OnReady               func() error
+				OnMaintenanceCheck    func()
 				Logger                *slog.Logger
 			}{
 				Endpoint: model.Config.Control.Endpoint, Identity: credentials,
 				Version: version, ConfigurationRevision: model.Config.ConfigurationRevision,
 				Capabilities: model.Capabilities.List(),
 				Executor:     runtime, Observations: observations,
-				Lifecycle: lifecycleGate, OnReady: onReady, Logger: logger,
+				Lifecycle: lifecycleGate, OnReady: onReady,
+				OnMaintenanceCheck: func() {
+					select {
+					case maintenanceTriggers <- struct{}{}:
+					default:
+					}
+				},
+				Logger: logger,
 			})
 			if err != nil {
 				return err
@@ -295,6 +304,7 @@ func run(arguments []string, output io.Writer) error {
 					ReleaseRoot:           releaseRoot,
 					Lifecycle:             lifecycleGate,
 					Ready:                 ready,
+					Triggers:              maintenanceTriggers,
 					CheckIdle: func() error {
 						return checkIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
 					},

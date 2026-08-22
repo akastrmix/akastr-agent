@@ -71,6 +71,40 @@ func TestRunLoopWaitsForReadyBeforePeriodicMaintenance(t *testing.T) {
 	}
 }
 
+func TestRunLoopManualTriggerSkipsInitialDelayAfterReady(t *testing.T) {
+	ready := make(chan struct{})
+	triggers := make(chan struct{}, 1)
+	called := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- RunLoop(ctx, LoopOptions{
+			ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
+			ConfigurationRevision: 1, ConfigPath: "/etc/akastr-agent/config.json",
+			ReleaseRoot: "/usr/local/lib/akastr-agent", Lifecycle: lifecycle.New(),
+			Ready: ready, Triggers: triggers, Client: loopClient{called: called},
+			InitialDelay: func() time.Duration { return time.Hour },
+			Reexec:       func(string, string, string, int64) error { return nil },
+		})
+	}()
+	triggers <- struct{}{}
+	select {
+	case <-called:
+		t.Fatal("manual maintenance checked before control readiness")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(ready)
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("manual maintenance trigger did not skip the initial delay")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("loop error=%v", err)
+	}
+}
+
 func TestReconcileOnceDoesNotReexecWhenTargetsAreCurrent(t *testing.T) {
 	called := make(chan struct{}, 1)
 	reexec := false

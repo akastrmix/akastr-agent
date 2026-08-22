@@ -156,6 +156,7 @@ func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 		Observations          ObservationSource
 		Lifecycle             *lifecycle.Gate
 		OnReady               func() error
+		OnMaintenanceCheck    func()
 		Logger                *slog.Logger
 	}{
 		Endpoint: "wss://control.example/internal/agents/ws", ConfigurationRevision: 1,
@@ -164,6 +165,29 @@ func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "nil implementation") {
 		t.Fatalf("New() error = %v, want typed nil rejection", err)
+	}
+}
+
+func TestMaintenanceCheckTriggersExistingReconciliationLoop(t *testing.T) {
+	triggered := 0
+	client := &Client{onMaintenanceCheck: func() { triggered++ }}
+	encoded, err := protocol.Encode("maintenance.check", struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := protocol.Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.handleMaintenanceCheck(envelope); err != nil {
+		t.Fatalf("handleMaintenanceCheck() error = %v", err)
+	}
+	if triggered != 1 {
+		t.Fatalf("manual maintenance triggers = %d, want 1", triggered)
+	}
+	envelope.Body = []byte(`{"unexpected":true}`)
+	if err := client.handleMaintenanceCheck(envelope); err == nil {
+		t.Fatal("maintenance.check accepted an unknown body field")
 	}
 }
 

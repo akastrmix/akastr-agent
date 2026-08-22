@@ -40,6 +40,17 @@
       }
     },
     {
+      "name": "cloud-maintenance-check",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-20.v5",
+        "message_id": "123e4567-e89b-42d3-a456-426614174199",
+        "type": "maintenance.check",
+        "sent_at": "2026-08-18T00:00:01.500Z",
+        "body": {}
+      }
+    },
+    {
       "name": "cloud-ipquality-offer",
       "direction": "cloud_to_agent",
       "message": {

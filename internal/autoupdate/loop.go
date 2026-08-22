@@ -47,6 +47,7 @@ type LoopOptions struct {
 	Ready                 <-chan struct{}
 	Client                MaintenanceClient
 	Ticks                 <-chan time.Time
+	Triggers              <-chan struct{}
 	Stage                 func(context.Context, ApplyOptions) (StagedRelease, error)
 	Runner                CommandRunner
 	CheckIdle             func() error
@@ -254,6 +255,13 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 			initial.Stop()
 			return ctx.Err()
 		case <-initial.C:
+		case <-options.Triggers:
+			if !initial.Stop() {
+				select {
+				case <-initial.C:
+				default:
+				}
+			}
 		}
 		initialTick := make(chan time.Time, 1)
 		initialTick <- time.Now()
@@ -261,6 +269,7 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 		defer ticker.Stop()
 		ticks = mergeTicks(ctx, initialTick, ticker.C)
 	}
+	ticks = mergeTriggers(ctx, ticks, options.Triggers)
 	for {
 		select {
 		case <-ctx.Done():
@@ -275,6 +284,41 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 			}
 		}
 	}
+}
+
+func mergeTriggers(ctx context.Context, ticks <-chan time.Time, triggers <-chan struct{}) <-chan time.Time {
+	if triggers == nil {
+		return ticks
+	}
+	merged := make(chan time.Time)
+	go func() {
+		defer close(merged)
+		for ticks != nil || triggers != nil {
+			var tick time.Time
+			var ok bool
+			select {
+			case <-ctx.Done():
+				return
+			case tick, ok = <-ticks:
+				if !ok {
+					ticks = nil
+					continue
+				}
+			case _, ok = <-triggers:
+				if !ok {
+					triggers = nil
+					continue
+				}
+				tick = time.Now()
+			}
+			select {
+			case merged <- tick:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return merged
 }
 
 func mergeTicks(ctx context.Context, first <-chan time.Time, later <-chan time.Time) <-chan time.Time {
