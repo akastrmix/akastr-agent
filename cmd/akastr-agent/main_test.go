@@ -26,6 +26,9 @@ func TestCheckIdleRejectsAnActiveOperation(t *testing.T) {
 	if err := checkIdle(statePath, ipStatePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
 		t.Fatalf("checkIdle error = %v, want active operation rejection", err)
 	}
+	if err := checkMaintenanceSafe(statePath, ipStatePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
+		t.Fatalf("checkMaintenanceSafe error = %v, want active operation rejection", err)
+	}
 }
 
 func TestCheckConfigValidatesRuntimeDependencies(t *testing.T) {

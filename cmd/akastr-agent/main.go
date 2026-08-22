@@ -196,7 +196,7 @@ func run(arguments []string, output io.Writer) error {
 				Credentials: credentials, ConfigPath: *configPath, ReleaseRoot: releaseRoot,
 				Lifecycle: lifecycleGate,
 				CheckIdle: func() error {
-					return checkIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
+					return checkMaintenanceSafe(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
 				},
 				Reexec: reexecAgent,
 				Logger: logger,
@@ -306,7 +306,7 @@ func run(arguments []string, output io.Writer) error {
 					Ready:                 ready,
 					Triggers:              maintenanceTriggers,
 					CheckIdle: func() error {
-						return checkIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
+						return checkMaintenanceSafe(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
 					},
 					Reexec: reexecAgent,
 					Logger: logger,
@@ -341,6 +341,20 @@ func run(arguments []string, output io.Writer) error {
 }
 
 func checkIdle(stateFile, ipStateFile string, recentLimit int) error {
+	if err := checkOperationIdle(stateFile, recentLimit); err != nil {
+		return err
+	}
+	return ipwatch.CheckIdle(ipStateFile)
+}
+
+func checkMaintenanceSafe(stateFile, ipStateFile string, recentLimit int) error {
+	if err := checkOperationIdle(stateFile, recentLimit); err != nil {
+		return err
+	}
+	return ipwatch.CheckMaintenanceSafe(ipStateFile)
+}
+
+func checkOperationIdle(stateFile string, recentLimit int) error {
 	engine, err := operation.Open(operation.Options{StateFile: stateFile, RecentLimit: recentLimit})
 	if err != nil {
 		return err
@@ -348,5 +362,5 @@ func checkIdle(stateFile, ipStateFile string, recentLimit int) error {
 	if len(engine.Snapshot().Active) != 0 {
 		return errors.New("an Agent operation is active")
 	}
-	return ipwatch.CheckIdle(ipStateFile)
+	return nil
 }

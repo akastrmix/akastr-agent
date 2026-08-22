@@ -29,6 +29,8 @@ Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`�
 
 ready WSS 会话可接收 `maintenance.check`，body 必须为空对象；`maintenance.required` 会在维护会话建立时立即唤醒同一协调，后续仍可接收 `maintenance.check`。这些消息只唤醒现有维护协调，不创建 operation、不绕过进程级更新 lease，也不表示存在或完成了更新；重复的未处理唤醒可以合并。Cloud 只向已知支持对应消息的 Agent release 发送。
 
+已持久化、可在新 ready 会话重放的待确认 IP snapshot/observation 不阻断配置切换；active operation、ChangeIP attempt 或待确认 unchanged 结果仍会阻断。
+
 `POST /internal/agents/maintenance` 独立于 WSS envelope。请求必须且只能包含 `agent_id`、`agent_version`、正整数 `configuration_revision`、`protocol`、32-byte nonce、`sent_at` 和 64-byte Ed25519 signature；时间与主控相差超过五分钟即拒绝。签名文本为以下 UTF-8 行，末尾没有换行，时间保持 Agent 发送的原文：
 
 ```text

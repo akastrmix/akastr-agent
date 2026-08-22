@@ -292,6 +292,66 @@ func TestCheckIdleIncludesPendingIPState(t *testing.T) {
 	}
 }
 
+func TestCheckMaintenanceSafeAllowsReplayableIPFacts(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "ip-state.json")
+	monitor, err := OpenMonitor(
+		filePath, &sequenceObserver{values: []string{"8.8.8.8", "8.8.4.4"}}, time.Minute, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshotID string
+	if err := monitor.step(
+		context.Background(),
+		func(snapshot protocol.IPSnapshotBody) error {
+			snapshotID = snapshot.SnapshotID
+			return errors.New("ack lost")
+		},
+		func(protocol.IPObservationBody) error { return nil },
+		func(protocol.ChangeIPUnchangedBody) error { return nil },
+	); err == nil {
+		t.Fatal("snapshot publication unexpectedly succeeded")
+	}
+	if err := CheckMaintenanceSafe(filePath); err != nil {
+		t.Fatalf("replayable pending snapshot blocked configuration maintenance: %v", err)
+	}
+	if err := CheckIdle(filePath); err == nil {
+		t.Fatal("full idle check accepted a pending snapshot")
+	}
+	if err := monitor.AckSnapshot(snapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.step(
+		context.Background(),
+		func(protocol.IPSnapshotBody) error { return nil },
+		func(protocol.IPObservationBody) error { return errors.New("ack lost") },
+		func(protocol.ChangeIPUnchangedBody) error { return nil },
+	); err == nil {
+		t.Fatal("observation publication unexpectedly succeeded")
+	}
+	if err := CheckMaintenanceSafe(filePath); err != nil {
+		t.Fatalf("replayable pending observation blocked configuration maintenance: %v", err)
+	}
+}
+
+func TestCheckMaintenanceSafeRejectsChangeIPReconciliation(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "ip-state.json")
+	monitor, err := OpenMonitor(
+		filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := monitor.ArmChange(
+		"123e4567-e89b-42d3-a456-426614174000", "8.8.8.8", time.Now(),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckMaintenanceSafe(filePath); err == nil {
+		t.Fatal("maintenance safety check accepted pending ChangeIP reconciliation")
+	}
+}
+
 func TestOpenMonitorRejectsIntervalsLongerThanFiveMinutes(t *testing.T) {
 	_, err := OpenMonitor(
 		filepath.Join(t.TempDir(), "ip-state.json"),

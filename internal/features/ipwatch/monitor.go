@@ -94,6 +94,26 @@ func CheckIdle(filePath string) error {
 	return nil
 }
 
+// CheckMaintenanceSafe permits durable IP facts that can be replayed after the
+// configuration switch, while retaining the ChangeIP execution boundary.
+func CheckMaintenanceSafe(filePath string) error {
+	snapshot := monitorSnapshot{SchemaVersion: 2}
+	found, err := state.NewJSONFile(filePath).Load(&snapshot)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if err := validateMonitorSnapshot(snapshot); err != nil {
+		return err
+	}
+	if snapshot.ChangeAttempt != nil || snapshot.PendingUnchanged != nil {
+		return errors.New("ChangeIP reconciliation is pending")
+	}
+	return nil
+}
+
 func validateMonitorSnapshot(snapshot monitorSnapshot) error {
 	if snapshot.SchemaVersion != 2 {
 		return errors.New("IP state schema is unsupported")
