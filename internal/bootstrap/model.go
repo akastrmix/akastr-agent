@@ -77,8 +77,8 @@ type ProxyProfile struct {
 }
 
 func (p Payload) Validate(expectedAgentID string) error {
-	if p.SchemaVersion != 3 && p.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("bootstrap schema_version must be 3 or %d", SchemaVersion)
+	if p.SchemaVersion != SchemaVersion {
+		return fmt.Errorf("bootstrap schema_version must be %d", SchemaVersion)
 	}
 	if p.ConfigurationRevision < 1 {
 		return errors.New("bootstrap configuration_revision must be a positive integer")
@@ -98,9 +98,8 @@ func (p Payload) Validate(expectedAgentID string) error {
 		if p.Target == nil || p.Runner != nil {
 			return errors.New("target bootstrap must contain only target configuration")
 		}
-		if (p.SchemaVersion == 3 && p.Target.ObserveIPv6 != nil) ||
-			(p.SchemaVersion == SchemaVersion && p.Target.ObserveIPv6 == nil) {
-			return errors.New("bootstrap observe_ipv6 does not match its schema")
+		if p.Target.ObserveIPv6 == nil {
+			return errors.New("bootstrap observe_ipv6 is required")
 		}
 		return p.Target.validate()
 	case "runner":

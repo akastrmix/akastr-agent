@@ -4,12 +4,30 @@ import (
 	"context"
 	"errors"
 	"net/netip"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
+
+func TestOpenMonitorRejectsObsoleteStateSchema(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "ip-state.json")
+	if err := os.WriteFile(filePath, []byte(`{"schema_version":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := OpenMonitor(
+		filePath,
+		&sequenceObserver{values: []string{"8.8.8.8"}},
+		time.Minute,
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "schema is unsupported") {
+		t.Fatalf("obsolete state schema error = %v", err)
+	}
+}
 
 type familySequenceObserver struct {
 	v4      []string

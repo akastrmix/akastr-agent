@@ -249,3 +249,10 @@ func TestPayloadValidationRejectsGenericShellAndDuplicateProfiles(t *testing.T) 
 		t.Fatal("duplicate profiles must be rejected")
 	}
 }
+
+func TestPayloadValidationRejectsObsoleteBootstrapSchema(t *testing.T) {
+	payload := Payload{SchemaVersion: 3}
+	if err := payload.Validate(testAgentID); err == nil || !strings.Contains(err.Error(), "must be 4") {
+		t.Fatalf("obsolete bootstrap schema error = %v", err)
+	}
+}

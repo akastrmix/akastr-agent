@@ -72,12 +72,6 @@ func OpenMonitor(filePath string, observer AddressObserver, interval time.Durati
 		if err := validateMonitorSnapshot(monitor.snapshot); err != nil {
 			return nil, err
 		}
-		if monitor.snapshot.SchemaVersion == 1 {
-			monitor.snapshot.SchemaVersion = 2
-			if err := monitor.file.Save(monitor.snapshot); err != nil {
-				return nil, err
-			}
-		}
 	}
 	return monitor, nil
 }
@@ -101,7 +95,7 @@ func CheckIdle(filePath string) error {
 }
 
 func validateMonitorSnapshot(snapshot monitorSnapshot) error {
-	if snapshot.SchemaVersion != 1 && snapshot.SchemaVersion != 2 {
+	if snapshot.SchemaVersion != 2 {
 		return errors.New("IP state schema is unsupported")
 	}
 	if snapshot.LastIPv4 != "" {
