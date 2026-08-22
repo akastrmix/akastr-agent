@@ -96,15 +96,15 @@ Akastr Agent <release-version> installed successfully.
 主要路径：
 
 ```text
-/etc/akastr-agent/config.json
 /etc/akastr-agent/identity.json
-/var/lib/akastr-agent/
+/var/lib/akastr-agent/configurations/<configuration-revision>/
 /usr/local/lib/akastr-agent/releases/<release-version>/
+/usr/local/lib/akastr-agent/deployments/<release-version>-r<configuration-revision>/
 /usr/local/lib/akastr-agent/current
 /etc/systemd/system/akastr-agent.service
 ```
 
-HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/etc/akastr-agent/proxy-profiles.json` 与 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。固定程序由操作者在节点上管理，安装器不会写入或卸载。配置与 secret 文件权限为 `0600`，配置和状态目录为 root-only。唯一主进程可以写 `/var/lib/akastr-agent` 与自己的 release root；固定程序所在的其他系统目录在 `ProtectSystem=strict` 下只读，home 目录不对 service 开放。
+每个 revision 目录包含 `config.json`，HTTP ChangeIP 另含 `changeip-curl.conf`，Runner 另含 `proxy-profiles.json`；Runner 脚本位于 `/usr/local/lib/akastr-agent/ipquality/ip.sh`。固定程序由操作者在节点上管理，安装器不会写入或卸载。配置与 secret 文件权限为 `0600`，配置和状态目录为 root-only。唯一主进程可以写 `/var/lib/akastr-agent` 与自己的 release root；固定程序所在的其他系统目录在 `ProtectSystem=strict` 下只读，home 目录不对 service 开放。
 
 ## 5. 安装后验收
 
@@ -114,8 +114,8 @@ HTTP ChangeIP 另有 `/etc/akastr-agent/changeip-curl.conf`；Runner 另有 `/et
 systemctl is-active akastr-agent.service
 systemctl show akastr-agent.service --property=MainPID,ActiveState,SubState,NRestarts
 /usr/local/lib/akastr-agent/current/akastr-agent version
-/usr/local/lib/akastr-agent/current/akastr-agent check-config --config /etc/akastr-agent/config.json
-/usr/local/lib/akastr-agent/current/akastr-agent capabilities --config /etc/akastr-agent/config.json
+/usr/local/lib/akastr-agent/current/akastr-agent check-config --config /usr/local/lib/akastr-agent/current/config/config.json
+/usr/local/lib/akastr-agent/current/akastr-agent capabilities --config /usr/local/lib/akastr-agent/current/config/config.json
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
@@ -141,13 +141,13 @@ systemctl restart akastr-agent.service
 
 ## 7. 更新、状态与卸载
 
-正常情况下不需要手动更新：Agent 首次完成控制通道 readiness 后等待 1–5 分钟随机延迟，再每六小时检查一次批准版本。执行中的 command 会阻止更新；更新持锁时新 offer 留在主控等待，不会关闭健康连接。新 binary 先下载到独立 release 并验证，再作为 trial 原位执行；只有 45 秒内重新完成 WSS readiness 才提交并 fsync `current`，否则 systemd 仍从旧 `current` 重启。提交后保留当前与前一 release。
+正常情况下不需要手动更新或重新运行安装命令来应用普通配置修改。Agent 每次启动在 WSS 前先检查批准的软件与 desired 配置，ready 后等待 1–5 分钟随机延迟并每六小时复查。执行中的 command 会阻止协调；candidate binary 先验证并物化 revision 配置、向主控提交 capability acceptance，再把 binary/config 组成一个 deployment 试运行。只有 45 秒内重新完成 WSS readiness 才提交并 fsync `current`，否则 systemd 从旧 deployment 重启。
 
 ```bash
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-Agent 不提供 `--update` 或本地回退 CLI。trial 失败不会改变 `current`；提交后的旧 release 清理失败只记录告警。需要人工修复时，运行后台的一键命令；配置 schema 的破坏性变化也通过完整重装而非自动更新完成。
+Agent 不提供 `--update` 或本地回退 CLI。trial 失败不会改变 `current`；提交后保留 current 与 previous deployment。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。需要人工修复时，重新运行后台的一键命令。
 
 日常状态直接从 systemd 读取，不需要再次下载安装器或使用机器 token：
 
@@ -185,10 +185,8 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 | enrollment 返回 `agent_configuration_stale` | 本地配置 revision 已过期；执行“修改配置”返回的新安装命令 |
 | service 启动超时 | WSS auth 或 hello 未完成；查看唯一主 service 日志，修复主控、网络或 identity 问题后重跑同一安装命令 |
 | service 反复重启 | 查看 `systemctl show`、`journalctl` 并运行 `check-config`；不要删除 state 逃避错误 |
-| 日志出现 `update_check_failed` | 主控或网络暂时不可用；运行版本继续工作，下一个六小时周期重试 |
-| 日志出现 `update_stage_failed` | 下载、版本、配置或内部完整性验证失败；`current` 未改变，不要跳过校验 |
-| 日志出现 `update_reexec_failed` | trial 进程替换失败；`current` 未改变，保留日志并重跑后台一键安装命令 |
-| 日志出现 `update_cleanup_failed` | 新版本已提交，但第三个及更旧 release 未完全清理；保留 current/previous 并检查文件权限或磁盘 |
+| 日志出现 `maintenance_reconciliation_failed` | 主控、网络、软件校验、配置物化或 acceptance 失败；`current` 未改变，查看相邻日志并修复根因 |
+| 日志出现 `update_cleanup_failed` | 新 deployment 已提交，但更旧 deployment 未完全清理；保留 current/previous 并检查文件权限或磁盘 |
 
 ## 9. 维护者发布版本
 

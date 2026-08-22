@@ -22,6 +22,8 @@ var changeIPCommandInterpreters = map[string]struct{}{
 
 var changeIPCommandHiddenRoots = []string{"/home", "/root", "/run/user", "/tmp", "/var/tmp"}
 
+var reconciledSecretPath = regexp.MustCompile(`^/var/lib/akastr-agent/configurations/[1-9][0-9]*/(changeip-curl\.conf|proxy-profiles\.json)$`)
+
 type Config struct {
 	SchemaVersion         int                `json:"schema_version"`
 	ConfigurationRevision int64              `json:"configuration_revision"`
@@ -187,7 +189,8 @@ func validateCapabilities(capabilities CapabilitiesConfig) error {
 				return errors.New("capabilities.change_ip HTTP provider program is invalid")
 			}
 			if len(capabilities.ChangeIP.Args) != 2 || capabilities.ChangeIP.Args[0] != "--config" ||
-				capabilities.ChangeIP.Args[1] != "/etc/akastr-agent/changeip-curl.conf" {
+				(capabilities.ChangeIP.Args[1] != "/etc/akastr-agent/changeip-curl.conf" &&
+					!reconciledSecretPath.MatchString(capabilities.ChangeIP.Args[1])) {
 				return errors.New("capabilities.change_ip curl provider configuration is invalid")
 			}
 		} else if err := ValidateChangeIPCommandProgram(capabilities.ChangeIP.Program); err != nil {

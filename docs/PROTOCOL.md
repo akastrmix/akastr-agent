@@ -25,20 +25,25 @@ akastr-agent-auth-v1
 
 Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version`、本地正整数 `configuration_revision` 与 capability。Cloud 要求 hello revision 同时精确等于 desired/applied，才返回 `hello.accepted` 并使连接进入 ready；同协议旧 release 可以进入 ready 后使用签名更新接口。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
 
-## 自动更新检查
+## 自动维护与配置协调
 
-`POST /internal/agents/update` 是独立于 WSS envelope 的只读长期合同。请求必须且只能包含 `agent_id`、`agent_version`、`protocol`、32-byte nonce、`sent_at` 和 64-byte Ed25519 signature；时间与主控相差超过五分钟即拒绝。签名文本为以下 UTF-8 行，末尾没有换行，时间保持 Agent 发送的原文：
+`POST /internal/agents/maintenance` 独立于 WSS envelope。请求必须且只能包含 `agent_id`、`agent_version`、正整数 `configuration_revision`、`protocol`、32-byte nonce、`sent_at` 和 64-byte Ed25519 signature；时间与主控相差超过五分钟即拒绝。签名文本为以下 UTF-8 行，末尾没有换行，时间保持 Agent 发送的原文：
 
 ```text
-akastr-agent-update-check-v1
+akastr-agent-maintenance-check-v1
 <agent_id>
 <agent_version>
+<configuration_revision>
 <protocol>
 <nonce>
 <sent_at>
 ```
 
-主控使用当前 active identity 验签，并返回严格的 `akastr-agent-update.v1` manifest：`status`、目标 `version`、相同 WSS `protocol`、精确 immutable `binary_url` 和内部 `binary_sha256`。`status` 只有 `current`、`busy` 或 `update_available`；存在 pending/offered/accepted command 时只能返回 `busy`。该接口不接收机器 token、不修改数据库，也不允许降级或跨 WSS 协议更新。
+主控返回严格的 `akastr-agent-maintenance.v1` 原子目标：顶层 `status`，以及完整 `software` 和 `configuration`。软件目标包含状态、批准语义版本、相同 WSS protocol、精确 immutable URL 和 SHA-256；配置目标包含状态、desired revision、bootstrap schema 与最低 Agent 版本。目标不允许软件降级、配置 revision 回退或跨 WSS 协议更新；存在未终结 command、active ChangeIP 或运行中的目标 IPQuality 时只能返回 `busy`。
+
+配置目标可用时，Agent 对 `akastr-agent-configuration-fetch-v1`、`agent_id`、desired revision、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration`。主控以内存解封既有密封 bootstrap，返回严格的 `akastr-agent-configuration.v1`，不建立第二份明文配置持久化。目标二进制必须先严格解析并物化该 bootstrap，再从 candidate 配置生成 capability。
+
+物化成功后，Agent 对 `akastr-agent-configuration-accept-v1`、`agent_id`、candidate 版本、revision、规范 capability JSON 的 SHA-256、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration/accept`，请求体同时包含 capability。主控重新校验当前 desired revision、最低版本、角色能力、配置参数与空闲状态后推进 applied revision。maintenance/fetch/accept 均只使用 active Ed25519 identity，不接收机器 token。
 
 ## Operation
 
@@ -93,7 +98,7 @@ Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`
 
 - 协议固定为 `2026-08-20.v5`，不自动降级，也不接受协议之外的字段。
 - SOCKS5 capability 只允许 `port`，不接受地址来源或自定义主机名字段。
-- bootstrap/enrollment 使用机器 token，WSS 与自动更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
+- bootstrap/enrollment 使用机器 token，WSS 与自动维护/配置协调只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、维护请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
 - capability list、journal 和日志不得含密码或脚本输出。
 - 公网 IPv4 字段拒绝 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。

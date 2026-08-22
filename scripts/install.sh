@@ -12,6 +12,7 @@ RUNNER_COMMANDS='/bin/bash bc curl dig ip jq nc'
 
 CONFIG_DIR=/etc/akastr-agent
 STATE_DIR=/var/lib/akastr-agent
+CONFIGURATION_ROOT=$STATE_DIR/configurations
 RELEASE_ROOT=/usr/local/lib/akastr-agent
 SERVICE_FILE=/etc/systemd/system/akastr-agent.service
 
@@ -21,6 +22,7 @@ service_stopped=false
 installation_complete=false
 machine_token_installed=false
 reuse_ipquality=false
+configuration_staging=''
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -33,6 +35,9 @@ cleanup() {
   fi
   if [ -n "$temporary" ] && [ -d "$temporary" ]; then
     rm -rf -- "$temporary" || true
+  fi
+  if [ -n "$configuration_staging" ] && [ -d "$configuration_staging" ]; then
+    rm -rf -- "$configuration_staging" || true
   fi
   if [ "$cleanup_status" -ne 0 ] && [ "$service_stopped" = true ] && [ "$installation_complete" != true ]; then
     printf 'Error: Agent operation is incomplete; fix the reported error and rerun the same command.\n' >&2
@@ -146,6 +151,12 @@ read_config_agent_id() {
     | sed -n '1p'
 }
 
+read_config_revision() {
+  LC_ALL=C tr -d '[:space:]' < "$1" \
+    | sed -n 's/^.*"configuration_revision":\([1-9][0-9]*\),.*$/\1/p' \
+    | sed -n '1p'
+}
+
 version_is_newer() {
   left=${1#v}
   right=${2#v}
@@ -160,7 +171,10 @@ version_is_newer() {
 inspect_existing_install() {
   requested_id=$1
   existing_identity="$CONFIG_DIR/identity.json"
-  existing_config="$CONFIG_DIR/config.json"
+  existing_config="$RELEASE_ROOT/current/config/config.json"
+  if [ ! -f "$existing_config" ]; then
+    existing_config="$CONFIG_DIR/config.json"
+  fi
   existing_binary="$RELEASE_ROOT/current/akastr-agent"
   identity_id=''
   config_id=''
@@ -189,7 +203,7 @@ inspect_existing_install() {
   fi
 
   if [ -e "$existing_binary" ] || [ -L "$existing_binary" ]; then
-    [ -f "$existing_binary" ] && [ ! -L "$existing_binary" ] && [ -x "$existing_binary" ] \
+    [ -f "$existing_binary" ] && [ -x "$existing_binary" ] \
       || fail "existing Agent binary is not a regular executable: $existing_binary"
     existing_version=$($existing_binary version)
     printf '%s\n' "$existing_version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
@@ -263,7 +277,7 @@ prepare_ipquality() {
 maintenance_safe_check() {
   maintenance_binary=$1
   maintenance_config=$2
-  [ -f "$maintenance_binary" ] && [ ! -L "$maintenance_binary" ] && [ -x "$maintenance_binary" ] \
+  [ -f "$maintenance_binary" ] && [ -x "$maintenance_binary" ] \
     || fail "maintenance check binary is not a regular executable: $maintenance_binary"
   [ -f "$maintenance_config" ] && [ ! -L "$maintenance_config" ] \
     || fail "maintenance check config is not a regular file: $maintenance_config"
@@ -281,7 +295,7 @@ Wants=network-online.target
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=/usr/local/lib/akastr-agent/current/akastr-agent run --config /etc/akastr-agent/config.json
+ExecStart=/usr/local/lib/akastr-agent/current/akastr-agent run --config /usr/local/lib/akastr-agent/current/config/config.json
 Restart=always
 RestartSec=5s
 TimeoutStartSec=45s
@@ -305,6 +319,54 @@ WantedBy=multi-user.target
 UNIT
   install -m 0644 "$service_temporary" "$SERVICE_FILE"
   systemctl daemon-reload
+}
+
+prepare_revision_configuration() {
+  source_dir=$1
+  install_mode=$2
+  configuration_revision=$(read_config_revision "$source_dir/config.json")
+  [ -n "$configuration_revision" ] || fail 'bootstrap configuration revision is invalid'
+  configuration_dir="$CONFIGURATION_ROOT/$configuration_revision"
+
+  install -d -m 0700 "$STATE_DIR" "$CONFIGURATION_ROOT"
+  [ -d "$CONFIGURATION_ROOT" ] && [ ! -L "$CONFIGURATION_ROOT" ] \
+    || fail 'managed configuration root is unsafe'
+  configuration_staging="$CONFIGURATION_ROOT/.configuration.$$"
+  [ ! -e "$configuration_staging" ] && [ ! -L "$configuration_staging" ] \
+    || fail 'managed configuration staging path already exists'
+  install -d -m 0700 "$configuration_staging"
+  install -m 0600 "$source_dir/config.json" "$configuration_staging/config.json"
+  install -m 0600 "$source_dir/.bootstrap-sha256" "$configuration_staging/.bootstrap-sha256"
+  expected_files=2
+  if [ -f "$source_dir/changeip-curl.conf" ]; then
+    install -m 0600 "$source_dir/changeip-curl.conf" "$configuration_staging/changeip-curl.conf"
+    expected_files=$((expected_files + 1))
+  fi
+  if [ "$install_mode" = runner ]; then
+    install -m 0600 "$source_dir/proxy-profiles.json" "$configuration_staging/proxy-profiles.json"
+    expected_files=$((expected_files + 1))
+  fi
+
+  if [ -e "$configuration_dir" ] || [ -L "$configuration_dir" ]; then
+    [ -d "$configuration_dir" ] && [ ! -L "$configuration_dir" ] \
+      || fail 'existing managed configuration revision is unsafe'
+    actual_files=$(find "$configuration_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')
+    [ "$actual_files" -eq "$expected_files" ] \
+      || fail 'existing managed configuration revision has unexpected files'
+    for name in config.json .bootstrap-sha256 changeip-curl.conf proxy-profiles.json; do
+      if [ -f "$configuration_staging/$name" ]; then
+        [ -f "$configuration_dir/$name" ] && [ ! -L "$configuration_dir/$name" ] \
+          && cmp -s "$configuration_staging/$name" "$configuration_dir/$name" \
+          || fail 'existing managed configuration revision differs from the desired bootstrap'
+      fi
+    done
+    rm -rf -- "$configuration_staging"
+  else
+    sync
+    mv -- "$configuration_staging" "$configuration_dir"
+    sync
+  fi
+  configuration_staging=''
 }
 
 fresh_install() {
@@ -337,6 +399,7 @@ fresh_install() {
       --agent-id "$agent_id" \
       --endpoint "$bootstrap_endpoint" \
       --token-file "$token_file" \
+      --configuration-root "$CONFIGURATION_ROOT" \
       --output-dir "$bootstrap_dir"
   )
   case "$bootstrap_result" in
@@ -347,44 +410,42 @@ fresh_install() {
 
   install_packages "$install_mode"
   prepare_ipquality
+  prepare_revision_configuration "$bootstrap_dir" "$install_mode"
 
-  maintenance_safe_check "$binary_path" "$bootstrap_dir/config.json"
+  maintenance_safe_check "$binary_path" "$configuration_dir/config.json"
   stop_agent_service
-  maintenance_safe_check "$binary_path" "$bootstrap_dir/config.json"
+  maintenance_safe_check "$binary_path" "$configuration_dir/config.json"
 
   release_dir="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION"
   install -d -m 0700 "$CONFIG_DIR" "$STATE_DIR"
   install -d -m 0755 "$release_dir"
   install -m 0755 "$binary_path" "$release_dir/.akastr-agent.$$"
   mv -f -- "$release_dir/.akastr-agent.$$" "$release_dir/akastr-agent"
-  install -m 0600 "$bootstrap_dir/config.json" "$CONFIG_DIR/config.json"
   install -m 0600 "$bootstrap_dir/machine-token" "$CONFIG_DIR/machine-token"
   machine_token_installed=true
   if [ -n "$preserved_identity" ]; then
     install -m 0600 "$preserved_identity" "$CONFIG_DIR/identity.json"
   fi
-  if [ -f "$bootstrap_dir/changeip-curl.conf" ]; then
-    install -m 0600 "$bootstrap_dir/changeip-curl.conf" "$CONFIG_DIR/changeip-curl.conf"
-  else
-    rm -f -- "$CONFIG_DIR/changeip-curl.conf"
-  fi
   if [ "$install_mode" = 'runner' ]; then
-    install -m 0600 "$bootstrap_dir/proxy-profiles.json" "$CONFIG_DIR/proxy-profiles.json"
     if [ "$reuse_ipquality" != true ]; then
       install -d -m 0755 "$RELEASE_ROOT/ipquality"
       install -m 0755 "$ipquality_path" "$RELEASE_ROOT/ipquality/ip.sh"
     fi
-  else
-    rm -f -- "$CONFIG_DIR/proxy-profiles.json"
   fi
+  deployments_root="$RELEASE_ROOT/deployments"
+  deployment_dir="$deployments_root/$AGENT_RELEASE_VERSION-r$configuration_revision"
+  install -d -m 0755 "$deployments_root" "$deployment_dir"
+  rm -f -- "$deployment_dir/akastr-agent" "$deployment_dir/config"
+  ln -s "$release_dir/akastr-agent" "$deployment_dir/akastr-agent"
+  ln -s "$configuration_dir" "$deployment_dir/config"
   current_temporary="$RELEASE_ROOT/.current.$$"
   rm -f -- "$current_temporary"
-  ln -s "$release_dir" "$current_temporary"
+  ln -s "$deployment_dir" "$current_temporary"
   mv -Tf -- "$current_temporary" "$RELEASE_ROOT/current"
 
-  "$RELEASE_ROOT/current/akastr-agent" check-config --config "$CONFIG_DIR/config.json"
+  "$RELEASE_ROOT/current/akastr-agent" check-config --config "$RELEASE_ROOT/current/config/config.json"
   write_service_unit
-  if "$RELEASE_ROOT/current/akastr-agent" enroll --config "$CONFIG_DIR/config.json"; then
+  if "$RELEASE_ROOT/current/akastr-agent" enroll --config "$RELEASE_ROOT/current/config/config.json"; then
     :
   else
     enrollment_code=$?
@@ -407,6 +468,11 @@ fresh_install() {
   systemctl is-active --quiet akastr-agent.service \
     || fail 'the Agent service did not reach control-plane readiness'
 
+  rm -f -- \
+    "$CONFIG_DIR/config.json" \
+    "$CONFIG_DIR/changeip-curl.conf" \
+    "$CONFIG_DIR/proxy-profiles.json"
+
   installation_complete=true
   say "Akastr Agent $AGENT_RELEASE_VERSION installed successfully."
 }
@@ -422,10 +488,10 @@ uninstall_existing() {
   [ "$#" -eq 1 ] || fail 'invalid uninstall arguments'
 
   maintenance_binary="$RELEASE_ROOT/current/akastr-agent"
-  maintenance_config="$CONFIG_DIR/config.json"
+  maintenance_config="$RELEASE_ROOT/current/config/config.json"
   complete_runtime=false
-  if [ -f "$maintenance_binary" ] && [ ! -L "$maintenance_binary" ] && [ -x "$maintenance_binary" ] \
-      && [ -f "$maintenance_config" ] && [ ! -L "$maintenance_config" ]; then
+  if [ -f "$maintenance_binary" ] && [ -x "$maintenance_binary" ] \
+      && [ -f "$maintenance_config" ]; then
     complete_runtime=true
     maintenance_safe_check "$maintenance_binary" "$maintenance_config"
   fi

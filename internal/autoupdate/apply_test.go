@@ -67,7 +67,11 @@ func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 	if current != previous {
 		t.Fatalf("stage changed current to %s", current)
 	}
-	result, err := Commit(CommitOptions{Version: staged.Version, ReleaseRoot: root})
+	deployment, err := StageDeployment(root, staged.Version, 1, filepath.Join(root, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Commit(CommitOptions{Version: staged.Version, ConfigurationRevision: 1, ReleaseRoot: root})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,14 +82,14 @@ func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current != filepath.Join(root, "releases", "v0.7.1") {
+	if current != deployment {
 		t.Fatalf("unexpected activation current=%s", current)
 	}
 	if _, err := os.Stat(previous); err != nil {
 		t.Fatal("previous release was not retained")
 	}
-	if _, err := os.Stat(filepath.Join(root, "releases", "v0.5.0")); !os.IsNotExist(err) {
-		t.Fatal("stale third release was not removed")
+	if _, err := os.Stat(filepath.Join(root, "deployments", "v0.5.0-r1")); !os.IsNotExist(err) {
+		t.Fatal("stale third deployment was not removed")
 	}
 }
 
@@ -94,16 +98,20 @@ func TestCommitNeverDeletesTargetAfterRenameWhenDirectorySyncFails(t *testing.T)
 		t.Skip("symlink release activation is Linux-only")
 	}
 	root, previous := releaseFixture(t)
-	target := filepath.Join(root, "releases", "v0.7.1")
-	if err := os.Mkdir(target, 0o755); err != nil {
+	targetRelease := filepath.Join(root, "releases", "v0.7.1")
+	if err := os.Mkdir(targetRelease, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(target, "akastr-agent"), []byte("future"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(targetRelease, "akastr-agent"), []byte("future"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target, err := StageDeployment(root, "v0.7.1", 1, filepath.Join(root, "config.json"))
+	if err != nil {
 		t.Fatal(err)
 	}
 	want := errors.New("fsync failed")
 	result, err := Commit(CommitOptions{
-		Version: "v0.7.1", ReleaseRoot: root,
+		Version: "v0.7.1", ConfigurationRevision: 1, ReleaseRoot: root,
 		SyncDirectory: func(string) error { return want },
 	})
 	if !errors.Is(err, want) || !result.Committed {
@@ -152,17 +160,25 @@ func releaseFixture(t *testing.T) (string, string) {
 	t.Helper()
 	root := t.TempDir()
 	releases := filepath.Join(root, "releases")
-	previous := filepath.Join(releases, "v0.7.0")
-	if err := os.MkdirAll(previous, 0o755); err != nil {
+	previousRelease := filepath.Join(releases, "v0.7.0")
+	if err := os.MkdirAll(previousRelease, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(filepath.Join(releases, "v0.5.0"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(previous, filepath.Join(root, "current")); err != nil {
+	if err := os.WriteFile(filepath.Join(previousRelease, "akastr-agent"), []byte("current"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := StageDeployment(root, "v0.7.0", 1, filepath.Join(root, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(root, "deployments", "v0.5.0-r1")
+	if err := os.Mkdir(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(previous, filepath.Join(root, "current")); err != nil {
 		t.Fatal(err)
 	}
 	return root, previous
@@ -170,9 +186,14 @@ func releaseFixture(t *testing.T) (string, string) {
 
 func manifestForApply(checksum string) Manifest {
 	return Manifest{
-		Schema: Schema, Status: "update_available", Version: "v0.7.1",
-		Protocol:     protocol.Version,
-		BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v0.7.1/akastr-agent-linux-amd64",
-		BinarySHA256: checksum,
+		Schema: Schema, Status: "update_available",
+		Software: SoftwareTarget{
+			Status: "update_available", Version: "v0.7.1", Protocol: protocol.Version,
+			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v0.7.1/akastr-agent-linux-amd64",
+			BinarySHA256: checksum,
+		},
+		Configuration: ConfigurationTarget{
+			Status: "current", Revision: 1, SchemaVersion: 3, MinimumAgentVersion: "v0.7.1",
+		},
 	}
 }

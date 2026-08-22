@@ -88,7 +88,7 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 后台的一键命令描述节点的期望安装状态，可用于空白主机、同节点覆盖安装和残缺安装修复。覆盖安装先核对已有 identity/config 的节点 ID 和已装版本；不同节点或降级直接拒绝。installer 复用摘要正确的同版本 binary 和 Runner 脚本，在停止唯一 `akastr-agent.service` 前完成其余下载、bootstrap、依赖与 maintenance-safe 检查，停止后再对稳定状态检查并写入新配置。配置 revision 已前进时旧配置不能重新 ready，因此本机不维护目录或 unit 回滚事务；后续失败保留可重跑状态，由同一命令 fix-forward。同节点 identity 会复制到新配置并用新 configuration revision 重新 enrollment，不重新生成 private key。主控在未完成 command、active ChangeIP session 或目标 IPQuality run 存在时拒绝配置更新和注册。
 
-自动更新不由 GitHub `latest` 驱动。主进程首次完成 WSS readiness 后等待 1–5 分钟随机抖动，再按六小时周期使用当前 Ed25519 identity检查 Cloud 批准的同协议前向版本。取得 exclusive update lease 后，新 binary 下载、digest、版本与当前配置验证完成，只写入不可变 release 目录，不先改变 `current`；持锁期间的 offer 被静默延后，不关闭健康连接。进程带有一次性 trial 环境标记原位执行新 binary；它必须在 45 秒内重新完成 WSS auth/hello，才会原子替换并 fsync `current`。失败时 systemd 仍从旧 `current` 重启。提交后保留 current 与 previous 两个 release；多余 release 清理失败只记录告警，不撤销已提交版本。
+自动维护不由 GitHub `latest` 驱动。主进程在建立 WSS 前先使用 Ed25519 identity 协调 Cloud 批准的软件与配置目标，ready 后等待 1–5 分钟随机抖动并每六小时复查。取得 exclusive update lease 后，candidate binary 写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录，生成 capability 并由主控 accept。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；45 秒内重新完成 WSS auth/hello 后才原子替换并 fsync `current`。失败时 systemd 仍从旧 deployment 重启；清理只保留 current 与 previous deployment。
 
 正式版本由 AkastrCloud 仓库的同步发布入口生成。发布器先验证并推送 Agent `main` 与不可变标签，等待 GitHub Release 的两个精确资产并核对 binary 版本与内部摘要，再提交 Cloud 的唯一更新目标并走正常 backend 发布。该顺序允许同一版本在任一阶段中断后续跑，但不会覆盖已发布资产或让 Cloud 指向尚未验真的 binary。
 

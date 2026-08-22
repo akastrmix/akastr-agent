@@ -56,16 +56,19 @@ case "${1:-}" in
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --output-dir) output=$2; shift 2 ;;
-        --agent-id|--endpoint|--token-file) shift 2 ;;
+        --agent-id|--endpoint|--token-file|--configuration-root) shift 2 ;;
         *) echo "unexpected bootstrap argument: $1" >&2; exit 2 ;;
       esac
     done
     [ -n "$output" ] || exit 2
+    revision=2
+    [ "${AKASTR_TEST_MODE:-target}" != runner ] || revision=3
     mkdir -p "$output"
     cat > "$output/config.json" <<EOF
-{"schema_version":3,"configuration_revision":2,"node":{"id":"$AKASTR_AGENT_ID","name":"fixture"},"control":{}}
+{"schema_version":3,"configuration_revision":$revision,"node":{"id":"$AKASTR_AGENT_ID","name":"fixture"},"control":{}}
 EOF
     printf '%s\n' 'fixture-machine-token' > "$output/machine-token"
+    printf '%064d\n' 0 > "$output/.bootstrap-sha256"
     if [ "${AKASTR_TEST_MODE:-target}" = runner ]; then
       printf '%s\n' '{}' > "$output/proxy-profiles.json"
       echo 'bootstrap_mode=runner'
@@ -227,11 +230,24 @@ assert_count() {
 run_install target >/dev/null
 [ "$(cat "$test_root/systemd-state")" = active ]
 [ -f /etc/akastr-agent/identity.json ]
+[ -f /var/lib/akastr-agent/configurations/2/config.json ]
 [ -L /usr/local/lib/akastr-agent/current ]
+[ "$(readlink /usr/local/lib/akastr-agent/current/config)" = /var/lib/akastr-agent/configurations/2 ]
 assert_count 1 'akastr-agent-linux-amd64' "$test_root/curl.log"
 
 run_install target >/dev/null
 assert_count 1 'akastr-agent-linux-amd64' "$test_root/curl.log"
+[ -f /var/lib/akastr-agent/configurations/2/config.json ]
+
+cp /var/lib/akastr-agent/configurations/2/config.json "$test_root/config.json.clean"
+printf ' ' >> /var/lib/akastr-agent/configurations/2/config.json
+if mismatch_output=$(run_install target 2>&1); then
+  echo 'mismatched immutable configuration revision unexpectedly succeeded' >&2
+  exit 1
+fi
+printf '%s\n' "$mismatch_output" | grep -Fq 'differs from the desired bootstrap'
+cp "$test_root/config.json.clean" /var/lib/akastr-agent/configurations/2/config.json
+[ "$(cat "$test_root/systemd-state")" = active ]
 
 echo failed > "$test_root/systemd-state"
 run_install target >/dev/null
@@ -253,7 +269,10 @@ run_install target >/dev/null
 [ "$(cat "$test_root/systemd-state")" = active ]
 
 run_install runner >/dev/null
-[ -f /etc/akastr-agent/proxy-profiles.json ]
+[ -f /var/lib/akastr-agent/configurations/3/proxy-profiles.json ]
+[ -f /var/lib/akastr-agent/configurations/2/config.json ]
+[ ! -e /var/lib/akastr-agent/configurations/2/proxy-profiles.json ]
+[ "$(readlink /usr/local/lib/akastr-agent/current/config)" = /var/lib/akastr-agent/configurations/3 ]
 [ -x /usr/local/lib/akastr-agent/ipquality/ip.sh ]
 assert_count 1 '^update$' "$test_root/apt.log"
 assert_count 1 '^install ' "$test_root/apt.log"
@@ -269,6 +288,33 @@ sh "$installer" --uninstall --confirm-destroy-local-agent >/dev/null
 [ ! -e /var/lib/akastr-agent ]
 [ ! -e /usr/local/lib/akastr-agent ]
 [ ! -e /etc/systemd/system/akastr-agent.service ]
+
+mkdir -p /etc/akastr-agent /usr/local/lib/akastr-agent/releases/v9.9.8
+chmod 0700 /etc/akastr-agent
+cp "$test_root/fake-agent" /usr/local/lib/akastr-agent/releases/v9.9.8/akastr-agent
+ln -s /usr/local/lib/akastr-agent/releases/v9.9.8 /usr/local/lib/akastr-agent/current
+cat > /etc/akastr-agent/identity.json <<EOF
+{"schema_version":2,"enrollment_state":"confirmed","agent_id":"$agent_id","public_key":"fixture-public","private_key":"fixture-private"}
+EOF
+cat > /etc/akastr-agent/config.json <<EOF
+{"schema_version":3,"configuration_revision":1,"node":{"id":"$agent_id","name":"legacy"},"control":{}}
+EOF
+printf '%s\n' 'legacy-provider-secret' > /etc/akastr-agent/changeip-curl.conf
+printf '%s\n' 'legacy-runner-secret' > /etc/akastr-agent/proxy-profiles.json
+chmod 0600 /etc/akastr-agent/*
+printf '%s\n' '[Service]' > /etc/systemd/system/akastr-agent.service
+: > "$test_root/systemd-enabled"
+echo active > "$test_root/systemd-state"
+
+run_install target >/dev/null
+[ -f /etc/akastr-agent/identity.json ]
+[ ! -e /etc/akastr-agent/config.json ]
+[ ! -e /etc/akastr-agent/changeip-curl.conf ]
+[ ! -e /etc/akastr-agent/proxy-profiles.json ]
+[ -f /var/lib/akastr-agent/configurations/2/config.json ]
+[ "$(readlink /usr/local/lib/akastr-agent/current/config)" = /var/lib/akastr-agent/configurations/2 ]
+
+sh "$installer" --uninstall --confirm-destroy-local-agent >/dev/null
 sh "$installer" --uninstall --confirm-destroy-local-agent >/dev/null
 
 printf 'installer_container_integration_ok version=%s\n' "$(. /etc/os-release; printf '%s' "$VERSION_ID")"

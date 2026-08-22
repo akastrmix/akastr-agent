@@ -44,7 +44,7 @@ func main() {
 
 func run(arguments []string, output io.Writer) error {
 	if len(arguments) == 0 {
-		return errors.New("expected one of: bootstrap, run, enroll, check-config, check-idle, capabilities, version")
+		return errors.New("expected one of: bootstrap, materialize-configuration, validate-configuration, run, enroll, check-config, check-idle, capabilities, version")
 	}
 	switch arguments[0] {
 	case "version":
@@ -60,6 +60,7 @@ func run(arguments []string, output io.Writer) error {
 		endpoint := flags.String("endpoint", "", "HTTPS bootstrap endpoint")
 		tokenFile := flags.String("token-file", "", "root-only machine token file")
 		outputDir := flags.String("output-dir", "", "empty root-only output directory")
+		configurationRoot := flags.String("configuration-root", "", "managed configuration revision root")
 		if err := flags.Parse(arguments[1:]); err != nil {
 			return err
 		}
@@ -70,7 +71,7 @@ func run(arguments []string, output io.Writer) error {
 		defer cancel()
 		payload, err := bootstrap.FetchAndWrite(ctx, bootstrap.FetchOptions{
 			Endpoint: *endpoint, AgentID: *agentID, TokenFile: *tokenFile,
-			OutputDir: *outputDir, IPQVersion: bootstrap.IPQualityVersion,
+			OutputDir: *outputDir, ConfigurationRoot: *configurationRoot, IPQVersion: bootstrap.IPQualityVersion,
 			IPQSHA256: bootstrap.IPQualitySHA256,
 		})
 		if err != nil {
@@ -78,7 +79,38 @@ func run(arguments []string, output io.Writer) error {
 		}
 		_, err = fmt.Fprintf(output, "bootstrap_mode=%s\n", payload.Mode)
 		return err
-	case "run", "enroll", "check-config", "check-idle", "capabilities":
+	case "materialize-configuration":
+		flags := flag.NewFlagSet("materialize-configuration", flag.ContinueOnError)
+		flags.SetOutput(io.Discard)
+		inputPath := flags.String("input", "", "root-only bootstrap payload file")
+		outputDir := flags.String("output-dir", "", "empty root-only configuration directory")
+		runtimeDir := flags.String("runtime-dir", "", "final managed configuration directory")
+		agentID := flags.String("agent-id", "", "persistent node UUID")
+		revision := flags.Int64("revision", 0, "desired configuration revision")
+		if err := flags.Parse(arguments[1:]); err != nil {
+			return err
+		}
+		if flags.NArg() != 0 || *inputPath == "" || *runtimeDir == "" {
+			return errors.New("materialize-configuration arguments are incomplete")
+		}
+		info, err := os.Stat(*inputPath)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+			return errors.New("configuration input must be a root-only regular file")
+		}
+		raw, err := os.ReadFile(*inputPath)
+		if err != nil {
+			return err
+		}
+		if len(raw) == 0 || len(raw) > 128*1024 {
+			return errors.New("configuration input size is invalid")
+		}
+		payload, err := bootstrap.MaterializeConfiguration(*outputDir, *runtimeDir, raw, *agentID, *revision)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(output, "configuration_revision=%d\n", payload.ConfigurationRevision)
+		return err
+	case "run", "enroll", "check-config", "check-idle", "capabilities", "validate-configuration":
 		flags := flag.NewFlagSet(arguments[0], flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
 		configPath := flags.String("config", "/etc/akastr-agent/config.json", "configuration file")
@@ -91,6 +123,19 @@ func run(arguments []string, output io.Writer) error {
 		model, err := app.Load(*configPath)
 		if err != nil {
 			return err
+		}
+		if arguments[0] == "validate-configuration" {
+			if _, err := app.BuildRuntime(model); err != nil {
+				return fmt.Errorf("validate runtime dependencies: %w", err)
+			}
+			return json.NewEncoder(output).Encode(struct {
+				AgentID               string                  `json:"agent_id"`
+				ConfigurationRevision int64                   `json:"configuration_revision"`
+				Capabilities          []capability.Descriptor `json:"capabilities"`
+			}{
+				AgentID: model.Config.Node.ID, ConfigurationRevision: model.Config.ConfigurationRevision,
+				Capabilities: model.Capabilities.List(),
+			})
 		}
 		if arguments[0] == "check-config" {
 			if _, err := app.BuildRuntime(model); err != nil {
@@ -142,13 +187,29 @@ func run(arguments []string, output io.Writer) error {
 			if credentials.AgentID != model.Config.Node.ID {
 				return errors.New("configured node ID does not match enrolled identity")
 			}
+			logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+			lifecycleGate := lifecycle.New()
+			startupContext, startupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			_, err = autoupdate.ReconcileOnce(startupContext, autoupdate.LoopOptions{
+				ControlEndpoint: model.Config.Control.Endpoint,
+				CurrentVersion:  version, ConfigurationRevision: model.Config.ConfigurationRevision,
+				Credentials: credentials, ConfigPath: *configPath, ReleaseRoot: releaseRoot,
+				Lifecycle: lifecycleGate,
+				CheckIdle: func() error {
+					return checkIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
+				},
+				Reexec: reexecAgent,
+				Logger: logger,
+			})
+			startupCancel()
+			if err != nil {
+				logger.Warn("startup maintenance reconciliation failed", "code", "maintenance_reconciliation_failed")
+			}
 			runtime, err := app.BuildRuntime(model)
 			if err != nil {
 				return err
 			}
-			logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-			lifecycleGate := lifecycle.New()
-			trial, err := autoupdate.LoadTrial(version, releaseRoot)
+			trial, err := autoupdate.LoadTrial(version, model.Config.ConfigurationRevision, releaseRoot, *configPath)
 			if err != nil {
 				return err
 			}
@@ -226,16 +287,18 @@ func run(arguments []string, output io.Writer) error {
 			}
 			go func() {
 				updateDone <- autoupdate.RunLoop(runContext, autoupdate.LoopOptions{
-					ControlEndpoint: model.Config.Control.Endpoint,
-					CurrentVersion:  version,
-					Credentials:     credentials,
-					ConfigPath:      *configPath,
-					ReleaseRoot:     releaseRoot,
-					Lifecycle:       lifecycleGate,
-					Ready:           ready,
-					Reexec: func(binary, targetVersion string) error {
-						return reexecAgent(binary, *configPath, targetVersion)
+					ControlEndpoint:       model.Config.Control.Endpoint,
+					CurrentVersion:        version,
+					ConfigurationRevision: model.Config.ConfigurationRevision,
+					Credentials:           credentials,
+					ConfigPath:            *configPath,
+					ReleaseRoot:           releaseRoot,
+					Lifecycle:             lifecycleGate,
+					Ready:                 ready,
+					CheckIdle: func() error {
+						return checkIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
 					},
+					Reexec: reexecAgent,
 					Logger: logger,
 				})
 			}()

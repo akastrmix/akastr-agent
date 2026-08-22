@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
 	"regexp"
 	"strings"
 
@@ -19,13 +20,13 @@ const (
 )
 
 const (
-	identityPath = "/etc/akastr-agent/identity.json"
-	tokenPath    = "/etc/akastr-agent/machine-token"
-	statePath    = "/var/lib/akastr-agent/state.json"
-	ipStatePath  = "/var/lib/akastr-agent/ip-state.json"
-	curlPath     = "/etc/akastr-agent/changeip-curl.conf"
-	profilesPath = "/etc/akastr-agent/proxy-profiles.json"
-	scriptPath   = "/usr/local/lib/akastr-agent/ipquality/ip.sh"
+	identityPath       = "/etc/akastr-agent/identity.json"
+	tokenPath          = "/etc/akastr-agent/machine-token"
+	statePath          = "/var/lib/akastr-agent/state.json"
+	ipStatePath        = "/var/lib/akastr-agent/ip-state.json"
+	legacyCurlPath     = "/etc/akastr-agent/changeip-curl.conf"
+	legacyProfilesPath = "/etc/akastr-agent/proxy-profiles.json"
+	scriptPath         = "/usr/local/lib/akastr-agent/ipquality/ip.sh"
 )
 
 var (
@@ -183,6 +184,18 @@ func (r Runner) validate() error {
 }
 
 func (p Payload) AgentConfig(ipQualityVersion, ipQualitySHA256 string) config.Config {
+	return p.agentConfig(ipQualityVersion, ipQualitySHA256, legacyCurlPath, legacyProfilesPath)
+}
+
+func (p Payload) AgentConfigForDirectory(directory, ipQualityVersion, ipQualitySHA256 string) config.Config {
+	return p.agentConfig(
+		ipQualityVersion, ipQualitySHA256,
+		path.Join(directory, "changeip-curl.conf"),
+		path.Join(directory, "proxy-profiles.json"),
+	)
+}
+
+func (p Payload) agentConfig(ipQualityVersion, ipQualitySHA256, curlPath, profilesPath string) config.Config {
 	cfg := config.Config{
 		SchemaVersion: config.SchemaVersion, ConfigurationRevision: p.ConfigurationRevision,
 		Node:      config.NodeConfig{ID: p.AgentID, Name: p.Name},

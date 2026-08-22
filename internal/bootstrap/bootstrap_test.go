@@ -118,7 +118,8 @@ func fetchFixture(t *testing.T, payload Payload, mutate func([]byte) []byte) (Pa
 	actual, err := FetchAndWrite(context.Background(), FetchOptions{
 		Endpoint: server.URL + "/internal/agents/bootstrap", AgentID: testAgentID,
 		TokenFile: tokenFile, HTTPClient: server.Client(), OutputDir: outputDir,
-		IPQVersion: IPQualityVersion, IPQSHA256: IPQualitySHA256,
+		ConfigurationRoot: "/var/lib/akastr-agent/configurations",
+		IPQVersion:        IPQualityVersion, IPQSHA256: IPQualitySHA256,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -147,12 +148,18 @@ func TestFetchAndWriteTargetBootstrap(t *testing.T) {
 	if strings.Contains(string(configBytes), "secret-token") {
 		t.Fatal("provider secret leaked into Agent config")
 	}
+	if !strings.Contains(string(configBytes), "/var/lib/akastr-agent/configurations/1/changeip-curl.conf") {
+		t.Fatal("generated Agent config does not reference its immutable revision directory")
+	}
 	curlBytes, err := os.ReadFile(filepath.Join(output, "changeip-curl.conf"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(curlBytes), "Authorization: Bearer secret-token") {
 		t.Fatal("provider secret was not written to its root-only file")
+	}
+	if digest, err := os.ReadFile(filepath.Join(output, ConfigurationBootstrapDigestFile)); err != nil || len(strings.TrimSpace(string(digest))) != 64 {
+		t.Fatalf("bootstrap digest is missing or invalid: %q err=%v", digest, err)
 	}
 }
 

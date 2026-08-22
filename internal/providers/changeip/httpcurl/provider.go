@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
 
 	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
 )
+
+var reconciledConfigFile = regexp.MustCompile(`^/var/lib/akastr-agent/configurations/[1-9][0-9]*/changeip-curl\.conf$`)
 
 const (
 	CodeCompleted             = "completed"
@@ -35,7 +38,7 @@ type Provider struct {
 }
 
 func New(config Config) (*Provider, error) {
-	if config.Program != "/usr/bin/curl" || config.ConfigFile != "/etc/akastr-agent/changeip-curl.conf" {
+	if config.Program != "/usr/bin/curl" || !validConfigFile(config.ConfigFile) {
 		return nil, errors.New("HTTP ChangeIP provider paths are invalid")
 	}
 	for label, filePath := range map[string]string{"curl": config.Program, "HTTP ChangeIP configuration": config.ConfigFile} {
@@ -54,6 +57,10 @@ func New(config Config) (*Provider, error) {
 		return nil, errors.New("HTTP ChangeIP timeout must be positive and no longer than 5 minutes")
 	}
 	return &Provider{config: config, now: time.Now}, nil
+}
+
+func validConfigFile(value string) bool {
+	return value == "/etc/akastr-agent/changeip-curl.conf" || reconciledConfigFile.MatchString(value)
 }
 
 func (p *Provider) Run(ctx context.Context) changeprovider.Result {

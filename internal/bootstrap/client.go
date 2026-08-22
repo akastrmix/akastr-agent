@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -34,13 +36,14 @@ type fetchResponse struct {
 }
 
 type FetchOptions struct {
-	Endpoint   string
-	AgentID    string
-	TokenFile  string
-	HTTPClient *http.Client
-	OutputDir  string
-	IPQVersion string
-	IPQSHA256  string
+	Endpoint          string
+	AgentID           string
+	TokenFile         string
+	HTTPClient        *http.Client
+	OutputDir         string
+	ConfigurationRoot string
+	IPQVersion        string
+	IPQSHA256         string
 }
 
 func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
@@ -117,8 +120,22 @@ func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
 	if err := payload.Validate(options.AgentID); err != nil {
 		return Payload{}, err
 	}
-	if err := writeFiles(options.OutputDir, payload, token, options.IPQVersion, options.IPQSHA256); err != nil {
+	runtimeDirectory := ""
+	if options.ConfigurationRoot != "" {
+		if !path.IsAbs(options.ConfigurationRoot) {
+			return Payload{}, errors.New("bootstrap configuration root must be absolute")
+		}
+		runtimeDirectory = path.Join(options.ConfigurationRoot, fmt.Sprint(payload.ConfigurationRevision))
+	}
+	if err := writeFiles(options.OutputDir, runtimeDirectory, payload, token, options.IPQVersion, options.IPQSHA256); err != nil {
 		return Payload{}, err
+	}
+	digest := sha256.Sum256(plaintext)
+	if err := writeFileSynced(filepath.Join(options.OutputDir, ConfigurationBootstrapDigestFile), []byte(fmt.Sprintf("%x\n", digest)), 0o600); err != nil {
+		return Payload{}, fmt.Errorf("write bootstrap digest: %w", err)
+	}
+	if err := syncDirectory(options.OutputDir); err != nil {
+		return Payload{}, fmt.Errorf("sync bootstrap output: %w", err)
 	}
 	return payload, nil
 }

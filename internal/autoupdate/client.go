@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -18,37 +19,64 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 const (
-	Schema      = "akastr-agent-update.v1"
-	AuthContext = "akastr-agent-update-check-v1"
-	maxResponse = 8192
+	Schema                         = "akastr-agent-maintenance.v1"
+	ConfigurationSchema            = "akastr-agent-configuration.v1"
+	MaintenanceAuthContext         = "akastr-agent-maintenance-check-v1"
+	ConfigurationFetchAuthContext  = "akastr-agent-configuration-fetch-v1"
+	ConfigurationAcceptAuthContext = "akastr-agent-configuration-accept-v1"
+	maxResponse                    = 128 * 1024
 )
 
 var (
-	semanticVersion = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
-	sha256Hex       = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	semanticVersion   = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+	sha256Hex         = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	deploymentPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-r[1-9][0-9]*$`)
 )
 
 type CheckRequest struct {
-	AgentID      string `json:"agent_id"`
-	AgentVersion string `json:"agent_version"`
-	Protocol     string `json:"protocol"`
-	Nonce        string `json:"nonce"`
-	SentAt       string `json:"sent_at"`
-	Signature    string `json:"signature"`
+	AgentID               string `json:"agent_id"`
+	AgentVersion          string `json:"agent_version"`
+	ConfigurationRevision int64  `json:"configuration_revision"`
+	Protocol              string `json:"protocol"`
+	Nonce                 string `json:"nonce"`
+	SentAt                string `json:"sent_at"`
+	Signature             string `json:"signature"`
 }
 
-type Manifest struct {
-	Schema       string `json:"schema"`
+type SoftwareTarget struct {
 	Status       string `json:"status"`
 	Version      string `json:"version"`
 	Protocol     string `json:"protocol"`
 	BinaryURL    string `json:"binary_url"`
 	BinarySHA256 string `json:"binary_sha256"`
+}
+
+type ConfigurationTarget struct {
+	Status              string `json:"status"`
+	Revision            int64  `json:"revision"`
+	SchemaVersion       int    `json:"schema_version"`
+	MinimumAgentVersion string `json:"minimum_agent_version"`
+}
+
+type Manifest struct {
+	Schema        string              `json:"schema"`
+	Status        string              `json:"status"`
+	Software      SoftwareTarget      `json:"software"`
+	Configuration ConfigurationTarget `json:"configuration"`
+}
+
+type Configuration struct {
+	Schema                 string          `json:"schema"`
+	ConfigurationRevision  int64           `json:"configuration_revision"`
+	BootstrapSchemaVersion int             `json:"bootstrap_schema_version"`
+	MinimumAgentVersion    string          `json:"minimum_agent_version"`
+	Bootstrap              json.RawMessage `json:"bootstrap"`
 }
 
 type Client struct {
@@ -57,78 +85,22 @@ type Client struct {
 	Random     io.Reader
 }
 
-func (c Client) Check(
-	ctx context.Context,
-	controlEndpoint string,
-	currentVersion string,
-	credentials identity.Identity,
-) (Manifest, error) {
-	if _, err := parseVersion(currentVersion); err != nil {
-		return Manifest{}, fmt.Errorf("current Agent version: %w", err)
+func (c Client) Check(ctx context.Context, controlEndpoint, currentVersion string, currentRevision int64, credentials identity.Identity) (Manifest, error) {
+	if _, err := parseVersion(currentVersion); err != nil || currentRevision < 1 {
+		return Manifest{}, errors.New("current Agent maintenance state is invalid")
 	}
-	if err := credentials.Validate(); err != nil {
-		return Manifest{}, err
-	}
-	endpoint, err := updateEndpoint(controlEndpoint)
-	if err != nil {
-		return Manifest{}, err
-	}
-	nonceBytes := make([]byte, 32)
-	randomSource := c.Random
-	if randomSource == nil {
-		randomSource = rand.Reader
-	}
-	if _, err := io.ReadFull(randomSource, nonceBytes); err != nil {
-		return Manifest{}, errors.New("update nonce generation failed")
-	}
-	now := time.Now
-	if c.Now != nil {
-		now = c.Now
-	}
-	requestBody := CheckRequest{
+	request := CheckRequest{
 		AgentID: credentials.AgentID, AgentVersion: currentVersion,
-		Protocol: protocol.Version,
-		Nonce:    base64.RawURLEncoding.EncodeToString(nonceBytes),
-		SentAt:   now().UTC().Format(time.RFC3339Nano),
+		ConfigurationRevision: currentRevision, Protocol: protocol.Version,
 	}
-	requestBody.Signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(
-		credentials.Ed25519PrivateKey(), SigningText(requestBody),
-	))
-	body, err := json.Marshal(requestBody)
-	if err != nil {
+	if err := c.sign(credentials, &request.Nonce, &request.SentAt, &request.Signature, func() []byte { return SigningText(request) }); err != nil {
 		return Manifest{}, err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return Manifest{}, err
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
-	request.Header.Set("User-Agent", "Akastr-Agent/"+currentVersion)
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
-	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return Manifest{}, fmt.Errorf("check Agent update: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponse))
-		return Manifest{}, fmt.Errorf("check Agent update: server returned HTTP %d", response.StatusCode)
-	}
-	decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponse+1))
-	decoder.DisallowUnknownFields()
 	var manifest Manifest
-	if err := decoder.Decode(&manifest); err != nil {
-		return Manifest{}, fmt.Errorf("decode Agent update manifest: %w", err)
+	if err := c.post(ctx, controlEndpoint, "/internal/agents/maintenance", currentVersion, request, &manifest); err != nil {
+		return Manifest{}, fmt.Errorf("check Agent maintenance: %w", err)
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Manifest{}, errors.New("Agent update manifest contains trailing JSON")
-	}
-	if err := manifest.Validate(currentVersion); err != nil {
+	if err := manifest.Validate(currentVersion, currentRevision); err != nil {
 		return Manifest{}, err
 	}
 	return manifest, nil
@@ -136,60 +108,200 @@ func (c Client) Check(
 
 func SigningText(request CheckRequest) []byte {
 	return []byte(strings.Join([]string{
-		AuthContext,
-		request.AgentID,
-		request.AgentVersion,
-		request.Protocol,
-		request.Nonce,
-		request.SentAt,
+		MaintenanceAuthContext, request.AgentID, request.AgentVersion,
+		strconv.FormatInt(request.ConfigurationRevision, 10), request.Protocol,
+		request.Nonce, request.SentAt,
 	}, "\n"))
 }
 
-func (m Manifest) Validate(currentVersion string) error {
-	if m.Schema != Schema {
-		return errors.New("Agent update manifest schema is unsupported")
+type configurationFetchRequest struct {
+	AgentID               string `json:"agent_id"`
+	ConfigurationRevision int64  `json:"configuration_revision"`
+	Nonce                 string `json:"nonce"`
+	SentAt                string `json:"sent_at"`
+	Signature             string `json:"signature"`
+}
+
+func (c Client) FetchConfiguration(ctx context.Context, controlEndpoint string, revision int64, credentials identity.Identity, userAgentVersion string) (Configuration, error) {
+	request := configurationFetchRequest{AgentID: credentials.AgentID, ConfigurationRevision: revision}
+	if err := c.sign(credentials, &request.Nonce, &request.SentAt, &request.Signature, func() []byte { return configurationFetchSigningText(request) }); err != nil {
+		return Configuration{}, err
 	}
-	if m.Status != "current" && m.Status != "busy" && m.Status != "update_available" {
-		return errors.New("Agent update manifest status is invalid")
+	var configuration Configuration
+	if err := c.post(ctx, controlEndpoint, "/internal/agents/configuration", userAgentVersion, request, &configuration); err != nil {
+		return Configuration{}, fmt.Errorf("fetch Agent configuration: %w", err)
+	}
+	if configuration.Schema != ConfigurationSchema || configuration.ConfigurationRevision != revision ||
+		configuration.BootstrapSchemaVersion < 1 || !semanticVersion.MatchString(configuration.MinimumAgentVersion) || len(configuration.Bootstrap) == 0 {
+		return Configuration{}, errors.New("Agent configuration response is invalid")
+	}
+	return configuration, nil
+}
+
+func configurationFetchSigningText(request configurationFetchRequest) []byte {
+	return []byte(strings.Join([]string{
+		ConfigurationFetchAuthContext, request.AgentID,
+		strconv.FormatInt(request.ConfigurationRevision, 10), request.Nonce, request.SentAt,
+	}, "\n"))
+}
+
+type configurationAcceptRequest struct {
+	AgentID               string                  `json:"agent_id"`
+	AgentVersion          string                  `json:"agent_version"`
+	ConfigurationRevision int64                   `json:"configuration_revision"`
+	Capabilities          []capability.Descriptor `json:"capabilities"`
+	CapabilitiesSHA256    string                  `json:"capabilities_sha256"`
+	Nonce                 string                  `json:"nonce"`
+	SentAt                string                  `json:"sent_at"`
+	Signature             string                  `json:"signature"`
+}
+
+func (c Client) AcceptConfiguration(ctx context.Context, controlEndpoint, agentVersion string, revision int64, capabilities []capability.Descriptor, credentials identity.Identity) error {
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		return err
+	}
+	request := configurationAcceptRequest{
+		AgentID: credentials.AgentID, AgentVersion: agentVersion,
+		ConfigurationRevision: revision, Capabilities: capabilities,
+		CapabilitiesSHA256: fmt.Sprintf("%x", sha256.Sum256(encoded)),
+	}
+	if err := c.sign(credentials, &request.Nonce, &request.SentAt, &request.Signature, func() []byte { return configurationAcceptSigningText(request) }); err != nil {
+		return err
+	}
+	var response struct {
+		OK                    bool   `json:"ok"`
+		AgentID               string `json:"agent_id"`
+		ConfigurationRevision int64  `json:"configuration_revision"`
+		Accepted              bool   `json:"accepted"`
+	}
+	if err := c.post(ctx, controlEndpoint, "/internal/agents/configuration/accept", agentVersion, request, &response); err != nil {
+		return fmt.Errorf("accept Agent configuration: %w", err)
+	}
+	if !response.OK || !response.Accepted || response.AgentID != credentials.AgentID || response.ConfigurationRevision != revision {
+		return errors.New("Agent configuration acceptance response is invalid")
+	}
+	return nil
+}
+
+func configurationAcceptSigningText(request configurationAcceptRequest) []byte {
+	return []byte(strings.Join([]string{
+		ConfigurationAcceptAuthContext, request.AgentID, request.AgentVersion,
+		strconv.FormatInt(request.ConfigurationRevision, 10), request.CapabilitiesSHA256,
+		request.Nonce, request.SentAt,
+	}, "\n"))
+}
+
+func (c Client) sign(credentials identity.Identity, nonce, sentAt, signature *string, signingText func() []byte) error {
+	if err := credentials.Validate(); err != nil {
+		return err
+	}
+	nonceBytes := make([]byte, 32)
+	randomSource := c.Random
+	if randomSource == nil {
+		randomSource = rand.Reader
+	}
+	if _, err := io.ReadFull(randomSource, nonceBytes); err != nil {
+		return errors.New("maintenance nonce generation failed")
+	}
+	*nonce = base64.RawURLEncoding.EncodeToString(nonceBytes)
+	now := time.Now
+	if c.Now != nil {
+		now = c.Now
+	}
+	*sentAt = now().UTC().Format(time.RFC3339Nano)
+	*signature = base64.RawURLEncoding.EncodeToString(ed25519.Sign(credentials.Ed25519PrivateKey(), signingText()))
+	return nil
+}
+
+func (c Client) post(ctx context.Context, controlEndpoint, endpointPath, version string, input, output any) error {
+	endpoint, err := maintenanceEndpoint(controlEndpoint, endpointPath)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(input)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("User-Agent", "Akastr-Agent/"+version)
+	httpClient := c.HTTPClient
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+	strict := *httpClient
+	strict.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := strict.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("server returned HTTP %d", response.StatusCode)
+	}
+	decoder := json.NewDecoder(io.LimitReader(response.Body, maxResponse+1))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return errors.New("response contains trailing JSON")
+	}
+	return nil
+}
+
+func (m Manifest) Validate(currentVersion string, currentRevision int64) error {
+	if m.Schema != Schema || (m.Status != "current" && m.Status != "busy" && m.Status != "update_available") {
+		return errors.New("Agent maintenance manifest is invalid")
+	}
+	if (m.Software.Status != "current" && m.Software.Status != "update_available") ||
+		(m.Configuration.Status != "current" && m.Configuration.Status != "update_available") {
+		return errors.New("Agent maintenance target status is invalid")
 	}
 	current, err := parseVersion(currentVersion)
 	if err != nil {
 		return err
 	}
-	target, err := parseVersion(m.Version)
-	if err != nil {
-		return fmt.Errorf("Agent update target version: %w", err)
+	target, err := parseVersion(m.Software.Version)
+	if err != nil || m.Software.Protocol != protocol.Version || !sha256Hex.MatchString(m.Software.BinarySHA256) {
+		return errors.New("Agent software target is invalid")
 	}
-	if m.Protocol != protocol.Version {
-		return errors.New("Agent update protocol does not match the running control protocol")
+	expectedURL := "https://github.com/akastrmix/akastr-agent/releases/download/" + m.Software.Version + "/akastr-agent-linux-amd64"
+	softwareChanged := compareVersion(target, current) > 0
+	if m.Software.BinaryURL != expectedURL || compareVersion(target, current) < 0 || softwareChanged != (m.Software.Status == "update_available") {
+		return errors.New("Agent software target is not a forward exact release")
 	}
-	if !sha256Hex.MatchString(m.BinarySHA256) {
-		return errors.New("Agent update binary checksum is invalid")
+	minimum, err := parseVersion(m.Configuration.MinimumAgentVersion)
+	configurationChanged := m.Configuration.Revision > currentRevision
+	if err != nil || compareVersion(target, minimum) < 0 || m.Configuration.Revision < currentRevision || m.Configuration.SchemaVersion < 1 ||
+		configurationChanged != (m.Configuration.Status == "update_available") {
+		return errors.New("Agent configuration target is invalid")
 	}
-	expectedURL := "https://github.com/akastrmix/akastr-agent/releases/download/" +
-		m.Version + "/akastr-agent-linux-amd64"
-	if m.BinaryURL != expectedURL {
-		return errors.New("Agent update binary URL is not the approved immutable release asset")
-	}
-	comparison := compareVersion(target, current)
-	if m.Status == "update_available" && comparison <= 0 {
-		return errors.New("Agent update manifest attempted a non-forward update")
-	}
-	if m.Status != "update_available" && comparison > 0 && m.Status == "current" {
-		return errors.New("Agent update manifest marked an older Agent as current")
+	changed := softwareChanged || configurationChanged
+	if m.Status == "busy" {
+		if !changed {
+			return errors.New("Agent maintenance aggregate status is inconsistent")
+		}
+	} else if (m.Status == "update_available") != changed {
+		return errors.New("Agent maintenance aggregate status is inconsistent")
 	}
 	return nil
 }
 
-func updateEndpoint(controlEndpoint string) (string, error) {
+func maintenanceEndpoint(controlEndpoint, endpointPath string) (string, error) {
 	parsed, err := url.Parse(controlEndpoint)
-	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" ||
-		parsed.Path != "/internal/agents/ws" || parsed.User != nil ||
-		parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("control endpoint cannot derive the Agent update endpoint")
+	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" || parsed.Path != "/internal/agents/ws" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("control endpoint cannot derive an Agent maintenance endpoint")
 	}
 	parsed.Scheme = "https"
-	parsed.Path = "/internal/agents/update"
+	parsed.Path = endpointPath
 	return parsed.String(), nil
 }
 
