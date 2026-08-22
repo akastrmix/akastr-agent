@@ -237,29 +237,34 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 		if options.Ready == nil {
 			return errors.New("automatic maintenance readiness signal is required")
 		}
+		triggeredBeforeReady := false
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-options.Ready:
-		}
-		delay := InitialDelayMin + time.Duration(rand.Int64N(int64(InitialDelayRange)+1))
-		if options.InitialDelay != nil {
-			delay = options.InitialDelay()
-		}
-		if delay < 0 {
-			return errors.New("automatic maintenance initial delay is invalid")
-		}
-		initial := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			initial.Stop()
-			return ctx.Err()
-		case <-initial.C:
 		case <-options.Triggers:
-			if !initial.Stop() {
-				select {
-				case <-initial.C:
-				default:
+			triggeredBeforeReady = true
+		}
+		if !triggeredBeforeReady {
+			delay := InitialDelayMin + time.Duration(rand.Int64N(int64(InitialDelayRange)+1))
+			if options.InitialDelay != nil {
+				delay = options.InitialDelay()
+			}
+			if delay < 0 {
+				return errors.New("automatic maintenance initial delay is invalid")
+			}
+			initial := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				initial.Stop()
+				return ctx.Err()
+			case <-initial.C:
+			case <-options.Triggers:
+				if !initial.Stop() {
+					select {
+					case <-initial.C:
+					default:
+					}
 				}
 			}
 		}

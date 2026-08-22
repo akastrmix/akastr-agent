@@ -71,7 +71,7 @@ func TestRunLoopWaitsForReadyBeforePeriodicMaintenance(t *testing.T) {
 	}
 }
 
-func TestRunLoopManualTriggerSkipsInitialDelayAfterReady(t *testing.T) {
+func TestRunLoopMaintenanceRequiredTriggersBeforeReady(t *testing.T) {
 	ready := make(chan struct{})
 	triggers := make(chan struct{}, 1)
 	called := make(chan struct{}, 1)
@@ -90,14 +90,8 @@ func TestRunLoopManualTriggerSkipsInitialDelayAfterReady(t *testing.T) {
 	triggers <- struct{}{}
 	select {
 	case <-called:
-		t.Fatal("manual maintenance checked before control readiness")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(ready)
-	select {
-	case <-called:
 	case <-time.After(time.Second):
-		t.Fatal("manual maintenance trigger did not skip the initial delay")
+		t.Fatal("maintenance-required signal did not reconcile before control readiness")
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {

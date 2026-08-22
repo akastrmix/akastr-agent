@@ -63,6 +63,13 @@ type session struct {
 	writeMu    sync.Mutex
 }
 
+type sessionMode uint8
+
+const (
+	sessionReady sessionMode = iota + 1
+	sessionMaintenance
+)
+
 func New(options struct {
 	Endpoint              string
 	Identity              identity.Identity
@@ -195,8 +202,32 @@ func (c *Client) runSession(ctx context.Context) error {
 	connection.SetReadLimit(protocol.MaxMessage)
 	session := &session{connection: connection}
 	defer connection.CloseNow()
-	if err := c.authenticate(ctx, session); err != nil {
+	mode, err := c.authenticate(ctx, session)
+	if err != nil {
 		return err
+	}
+	if mode == sessionMaintenance {
+		if c.onMaintenanceCheck == nil {
+			return errors.New("maintenance-only control session is unavailable")
+		}
+		c.onMaintenanceCheck()
+		c.logger.Info("maintenance-only control connection ready")
+		for {
+			messageType, data, err := connection.Read(ctx)
+			if err != nil {
+				return err
+			}
+			if messageType != websocket.MessageText {
+				return errors.New("binary control message rejected")
+			}
+			envelope, err := protocol.Decode(data)
+			if err != nil {
+				return err
+			}
+			if err := c.handleMaintenanceSessionEnvelope(envelope); err != nil {
+				return err
+			}
+		}
 	}
 	if c.onReady != nil {
 		if err := c.onReady(); err != nil {
@@ -318,6 +349,13 @@ func (c *Client) handleMaintenanceCheck(envelope protocol.Envelope) error {
 	return nil
 }
 
+func (c *Client) handleMaintenanceSessionEnvelope(envelope protocol.Envelope) error {
+	if envelope.Type != "maintenance.check" {
+		return fmt.Errorf("unexpected maintenance-only message %q", envelope.Type)
+	}
+	return c.handleMaintenanceCheck(envelope)
+}
+
 func (c *Client) publishUnchanged(result protocol.ChangeIPUnchangedBody) error {
 	c.mu.Lock()
 	active := c.active
@@ -354,58 +392,68 @@ func (c *Client) publishSnapshot(snapshot protocol.IPSnapshotBody) error {
 	return active.write(ctx, "ip.snapshot", snapshot)
 }
 
-func (c *Client) authenticate(ctx context.Context, session *session) error {
+func (c *Client) authenticate(ctx context.Context, session *session) (sessionMode, error) {
 	challengeEnvelope, err := readEnvelope(ctx, session.connection, "auth.challenge")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	challenge, err := protocol.DecodeBody[protocol.AuthChallenge](
 		challengeEnvelope, "challenge_id", "agent_id", "nonce", "issued_at", "expires_at",
 	)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if challenge.AgentID != c.identity.AgentID {
-		return errors.New("authentication challenge agent mismatch")
+		return 0, errors.New("authentication challenge agent mismatch")
 	}
 	signingText, err := protocol.AuthSigningText(challenge)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	expiresAt, _ := time.Parse(time.RFC3339Nano, challenge.ExpiresAt)
 	if time.Now().After(expiresAt) {
-		return errors.New("authentication challenge expired")
+		return 0, errors.New("authentication challenge expired")
 	}
 	signature := ed25519.Sign(c.identity.Ed25519PrivateKey(), signingText)
 	if err := session.write(ctx, "auth.response", protocol.AuthResponseBody{
 		AgentID: c.identity.AgentID, ChallengeID: challenge.ChallengeID,
 		Signature: base64.RawURLEncoding.EncodeToString(signature),
 	}); err != nil {
-		return err
+		return 0, err
 	}
 	authAcceptedEnvelope, err := readEnvelope(ctx, session.connection, "auth.accepted")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	authAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](authAcceptedEnvelope, "agent_id")
 	if err != nil || authAccepted.AgentID != c.identity.AgentID {
-		return errors.New("authentication acknowledgement agent mismatch")
+		return 0, errors.New("authentication acknowledgement agent mismatch")
 	}
 	if err := session.write(ctx, "agent.hello", protocol.HelloBody{
 		AgentVersion: c.version, ConfigurationRevision: c.configurationRevision,
 		Capabilities: c.capabilities,
 	}); err != nil {
-		return err
+		return 0, err
 	}
-	helloAcceptedEnvelope, err := readEnvelope(ctx, session.connection, "hello.accepted")
+	helloResponse, err := readProtocolEnvelope(ctx, session.connection)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	helloAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](helloAcceptedEnvelope, "agent_id")
-	if err != nil || helloAccepted.AgentID != c.identity.AgentID {
-		return errors.New("hello acknowledgement agent mismatch")
+	return helloSessionMode(helloResponse, c.identity.AgentID)
+}
+
+func helloSessionMode(helloResponse protocol.Envelope, agentID string) (sessionMode, error) {
+	if helloResponse.Type != "hello.accepted" && helloResponse.Type != "maintenance.required" {
+		return 0, fmt.Errorf("expected hello response, received %s", helloResponse.Type)
 	}
-	return nil
+	acknowledgement, err := protocol.DecodeBody[protocol.AgentIDBody](helloResponse, "agent_id")
+	if err != nil || acknowledgement.AgentID != agentID {
+		return 0, errors.New("hello acknowledgement agent mismatch")
+	}
+	if helloResponse.Type == "maintenance.required" {
+		return sessionMaintenance, nil
+	}
+	return sessionReady, nil
 }
 
 func (c *Client) acceptOffer(ctx context.Context, session *session, offer protocol.OperationOffer) error {
@@ -539,6 +587,17 @@ func (s *session) write(ctx context.Context, messageType string, body any) error
 }
 
 func readEnvelope(ctx context.Context, connection *websocket.Conn, expectedType string) (protocol.Envelope, error) {
+	envelope, err := readProtocolEnvelope(ctx, connection)
+	if err != nil {
+		return protocol.Envelope{}, err
+	}
+	if envelope.Type != expectedType {
+		return protocol.Envelope{}, fmt.Errorf("expected %s, received %s", expectedType, envelope.Type)
+	}
+	return envelope, nil
+}
+
+func readProtocolEnvelope(ctx context.Context, connection *websocket.Conn) (protocol.Envelope, error) {
 	messageType, data, err := connection.Read(ctx)
 	if err != nil {
 		return protocol.Envelope{}, err
@@ -549,9 +608,6 @@ func readEnvelope(ctx context.Context, connection *websocket.Conn, expectedType 
 	envelope, err := protocol.Decode(data)
 	if err != nil {
 		return protocol.Envelope{}, err
-	}
-	if envelope.Type != expectedType {
-		return protocol.Envelope{}, fmt.Errorf("expected %s, received %s", expectedType, envelope.Type)
 	}
 	return envelope, nil
 }

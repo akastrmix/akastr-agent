@@ -51,6 +51,19 @@
       }
     },
     {
+      "name": "cloud-maintenance-required",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-20.v5",
+        "message_id": "123e4567-e89b-42d3-a456-426614174128",
+        "type": "maintenance.required",
+        "sent_at": "2026-08-18T00:00:01.750Z",
+        "body": {
+          "agent_id": "123e4567-e89b-42d3-a456-426614174102"
+        }
+      }
+    },
+    {
       "name": "cloud-ipquality-offer",
       "direction": "cloud_to_agent",
       "message": {
@@ -181,6 +194,20 @@
     }
   ],
   "malformed": [
+    {
+      "name": "cloud-maintenance-required-extra-field",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-08-20.v5",
+        "message_id": "123e4567-e89b-42d3-a456-426614174129",
+        "type": "maintenance.required",
+        "sent_at": "2026-08-18T00:00:01.800Z",
+        "body": {
+          "agent_id": "123e4567-e89b-42d3-a456-426614174102",
+          "unexpected": true
+        }
+      }
+    },
     {
       "name": "cloud-changeip-offer-missing-expected-ipv4",
       "direction": "cloud_to_agent",

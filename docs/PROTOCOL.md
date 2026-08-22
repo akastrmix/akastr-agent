@@ -23,11 +23,11 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version`、本地正整数 `configuration_revision` 与 capability。Cloud 要求 hello revision 同时精确等于 desired/applied，才返回 `hello.accepted` 并使连接进入 ready；同协议旧 release 可以进入 ready 后使用签名更新接口。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version`、本地正整数 `configuration_revision` 与 capability。revision 同时精确等于 desired/applied 时，Cloud 返回 `hello.accepted` 并使连接进入 ready；已认证但 revision 过期且版本支持维护会话时，Cloud 返回只含 `agent_id` 的 `maintenance.required`。维护会话只允许 Cloud 发送 `maintenance.check`，Agent 不进入业务 ready、不发送 IP 消息且不接收 operation；其他消息使连接失败关闭。同协议旧 release 可以在 revision 已收敛时进入 ready 后使用签名更新接口。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
 
 ## 自动维护与配置协调
 
-ready WSS 会话可接收 `maintenance.check`，body 必须为空对象。该消息只唤醒一次现有维护协调，不创建 operation、不绕过进程级更新 lease，也不表示存在或完成了更新；重复的未处理唤醒可以合并。Cloud 只向已知支持该消息的 Agent release 发送。
+ready WSS 会话可接收 `maintenance.check`，body 必须为空对象；`maintenance.required` 会在维护会话建立时立即唤醒同一协调，后续仍可接收 `maintenance.check`。这些消息只唤醒现有维护协调，不创建 operation、不绕过进程级更新 lease，也不表示存在或完成了更新；重复的未处理唤醒可以合并。Cloud 只向已知支持对应消息的 Agent release 发送。
 
 `POST /internal/agents/maintenance` 独立于 WSS envelope。请求必须且只能包含 `agent_id`、`agent_version`、正整数 `configuration_revision`、`protocol`、32-byte nonce、`sent_at` 和 64-byte Ed25519 signature；时间与主控相差超过五分钟即拒绝。签名文本为以下 UTF-8 行，末尾没有换行，时间保持 Agent 发送的原文：
 

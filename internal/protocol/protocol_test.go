@@ -102,7 +102,7 @@ func decodeCloudFixture(data []byte) error {
 		}
 		_, err = AuthSigningText(body)
 		return err
-	case "auth.accepted", "hello.accepted":
+	case "auth.accepted", "hello.accepted", "maintenance.required":
 		body, err := DecodeBody[AgentIDBody](envelope, "agent_id")
 		if err != nil || !ValidUUID(body.AgentID) {
 			return errors.New("invalid Agent acknowledgement")

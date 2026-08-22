@@ -191,6 +191,43 @@ func TestMaintenanceCheckTriggersExistingReconciliationLoop(t *testing.T) {
 	}
 }
 
+func TestMaintenanceOnlySessionRejectsBusinessMessages(t *testing.T) {
+	client := &Client{onMaintenanceCheck: func() {}}
+	encoded, err := protocol.Encode("operation.offer", struct{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := protocol.Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.handleMaintenanceSessionEnvelope(envelope); err == nil {
+		t.Fatal("maintenance-only session accepted a business message")
+	}
+}
+
+func TestHelloResponseSelectsMaintenanceOnlySession(t *testing.T) {
+	agentID := "f40a6d7e-bc54-4c8a-a68f-9895674677b6"
+	encoded, err := protocol.Encode("maintenance.required", protocol.AgentIDBody{AgentID: agentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := protocol.Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode, err := helloSessionMode(envelope, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != sessionMaintenance {
+		t.Fatalf("maintenance response selected session mode %d", mode)
+	}
+	if _, err := helloSessionMode(envelope, "2bfadfbb-7481-4d96-9e0b-40a04aa4aeb4"); err == nil {
+		t.Fatal("maintenance response accepted another Agent identity")
+	}
+}
+
 func (e *recordingExecutor) Execute(_ context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	e.executed <- offer.CommandID
 	return protocol.ExecutionResult{Outcome: "failed", Code: "test", Result: map[string]any{}}, nil
