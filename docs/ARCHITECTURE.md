@@ -11,7 +11,7 @@
 
 运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。后台只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
 
-项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。配置有单调递增的 desired/applied revision；两者不相等时 Cloud 不派发操作。配置更新保持节点角色、服务器绑定、token 与 identity，只替换密封 bootstrap 并要求重跑安装命令。后台短命令以一个 HTTPS curl 从固定 release 取得 installer；安装器拒绝跨节点覆盖和版本降级，同节点复用 identity，残缺状态通过重跑原命令 fix-forward。Runner 依赖齐全时不运行 apt，固定脚本摘要正确时不重复下载。
+项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。配置有单调递增的 desired/applied revision；两者不相等时 Cloud 不派发操作。配置更新保持节点角色、服务器绑定、token 与 identity，由主进程自动取回密封 bootstrap 并收敛，不要求重跑安装命令。后台短命令以一个 HTTPS curl 从固定 release 取得 installer；安装器拒绝跨节点覆盖、所有权不明的残留和版本降级，同节点复用 identity，残缺状态通过重跑原命令 fix-forward。Runner 依赖齐全时不运行 apt，固定脚本摘要正确时不重复下载。
 
 ## 2. 主控边界
 
@@ -88,7 +88,7 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 后台的一键命令先把固定版本 installer 完整下载到临时文件并核对发布摘要，校验通过后才执行。它描述节点的期望安装状态，可用于空白主机、同节点覆盖安装和残缺安装修复。覆盖安装先核对已有 identity/config 的节点 ID 和已装版本；不同节点或降级直接拒绝。installer 复用摘要正确的同版本 binary 和 Runner 脚本，在停止唯一 `akastr-agent.service` 前完成其余下载、bootstrap、依赖与 maintenance-safe 检查，停止后再对稳定状态检查并写入新配置。配置 revision 已前进时旧配置不能重新 ready，因此本机不维护目录或 unit 回滚事务；后续失败保留可重跑状态，由同一命令 fix-forward。同节点 identity 会复制到新配置并用新 configuration revision 重新 enrollment，不重新生成 private key。主控在未完成 command、active ChangeIP session 或目标 IPQuality run 存在时拒绝配置更新和注册。
 
-自动维护不由 GitHub `latest` 驱动。主进程在建立 WSS 前先使用 Ed25519 identity 协调 Cloud 批准的软件与配置目标，ready 后等待 1–5 分钟随机抖动并每六小时复查。取得 exclusive update lease 后，candidate binary 写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录并生成 capability。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；Cloud 校验 trial hello 后不推进 applied，Agent 先原子替换并 fsync `current`，再提交 WSS commit，由 Cloud 重验并进入 ready。提交前的确定性本地失败保留 deployment 并抑制同一目标，未提交的 readiness 超时删除 deployment 以允许临时故障恢复后重试；本地已提交但确认中断时由新 current 重连收敛。清理只保留 current 与 previous deployment。
+自动维护不由 GitHub `latest` 驱动。主进程在建立 WSS 前先使用 Ed25519 identity 协调 Cloud 批准的软件与配置目标，ready 后等待 1–5 分钟随机抖动并每六小时复查。取得 exclusive update lease 后，candidate binary 写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录并生成 capability。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；Cloud 校验 trial hello 后不推进 applied，Agent 先原子替换并 fsync `current`，再提交 WSS commit，由 Cloud 重验并进入 ready。提交前的确定性本地失败保留 deployment 并抑制同一目标，未提交的 readiness 超时删除 deployment 以允许临时故障恢复后重试；本地已提交但确认中断时由新 current 重连收敛。成功提交或重装收敛后只保留 current、previous deployment 及其引用的 release/configuration；清理失败只告警，不回滚 active deployment。
 
 正式版本由 AkastrCloud 仓库的同步发布入口生成。发布器先验证并推送 Agent `main` 与不可变标签，等待 GitHub Release 的两个精确资产并核对 binary 版本与内部摘要，再提交 Cloud 的唯一更新目标并走正常 backend 发布。该顺序允许同一版本在任一阶段中断后续跑，但不会覆盖已发布资产或让 Cloud 指向尚未验真的 binary。
 

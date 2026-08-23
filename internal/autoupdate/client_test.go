@@ -106,3 +106,51 @@ func TestManifestRejectsObsoleteBootstrapSchema(t *testing.T) {
 		t.Fatal("obsolete bootstrap schema accepted")
 	}
 }
+
+func TestClientReportsOnlySignedBoundedMaintenanceResult(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := identity.Identity{
+		SchemaVersion: identity.SchemaVersion, EnrollmentState: identity.EnrollmentConfirmed,
+		AgentID:    "123e4567-e89b-42d3-a456-426614174000",
+		PublicKey:  base64.RawURLEncoding.EncodeToString(publicKey),
+		PrivateKey: base64.RawURLEncoding.EncodeToString(privateKey),
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/internal/agents/maintenance-result" {
+			t.Errorf("path=%s", request.URL.Path)
+			response.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var result maintenanceResultRequest
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&result); err != nil {
+			t.Error(err)
+			response.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		signature, decodeError := base64.RawURLEncoding.DecodeString(result.Signature)
+		if decodeError != nil || result.Status != "failed" ||
+			result.ErrorCode != "candidate_binary_invalid" ||
+			!ed25519.Verify(publicKey, maintenanceResultSigningText(result), signature) {
+			t.Errorf("invalid signed result: %+v", result)
+		}
+		_ = json.NewEncoder(response).Encode(map[string]bool{"persisted": true})
+	}))
+	defer server.Close()
+	endpoint := "wss" + strings.TrimPrefix(server.URL, "https") + "/internal/agents/ws"
+	err = (Client{
+		HTTPClient: server.Client(),
+		Now:        func() time.Time { return time.Date(2026, 8, 24, 1, 0, 0, 0, time.UTC) },
+		Random:     strings.NewReader(strings.Repeat("r", 32)),
+	}).Report(t.Context(), endpoint, "v1.0.6", credentials, MaintenanceResult{
+		TargetVersion: "v1.0.7", TargetConfigurationRevision: 8,
+		Status: "failed", ErrorCode: "candidate_binary_invalid",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}

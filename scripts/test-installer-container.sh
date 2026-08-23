@@ -239,6 +239,20 @@ run_install target >/dev/null
 assert_count 1 'akastr-agent-linux-amd64' "$test_root/curl.log"
 [ -f /var/lib/akastr-agent/configurations/2/config.json ]
 
+mkdir -p \
+  /usr/local/lib/akastr-agent/releases/v9.9.7 \
+  /usr/local/lib/akastr-agent/releases/manual \
+  /usr/local/lib/akastr-agent/deployments/v9.9.7-r1 \
+  /var/lib/akastr-agent/configurations/1
+cp "$test_root/fake-agent" /usr/local/lib/akastr-agent/releases/v9.9.7/akastr-agent
+cat > /var/lib/akastr-agent/configurations/1/config.json <<EOF
+{"schema_version":3,"configuration_revision":1,"node":{"id":"$agent_id","name":"stale"},"control":{}}
+EOF
+ln -s /usr/local/lib/akastr-agent/releases/v9.9.7/akastr-agent \
+  /usr/local/lib/akastr-agent/deployments/v9.9.7-r1/akastr-agent
+ln -s /var/lib/akastr-agent/configurations/1 \
+  /usr/local/lib/akastr-agent/deployments/v9.9.7-r1/config
+
 cp /var/lib/akastr-agent/configurations/2/config.json "$test_root/config.json.clean"
 printf ' ' >> /var/lib/akastr-agent/configurations/2/config.json
 if mismatch_output=$(run_install target 2>&1); then
@@ -277,6 +291,10 @@ run_install runner >/dev/null
 assert_count 1 '^update$' "$test_root/apt.log"
 assert_count 1 '^install ' "$test_root/apt.log"
 assert_count 1 '/ip.sh$' "$test_root/curl.log"
+[ ! -e /usr/local/lib/akastr-agent/deployments/v9.9.7-r1 ]
+[ ! -e /usr/local/lib/akastr-agent/releases/v9.9.7 ]
+[ ! -e /var/lib/akastr-agent/configurations/1 ]
+[ -d /usr/local/lib/akastr-agent/releases/manual ]
 
 run_install runner >/dev/null
 assert_count 1 '^update$' "$test_root/apt.log"
@@ -288,6 +306,16 @@ sh "$installer" --uninstall --confirm-destroy-local-agent >/dev/null
 [ ! -e /var/lib/akastr-agent ]
 [ ! -e /usr/local/lib/akastr-agent ]
 [ ! -e /etc/systemd/system/akastr-agent.service ]
+
+mkdir -p /usr/local/lib/akastr-agent/releases/v9.9.8
+printf '%s\n' '[Service]' > /etc/systemd/system/akastr-agent.service
+if ownership_output=$(run_install target 2>&1); then
+  echo 'installation with unowned Agent artifacts unexpectedly succeeded' >&2
+  exit 1
+fi
+printf '%s\n' "$ownership_output" | grep -Fq 'do not prove node ownership'
+rm -rf -- /usr/local/lib/akastr-agent
+rm -f -- /etc/systemd/system/akastr-agent.service
 
 mkdir -p /etc/akastr-agent /usr/local/lib/akastr-agent/releases/v9.9.8
 chmod 0700 /etc/akastr-agent

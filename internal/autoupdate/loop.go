@@ -32,6 +32,7 @@ const (
 type MaintenanceClient interface {
 	Check(context.Context, string, string, int64, identity.Identity) (Manifest, error)
 	FetchConfiguration(context.Context, string, int64, identity.Identity, string) (Configuration, error)
+	Report(context.Context, string, string, identity.Identity, MaintenanceResult) error
 }
 
 type LoopOptions struct {
@@ -71,25 +72,37 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 	if manifest.Status != "update_available" {
 		return false, nil
 	}
+	targetVersion := manifest.Software.Version
+	reportedTargetRevision := manifest.Configuration.Revision
+	report := func(status, code string) {
+		_ = client.Report(ctx, options.ControlEndpoint, options.CurrentVersion, options.Credentials, MaintenanceResult{
+			TargetVersion: targetVersion, TargetConfigurationRevision: reportedTargetRevision,
+			Status: status, ErrorCode: code,
+		})
+	}
 	lease, acquired := options.Lifecycle.TryUpdate()
 	if !acquired {
+		report("busy", "maintenance_local_busy")
 		return false, nil
 	}
 	defer lease.Release()
 	if options.CheckIdle != nil {
 		if err := options.CheckIdle(); err != nil {
+			report("busy", "maintenance_local_busy")
 			return false, nil
 		}
 	}
 	if attempted, err := uncommittedDeploymentExists(options.ReleaseRoot, manifest.Software.Version, manifest.Configuration.Revision); err != nil {
+		report("failed", "maintenance_state_invalid")
 		return false, err
 	} else if attempted {
+		report("suppressed", "trial_suppressed_after_failure")
 		return false, nil
 	}
 
-	targetVersion := manifest.Software.Version
 	binary, err := os.Executable()
 	if err != nil {
+		report("failed", "candidate_binary_invalid")
 		return false, err
 	}
 	if manifest.Software.Status == "update_available" {
@@ -102,10 +115,12 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 			ReleaseRoot: options.ReleaseRoot, Runner: options.Runner,
 		})
 		if err != nil {
+			report("failed", "candidate_binary_invalid")
 			return false, err
 		}
 		expected := filepath.Join(options.ReleaseRoot, "releases", targetVersion, "akastr-agent")
 		if staged.Version != targetVersion || filepath.Clean(staged.Binary) != expected {
+			report("failed", "candidate_binary_invalid")
 			return false, errors.New("automatic maintenance staged an unexpected release")
 		}
 		binary = staged.Binary
@@ -116,6 +131,7 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 	if manifest.Configuration.Status == "update_available" {
 		configuration, err := client.FetchConfiguration(ctx, options.ControlEndpoint, manifest.Configuration.Revision, options.Credentials, targetVersion)
 		if err != nil {
+			report("failed", "maintenance_configuration_fetch_failed")
 			return false, err
 		}
 		configRoot := options.ConfigurationRoot
@@ -124,17 +140,20 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 		}
 		configPath, _, err = materializeCandidate(ctx, options.Runner, binary, configRoot, configuration, options.Credentials.AgentID)
 		if err != nil {
+			report("failed", "candidate_configuration_invalid")
 			return false, err
 		}
 		targetRevision = configuration.ConfigurationRevision
 	}
 	deployment, err := StageDeployment(options.ReleaseRoot, targetVersion, targetRevision, configPath)
 	if err != nil {
+		report("failed", "candidate_deployment_invalid")
 		return false, err
 	}
 	binary = filepath.Join(deployment, "akastr-agent")
 	configPath = filepath.Join(deployment, "config", "config.json")
 	if err := options.Reexec(binary, configPath, targetVersion, targetRevision); err != nil {
+		report("failed", "candidate_process_replace_failed")
 		return false, errors.Join(errors.New("automatic maintenance process replacement failed"), err)
 	}
 	return true, nil

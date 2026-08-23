@@ -19,6 +19,7 @@ type Trial struct {
 	version     string
 	revision    int64
 	releaseRoot string
+	configRoot  string
 	mu          sync.Mutex
 	committed   bool
 }
@@ -52,7 +53,14 @@ func LoadTrial(currentVersion string, currentRevision int64, releaseRoot, config
 	if filepath.Clean(executable) != filepath.Clean(expected) || filepath.Clean(configPath) != filepath.Clean(expectedConfig) {
 		return nil, errors.New("automatic maintenance trial is outside its approved deployment")
 	}
-	return &Trial{version: trialVersion, revision: trialRevision, releaseRoot: releaseRoot}, nil
+	configDirectory, err := filepath.EvalSymlinks(filepath.Dir(configPath))
+	if err != nil || filepath.Base(configDirectory) != strconv.FormatInt(trialRevision, 10) {
+		return nil, errors.New("automatic maintenance trial configuration is outside its managed root")
+	}
+	return &Trial{
+		version: trialVersion, revision: trialRevision, releaseRoot: releaseRoot,
+		configRoot: filepath.Dir(configDirectory),
+	}, nil
 }
 
 func (trial *Trial) Commit() (CommitResult, error) {
@@ -61,7 +69,10 @@ func (trial *Trial) Commit() (CommitResult, error) {
 	if trial.committed {
 		return CommitResult{Committed: true}, nil
 	}
-	result, err := Commit(CommitOptions{Version: trial.version, ConfigurationRevision: trial.revision, ReleaseRoot: trial.releaseRoot})
+	result, err := Commit(CommitOptions{
+		Version: trial.version, ConfigurationRevision: trial.revision,
+		ReleaseRoot: trial.releaseRoot, ConfigurationRoot: trial.configRoot,
+	})
 	if err != nil {
 		return result, err
 	}

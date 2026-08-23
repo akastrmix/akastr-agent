@@ -40,6 +40,9 @@ func (client loopClient) Check(ctx context.Context, _ string, _ string, _ int64,
 func (loopClient) FetchConfiguration(context.Context, string, int64, identity.Identity, string) (Configuration, error) {
 	return Configuration{}, errors.New("unexpected fetch")
 }
+func (loopClient) Report(context.Context, string, string, identity.Identity, MaintenanceResult) error {
+	return nil
+}
 func TestRunLoopWaitsForReadyBeforePeriodicMaintenance(t *testing.T) {
 	ready := make(chan struct{})
 	called := make(chan struct{}, 1)
@@ -115,6 +118,7 @@ func TestReconcileOnceDoesNotReexecWhenTargetsAreCurrent(t *testing.T) {
 
 type reconciliationClient struct {
 	configuration Configuration
+	results       []MaintenanceResult
 }
 
 func (client *reconciliationClient) Check(context.Context, string, string, int64, identity.Identity) (Manifest, error) {
@@ -130,6 +134,10 @@ func (client *reconciliationClient) Check(context.Context, string, string, int64
 }
 func (client *reconciliationClient) FetchConfiguration(context.Context, string, int64, identity.Identity, string) (Configuration, error) {
 	return client.configuration, nil
+}
+func (client *reconciliationClient) Report(_ context.Context, _ string, _ string, _ identity.Identity, result MaintenanceResult) error {
+	client.results = append(client.results, result)
+	return nil
 }
 
 type materializeRunner struct{}
@@ -296,6 +304,11 @@ func TestReconcileOnceDoesNotRetryUncommittedImmutableTarget(t *testing.T) {
 	})
 	if err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
+	}
+	if len(client.results) != 1 || client.results[0].Status != "suppressed" ||
+		client.results[0].ErrorCode != "trial_suppressed_after_failure" ||
+		client.results[0].TargetConfigurationRevision != 2 {
+		t.Fatalf("unexpected maintenance results %#v", client.results)
 	}
 }
 

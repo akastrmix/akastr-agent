@@ -241,6 +241,8 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
+		"Join-Path $PSScriptRoot '..'",
+		"& go -C $repository @Arguments",
 		"'test', '-count=100', '-timeout=2m', './internal/autoupdate'",
 		"'test', '-count=20', '-timeout=2m', './internal/features/ipwatch'",
 		"'test', '-count=1', '-timeout=2m', './...'",
@@ -289,7 +291,8 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"IPQUALITY_COMMIT='0ee5f192fed70c04615852efba0e4b8bd43546c7'",
 		"IPQUALITY_SHA256='9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb'",
 		"download_https()",
-		"curl -fsSL --output",
+		"curl --fail --show-error --silent --location",
+		"--proto '=https' --proto-redir '=https' --retry 3",
 		"os_identity=$(",
 		"debian:12|debian:13)",
 		"curl exit code $download_code",
@@ -299,6 +302,8 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"inspect_existing_install \"$agent_id\"",
 		"refusing to downgrade Agent",
 		"the install command belongs to a different Agent node",
+		"existing Agent artifacts do not prove node ownership",
+		"cleanup_managed_artifacts",
 		`"(pending|confirmed)"`,
 		"existing identity schema or enrollment state is invalid",
 		"install -m 0600 \"$preserved_identity\" \"$CONFIG_DIR/identity.json\"",

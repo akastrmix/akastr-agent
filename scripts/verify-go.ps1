@@ -1,8 +1,9 @@
 $ErrorActionPreference = 'Stop'
+$repository = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
 function Invoke-GoCommand {
   param([Parameter(Mandatory = $true)][string[]]$Arguments)
-  & go @Arguments
+  & go -C $repository @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "Go verification failed: go $($Arguments -join ' ')"
   }

@@ -23,6 +23,7 @@ installation_complete=false
 machine_token_installed=false
 reuse_ipquality=false
 configuration_staging=''
+previous_deployment=''
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'Error: %s\n' "$*" >&2; exit 1; }
@@ -126,7 +127,10 @@ download_https() {
     https://*) ;;
     *) fail "$label download URL must use HTTPS" ;;
   esac
-  if curl -fsSL --output "$destination" "$url"; then
+  if curl --fail --show-error --silent --location \
+      --proto '=https' --proto-redir '=https' --retry 3 \
+      --connect-timeout 30 --max-time 300 \
+      --output "$destination" "$url"; then
     :
   else
     download_code=$?
@@ -194,12 +198,37 @@ inspect_existing_install() {
     config_id=$(read_config_agent_id "$existing_config")
     require_uuid "$config_id"
   fi
+
+  if [ -e "$CONFIGURATION_ROOT" ] || [ -L "$CONFIGURATION_ROOT" ]; then
+    [ -d "$CONFIGURATION_ROOT" ] && [ ! -L "$CONFIGURATION_ROOT" ] \
+      || fail "managed configuration root is not a regular directory: $CONFIGURATION_ROOT"
+    for managed_config in "$CONFIGURATION_ROOT"/*/config.json; do
+      [ -e "$managed_config" ] || [ -L "$managed_config" ] || continue
+      managed_revision=$(basename "$(dirname "$managed_config")")
+      printf '%s\n' "$managed_revision" | grep -Eq '^[1-9][0-9]*$' || continue
+      [ -f "$managed_config" ] && [ ! -L "$managed_config" ] \
+        || fail "managed configuration is not a regular file: $managed_config"
+      managed_id=$(read_config_agent_id "$managed_config")
+      require_uuid "$managed_id"
+      if [ -n "$config_id" ] && [ "$config_id" != "$managed_id" ]; then
+        fail 'managed Agent configurations refer to different nodes'
+      fi
+      config_id=$managed_id
+    done
+  fi
   if [ -n "$identity_id" ] && [ -n "$config_id" ] && [ "$identity_id" != "$config_id" ]; then
     fail 'existing Agent identity and configuration refer to different nodes'
   fi
   existing_id=${identity_id:-$config_id}
   if [ -n "$existing_id" ] && [ "$existing_id" != "$requested_id" ]; then
     fail 'the install command belongs to a different Agent node'
+  fi
+  if [ -z "$existing_id" ]; then
+    for residue in "$CONFIG_DIR" "$STATE_DIR" "$RELEASE_ROOT" "$SERVICE_FILE"; do
+      if [ -e "$residue" ] || [ -L "$residue" ]; then
+        fail 'existing Agent artifacts do not prove node ownership; uninstall before installing'
+      fi
+    done
   fi
 
   if [ -e "$existing_binary" ] || [ -L "$existing_binary" ]; then
@@ -219,6 +248,110 @@ inspect_existing_install() {
   if [ -f "$existing_identity" ]; then
     preserved_identity=$existing_identity
   fi
+
+  if [ -L "$RELEASE_ROOT/current" ]; then
+    resolved_current=$(readlink -f "$RELEASE_ROOT/current" || true)
+    case "$resolved_current" in
+      "$RELEASE_ROOT/deployments/"*)
+        resolved_name=${resolved_current#"$RELEASE_ROOT/deployments/"}
+        if [ "$(dirname "$resolved_current")" = "$RELEASE_ROOT/deployments" ] \
+            && printf '%s\n' "$resolved_name" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-r[1-9][0-9]*$' \
+            && [ -d "$resolved_current" ] && [ ! -L "$resolved_current" ]; then
+          previous_deployment=$resolved_current
+        fi
+        ;;
+    esac
+  fi
+}
+
+managed_release_for_deployment() {
+  deployment=$1
+  deployments_root=$RELEASE_ROOT/deployments
+  [ "$(dirname "$deployment")" = "$deployments_root" ] \
+    || return 1
+  deployment_name=$(basename "$deployment")
+  printf '%s\n' "$deployment_name" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-r[1-9][0-9]*$' \
+    || return 1
+  release_version=${deployment_name%-r*}
+  [ -L "$deployment/akastr-agent" ] || return 1
+  binary=$(readlink -f "$deployment/akastr-agent") || return 1
+  release_dir=$(dirname "$binary")
+  [ "$(dirname "$release_dir")" = "$RELEASE_ROOT/releases" ] \
+    && [ "$(basename "$release_dir")" = "$release_version" ] \
+    && [ "$(basename "$binary")" = 'akastr-agent' ] \
+    && [ -d "$release_dir" ] && [ ! -L "$release_dir" ] \
+    && [ -f "$binary" ] && [ ! -L "$binary" ] \
+    || return 1
+  printf '%s\n' "$release_dir"
+}
+
+managed_configuration_for_deployment() {
+  deployment=$1
+  deployments_root=$RELEASE_ROOT/deployments
+  [ "$(dirname "$deployment")" = "$deployments_root" ] \
+    || return 1
+  deployment_name=$(basename "$deployment")
+  printf '%s\n' "$deployment_name" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-r[1-9][0-9]*$' \
+    || return 1
+  revision=${deployment_name##*-r}
+  [ -L "$deployment/config" ] || return 1
+  configuration_dir=$(readlink -f "$deployment/config") || return 1
+  [ "$(dirname "$configuration_dir")" = "$CONFIGURATION_ROOT" ] \
+    && [ "$(basename "$configuration_dir")" = "$revision" ] \
+    && [ -d "$configuration_dir" ] && [ ! -L "$configuration_dir" ] \
+    || return 1
+  printf '%s\n' "$configuration_dir"
+}
+
+prune_managed_directories() {
+  managed_root=$1
+  managed_pattern=$2
+  protected_one=$3
+  protected_two=$4
+  for managed_path in "$managed_root"/*; do
+    [ -e "$managed_path" ] || [ -L "$managed_path" ] || continue
+    managed_name=$(basename "$managed_path")
+    printf '%s\n' "$managed_name" | grep -Eq "$managed_pattern" || continue
+    [ "$managed_path" = "$protected_one" ] && continue
+    [ -n "$protected_two" ] && [ "$managed_path" = "$protected_two" ] && continue
+    [ -d "$managed_path" ] && [ ! -L "$managed_path" ] || continue
+    rm -rf -- "$managed_path" || cleanup_failed=true
+  done
+}
+
+cleanup_managed_artifacts() {
+  cleanup_failed=false
+  deployments_root=$RELEASE_ROOT/deployments
+  releases_root=$RELEASE_ROOT/releases
+  for managed_root in "$deployments_root" "$releases_root" "$CONFIGURATION_ROOT"; do
+    [ -d "$managed_root" ] && [ ! -L "$managed_root" ] || return 1
+  done
+
+  current_deployment=$(readlink -f "$RELEASE_ROOT/current") || return 1
+  current_release=$(managed_release_for_deployment "$current_deployment") || return 1
+  current_configuration=$(managed_configuration_for_deployment "$current_deployment") || return 1
+  retained_previous=''
+  previous_release=''
+  previous_configuration=''
+  if [ -n "$previous_deployment" ] && [ "$previous_deployment" != "$current_deployment" ]; then
+    previous_release=$(managed_release_for_deployment "$previous_deployment") || return 1
+    previous_configuration=$(managed_configuration_for_deployment "$previous_deployment") || return 1
+    retained_previous=$previous_deployment
+  fi
+
+  prune_managed_directories \
+    "$deployments_root" \
+    '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-r[1-9][0-9]*$' \
+    "$current_deployment" "$retained_previous"
+  [ "$cleanup_failed" = false ] || return 1
+  prune_managed_directories \
+    "$releases_root" \
+    '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    "$current_release" "$previous_release"
+  prune_managed_directories \
+    "$CONFIGURATION_ROOT" '^[1-9][0-9]*$' \
+    "$current_configuration" "$previous_configuration"
+  [ "$cleanup_failed" = false ]
 }
 
 install_packages() {
@@ -472,6 +605,10 @@ fresh_install() {
     "$CONFIG_DIR/config.json" \
     "$CONFIG_DIR/changeip-curl.conf" \
     "$CONFIG_DIR/proxy-profiles.json"
+
+  if ! cleanup_managed_artifacts; then
+    printf 'Warning: old Agent artifact cleanup is incomplete; active deployment is unchanged.\n' >&2
+  fi
 
   installation_complete=true
   say "Akastr Agent $AGENT_RELEASE_VERSION installed successfully."

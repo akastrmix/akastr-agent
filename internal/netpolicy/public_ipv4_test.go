@@ -32,6 +32,9 @@ func TestIsPublicIPv6(t *testing.T) {
 	tests := map[string]bool{
 		"2606:4700:4700::1111":    true,
 		"2001:4860:4860::8888":    true,
+		"64:ff9b::808:808":        true,
+		"2001:1::1":               true,
+		"2001:3::1":               true,
 		"::":                      false,
 		"::1":                     false,
 		"::ffff:192.0.2.128":      false,
@@ -39,6 +42,15 @@ func TestIsPublicIPv6(t *testing.T) {
 		"fd00::1":                 false,
 		"fe80::1":                 false,
 		"ff02::1":                 false,
+		"64:ff9b:1::1":            false,
+		"100::1":                  false,
+		"100:0:0:1::1":            false,
+		"2001::1":                 false,
+		"2001:2::1":               false,
+		"2001:db8::1":             false,
+		"2002::1":                 false,
+		"3fff::1":                 false,
+		"5f00::1":                 false,
 		"8.8.8.8":                 false,
 	}
 	for input, expected := range tests {

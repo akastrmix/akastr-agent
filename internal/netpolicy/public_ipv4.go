@@ -20,6 +20,30 @@ var nonPublicIPv4 = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),
 }
 
+type ipv6SpecialPurpose struct {
+	prefix            netip.Prefix
+	globallyReachable bool
+}
+
+var specialPurposeIPv6 = []ipv6SpecialPurpose{
+	// Globally reachable exceptions inside IANA's otherwise non-global 2001::/23 block.
+	{netip.MustParsePrefix("2001:1::1/128"), true},
+	{netip.MustParsePrefix("2001:1::2/128"), true},
+	{netip.MustParsePrefix("2001:1::3/128"), true},
+	{netip.MustParsePrefix("2001:3::/32"), true},
+	{netip.MustParsePrefix("2001:4:112::/48"), true},
+	{netip.MustParsePrefix("2001:20::/28"), true},
+	{netip.MustParsePrefix("2001:30::/28"), true},
+	{netip.MustParsePrefix("64:ff9b:1::/48"), false},
+	{netip.MustParsePrefix("100::/64"), false},
+	{netip.MustParsePrefix("100:0:0:1::/64"), false},
+	{netip.MustParsePrefix("2001::/23"), false},
+	{netip.MustParsePrefix("2001:db8::/32"), false},
+	{netip.MustParsePrefix("2002::/16"), false},
+	{netip.MustParsePrefix("3fff::/20"), false},
+	{netip.MustParsePrefix("5f00::/16"), false},
+}
+
 func IsPublicIPv4(address netip.Addr) bool {
 	address = address.Unmap()
 	if !address.Is4() {
@@ -34,6 +58,14 @@ func IsPublicIPv4(address netip.Addr) bool {
 }
 
 func IsPublicIPv6(address netip.Addr) bool {
-	return address.Is6() && !address.Is4In6() && address.IsGlobalUnicast() && !address.IsPrivate() &&
-		!address.IsLoopback() && !address.IsLinkLocalUnicast()
+	if !address.Is6() || address.Is4In6() || !address.IsGlobalUnicast() || address.IsPrivate() ||
+		address.IsLoopback() || address.IsLinkLocalUnicast() {
+		return false
+	}
+	for _, special := range specialPurposeIPv6 {
+		if special.prefix.Contains(address) {
+			return special.globallyReachable
+		}
+	}
+	return true
 }

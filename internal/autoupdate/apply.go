@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ type CommitOptions struct {
 	Version               string
 	ConfigurationRevision int64
 	ReleaseRoot           string
+	ConfigurationRoot     string
 	SyncDirectory         func(string) error
 	RemoveAll             func(string) error
 }
@@ -130,10 +132,16 @@ func Commit(options CommitOptions) (CommitResult, error) {
 	if runtime.GOOS != "linux" {
 		return CommitResult{}, errors.New("automatic updates are supported only on Linux")
 	}
-	if !semanticVersion.MatchString(options.Version) || options.ConfigurationRevision < 1 || options.ReleaseRoot == "" || !filepath.IsAbs(options.ReleaseRoot) {
+	if !semanticVersion.MatchString(options.Version) || options.ConfigurationRevision < 1 ||
+		options.ReleaseRoot == "" || !filepath.IsAbs(options.ReleaseRoot) ||
+		options.ConfigurationRoot == "" || !filepath.IsAbs(options.ConfigurationRoot) {
 		return CommitResult{}, errors.New("automatic update commit options are invalid")
 	}
 	releaseRoot, err := filepath.Abs(options.ReleaseRoot)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	configurationRoot, err := filepath.Abs(options.ConfigurationRoot)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -163,7 +171,7 @@ func Commit(options CommitOptions) (CommitResult, error) {
 	if removeAll == nil {
 		removeAll = os.RemoveAll
 	}
-	result.CleanupFailed = pruneOldDeployments(deploymentsRoot, target, previous, removeAll)
+	result.CleanupFailed = pruneManagedArtifacts(releaseRoot, configurationRoot, target, previous, removeAll)
 	return result, nil
 }
 
@@ -387,14 +395,107 @@ func syncDirectory(path string) error {
 }
 
 func pruneOldDeployments(deploymentsRoot, current, previous string, removeAll func(string) error) bool {
-	entries, err := os.ReadDir(deploymentsRoot)
+	return pruneManagedDirectories(
+		deploymentsRoot,
+		deploymentPattern,
+		map[string]struct{}{filepath.Clean(current): {}, filepath.Clean(previous): {}},
+		removeAll,
+	)
+}
+
+func pruneManagedArtifacts(releaseRoot, configurationRoot, current, previous string, removeAll func(string) error) bool {
+	releasesRoot := filepath.Join(releaseRoot, "releases")
+	deploymentsRoot := filepath.Join(releaseRoot, "deployments")
+	for _, root := range []string{releasesRoot, deploymentsRoot, configurationRoot} {
+		info, err := os.Lstat(root)
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
+	protectedReleases := make(map[string]struct{}, 2)
+	protectedConfigurations := make(map[string]struct{}, 2)
+	for _, deployment := range []string{current, previous} {
+		release, configuration, err := managedDeploymentArtifacts(deployment, releasesRoot, configurationRoot)
+		if err != nil {
+			return true
+		}
+		protectedReleases[release] = struct{}{}
+		protectedConfigurations[configuration] = struct{}{}
+	}
+	if pruneOldDeployments(deploymentsRoot, current, previous, removeAll) {
+		return true
+	}
+	failed := pruneManagedDirectories(releasesRoot, semanticVersion, protectedReleases, removeAll)
+	if pruneManagedDirectories(configurationRoot, configurationRevisionPattern, protectedConfigurations, removeAll) {
+		failed = true
+	}
+	return failed
+}
+
+func managedDeploymentArtifacts(deployment, releasesRoot, configurationRoot string) (string, string, error) {
+	deployment = filepath.Clean(deployment)
+	name := filepath.Base(deployment)
+	if !deploymentPattern.MatchString(name) {
+		return "", "", errors.New("protected Agent deployment name is invalid")
+	}
+	separator := strings.LastIndex(name, "-r")
+	version, revision := name[:separator], name[separator+2:]
+
+	binaryLink := filepath.Join(deployment, "akastr-agent")
+	info, err := os.Lstat(binaryLink)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return "", "", errors.New("protected Agent deployment binary link is invalid")
+	}
+	binary, err := filepath.EvalSymlinks(binaryLink)
+	if err != nil {
+		return "", "", errors.New("protected Agent deployment binary target is invalid")
+	}
+	release, err := directManagedDirectory(filepath.Dir(binary), releasesRoot, semanticVersion)
+	if err != nil || filepath.Base(release) != version || filepath.Base(binary) != "akastr-agent" {
+		return "", "", errors.New("protected Agent deployment release is invalid")
+	}
+
+	configLink := filepath.Join(deployment, "config")
+	info, err = os.Lstat(configLink)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return "", "", errors.New("protected Agent deployment configuration link is invalid")
+	}
+	configuration, err := filepath.EvalSymlinks(configLink)
+	if err != nil {
+		return "", "", errors.New("protected Agent deployment configuration target is invalid")
+	}
+	configuration, err = directManagedDirectory(configuration, configurationRoot, configurationRevisionPattern)
+	if err != nil || filepath.Base(configuration) != revision {
+		return "", "", errors.New("protected Agent deployment configuration is invalid")
+	}
+	return release, configuration, nil
+}
+
+func directManagedDirectory(path, root string, pattern *regexp.Regexp) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || filepath.Dir(relative) != "." || !pattern.MatchString(filepath.Base(path)) {
+		return "", errors.New("managed Agent artifact escapes its root")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("managed Agent artifact is not a safe directory")
+	}
+	return filepath.Clean(path), nil
+}
+
+func pruneManagedDirectories(root string, pattern *regexp.Regexp, protected map[string]struct{}, removeAll func(string) error) bool {
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		return true
 	}
 	failed := false
 	for _, entry := range entries {
-		path := filepath.Join(deploymentsRoot, entry.Name())
-		if path == current || path == previous || !deploymentPattern.MatchString(entry.Name()) {
+		path := filepath.Clean(filepath.Join(root, entry.Name()))
+		if _, keep := protected[path]; keep || !pattern.MatchString(entry.Name()) {
 			continue
 		}
 		info, err := entry.Info()

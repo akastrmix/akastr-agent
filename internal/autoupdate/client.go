@@ -28,13 +28,16 @@ const (
 	ConfigurationSchema           = "akastr-agent-configuration.v1"
 	MaintenanceAuthContext        = "akastr-agent-maintenance-check-v1"
 	ConfigurationFetchAuthContext = "akastr-agent-configuration-fetch-v1"
+	MaintenanceResultAuthContext  = "akastr-agent-maintenance-result-v1"
 	maxResponse                   = 128 * 1024
 )
 
 var (
-	semanticVersion   = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
-	sha256Hex         = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	deploymentPattern = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-r[1-9][0-9]*$`)
+	semanticVersion              = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
+	sha256Hex                    = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	deploymentPattern            = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-r[1-9][0-9]*$`)
+	configurationRevisionPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
+	stableCodePattern            = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 )
 
 type CheckRequest struct {
@@ -75,6 +78,24 @@ type Configuration struct {
 	BootstrapSchemaVersion int             `json:"bootstrap_schema_version"`
 	MinimumAgentVersion    string          `json:"minimum_agent_version"`
 	Bootstrap              json.RawMessage `json:"bootstrap"`
+}
+
+type MaintenanceResult struct {
+	TargetVersion               string
+	TargetConfigurationRevision int64
+	Status                      string
+	ErrorCode                   string
+}
+
+type maintenanceResultRequest struct {
+	AgentID                     string `json:"agent_id"`
+	TargetVersion               string `json:"target_version"`
+	TargetConfigurationRevision int64  `json:"target_configuration_revision"`
+	Status                      string `json:"status"`
+	ErrorCode                   string `json:"error_code"`
+	Nonce                       string `json:"nonce"`
+	SentAt                      string `json:"sent_at"`
+	Signature                   string `json:"signature"`
 }
 
 type Client struct {
@@ -140,6 +161,41 @@ func configurationFetchSigningText(request configurationFetchRequest) []byte {
 	return []byte(strings.Join([]string{
 		ConfigurationFetchAuthContext, request.AgentID,
 		strconv.FormatInt(request.ConfigurationRevision, 10), request.Nonce, request.SentAt,
+	}, "\n"))
+}
+
+func (c Client) Report(ctx context.Context, controlEndpoint, userAgentVersion string, credentials identity.Identity, result MaintenanceResult) error {
+	if !semanticVersion.MatchString(result.TargetVersion) || result.TargetConfigurationRevision < 1 ||
+		(result.Status != "busy" && result.Status != "failed" && result.Status != "suppressed") || !stableCodePattern.MatchString(result.ErrorCode) {
+		return errors.New("Agent maintenance result is invalid")
+	}
+	request := maintenanceResultRequest{
+		AgentID:                     credentials.AgentID,
+		TargetVersion:               result.TargetVersion,
+		TargetConfigurationRevision: result.TargetConfigurationRevision,
+		Status:                      result.Status,
+		ErrorCode:                   result.ErrorCode,
+	}
+	if err := c.sign(credentials, &request.Nonce, &request.SentAt, &request.Signature, func() []byte { return maintenanceResultSigningText(request) }); err != nil {
+		return err
+	}
+	var response struct {
+		Persisted bool `json:"persisted"`
+	}
+	if err := c.post(ctx, controlEndpoint, "/internal/agents/maintenance-result", userAgentVersion, request, &response); err != nil {
+		return fmt.Errorf("report Agent maintenance result: %w", err)
+	}
+	if !response.Persisted {
+		return errors.New("Agent maintenance result was not persisted")
+	}
+	return nil
+}
+
+func maintenanceResultSigningText(request maintenanceResultRequest) []byte {
+	return []byte(strings.Join([]string{
+		MaintenanceResultAuthContext, request.AgentID, request.TargetVersion,
+		strconv.FormatInt(request.TargetConfigurationRevision, 10),
+		request.Status, request.ErrorCode, request.Nonce, request.SentAt,
 	}, "\n"))
 }
 

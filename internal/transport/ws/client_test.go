@@ -331,11 +331,11 @@ func TestDeploymentTrialCommitsBeforeReady(t *testing.T) {
 			serverErrors <- errors.New("deployment.committed was sent before the local trial callback")
 			return
 		}
+		close(helloAcknowledged)
 		if writeError := session.write(request.Context(), "hello.accepted", protocol.AgentIDBody{AgentID: agentID}); writeError != nil {
 			serverErrors <- writeError
 			return
 		}
-		close(helloAcknowledged)
 		<-ready
 	}))
 	defer server.Close()

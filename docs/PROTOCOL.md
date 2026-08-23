@@ -8,7 +8,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 
 `POST /internal/agents/enroll` 请求必须且只能包含 `machine_token`、raw 32-byte `public_key`、当前批准的语义化 `agent_version`、正整数 `configuration_revision` 和不含秘密的 `capabilities`。版本必须精确等于 Cloud 当前批准 release，revision 必须精确等于节点的 desired revision，否则分别返回 `agent_release_required` 或 `agent_configuration_stale`。首次安装生成 Ed25519 keypair；同节点完整重装复用已确认 identity，并再次提交同一公钥。注册成功把 applied revision 推进到 desired revision，并断开既有 WSS。只有状态码与已知 enrollment 业务错误严格匹配的 JSON 4xx 响应才会删除新生成的 pending identity；已确认 identity 不因重装被拒绝而删除。重定向、408、425、429、5xx、非 JSON 代理响应、网络中断和无法严格解析的响应均保留 identity 供重试。主控在该节点存在 pending、offered 或 accepted command，或 Target 对应服务器仍有 active ChangeIP session 时，以 `agent_node_busy` 拒绝注册。
 
-机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。配置更新保持节点 ID、target/Runner 角色、服务器绑定、机器 token 和 identity 不变；主控递增 desired revision、替换密封 bootstrap、断开连接，并在新 revision enrollment 完成前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受当前 bootstrap v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
+机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。配置更新保持节点 ID、target/Runner 角色、服务器绑定、机器 token 和 identity 不变；ChangeIP 与 Runner credential 只接受显式 `keep|replace|clear`，空字符串不表示保留。主控在一个事务中解封、合并、递增 desired revision 并重新密封 bootstrap，随后断开连接；新 revision ready 前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受当前 bootstrap v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -46,6 +46,8 @@ akastr-agent-maintenance-check-v1
 主控返回严格的 `akastr-agent-maintenance.v1` 原子目标：顶层 `status`，以及完整 `software` 和 `configuration`。软件目标包含状态、批准语义版本、相同 WSS protocol、精确 immutable URL 和 SHA-256；配置目标包含状态、desired revision、bootstrap schema 与最低 Agent 版本。目标不允许软件降级、配置 revision 回退或跨 WSS 协议更新；存在未终结 command、active ChangeIP 或运行中的目标 IPQuality 时只能返回 `busy`。
 
 配置目标可用时，Agent 对 `akastr-agent-configuration-fetch-v1`、`agent_id`、desired revision、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration`。主控以内存解封既有密封 bootstrap，返回严格的 `akastr-agent-configuration.v1`，不建立第二份明文配置持久化。目标二进制必须先严格解析并物化该 bootstrap，再从 candidate 配置生成 capability。
+
+确定性维护失败或同一目标已被抑制时，Agent 向 `POST /internal/agents/maintenance-result` 发送严格的目标版本、目标 revision、`busy|failed|suppressed`、稳定错误码、nonce、时间和 Ed25519 签名。签名文本以 `akastr-agent-maintenance-result-v1` 开头并按请求字段顺序逐行连接。主控只接受当前批准版本与当前 desired revision，持久化有界投影；请求不得包含错误文本、URL、bootstrap 或 secret。结果投影失败不改变 deployment 或重试语义。
 
 物化成功后，candidate 以 `deployment_state=trial` 建立 WSS。Cloud 重新校验当前 desired revision、批准 release、密封 bootstrap 的最低版本、角色 capability、配置参数与空闲状态；通过后仅返回 `deployment.trial_accepted`，不推进 applied、不注册 ready，也不派发 operation。Agent 随即原子替换并 fsync 本地 `current`，再发送 body 为空对象的 `deployment.committed`。Cloud 以同一 hello 内容按 `current` 规则重新校验并原子推进 applied、版本、capability 与 hello 时间，随后返回 `hello.accepted` 并进入 ready。若本地提交后连接在确认前中断，新进程以 `deployment_state=current` 重连即可完成同一收敛。提交前发生确定性的本地启动或配置失败时，candidate 留在不可变 deployment 目录中；旧 current 对相同软件版本与 revision 不再试运行，只有目标变化才重试。trial 在 readiness 超时前仍未提交时删除该 deployment，使临时 WSS 故障恢复后可以重试。maintenance/fetch 只使用 active Ed25519 identity，不接收机器 token。
 
@@ -86,7 +88,7 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 ## IP 观察、ChangeIP 与 IPv4 核对
 
-`ip.snapshot` 与 `ip.observed` 的 `family` 只允许 `ipv4` 或 `ipv6`，地址必须与 family 匹配且为对应协议族的公网地址。IPv4 与 IPv6 各自使用独立 baseline、待确认事实和 UUID 幂等重放；任一 family 的 ack 不得清除另一 family 的状态。
+`ip.snapshot` 与 `ip.observed` 的 `family` 只允许 `ipv4` 或 `ipv6`，地址必须与 family 匹配且为对应协议族的公网地址。IPv6 在比较和持久化前规范化文本，并按固定 IANA special-purpose policy 拒绝非 globally reachable 地址；Cloud 还要求 active `ip.observe.properties.observe_ipv6=true`。IPv4 与 IPv6 各自使用独立 baseline、待确认事实和 UUID 幂等重放；任一 family 的 ack 不得清除另一 family 的状态。
 
 Target 首次成功 IPv6 观察发送 `family=ipv6` 的 `ip.snapshot`，之后地址改变发送 `family=ipv6` 的 `ip.observed`。IPv6 snapshot 只建立主控 baseline，不设置 IPv4 readiness；无 IPv6、探测失败或暂时不可达不发送消失事件，也不影响 IPv4、ChangeIP、IPQuality 或 SOCKS5。
 

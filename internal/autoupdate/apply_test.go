@@ -45,12 +45,12 @@ func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("symlink release activation is Linux-only")
 	}
-	root, previous := releaseFixture(t)
+	root, configRoot, previous := releaseFixture(t)
 	binary := "future-agent-binary"
 	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
 	runner := &fakeRunner{}
 	staged, err := Stage(t.Context(), ApplyOptions{
-		Manifest: manifestForApply(checksum), ConfigPath: filepath.Join(root, "config.json"),
+		Manifest: manifestForApply(checksum), ConfigPath: filepath.Join(configRoot, "1", "config.json"),
 		ReleaseRoot: root,
 		HTTPClient:  &http.Client{Transport: responseTransport{body: binary}},
 		Runner:      runner,
@@ -68,11 +68,14 @@ func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 	if current != previous {
 		t.Fatalf("stage changed current to %s", current)
 	}
-	deployment, err := StageDeployment(root, staged.Version, 1, filepath.Join(root, "config.json"))
+	deployment, err := StageDeployment(root, staged.Version, 1, filepath.Join(configRoot, "1", "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := Commit(CommitOptions{Version: staged.Version, ConfigurationRevision: 1, ReleaseRoot: root})
+	result, err := Commit(CommitOptions{
+		Version: staged.Version, ConfigurationRevision: 1,
+		ReleaseRoot: root, ConfigurationRoot: configRoot,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +94,15 @@ func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "deployments", "v0.5.0-r1")); !os.IsNotExist(err) {
 		t.Fatal("stale third deployment was not removed")
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases", "v0.5.0")); !os.IsNotExist(err) {
+		t.Fatal("unreferenced release was not removed")
+	}
+	if _, err := os.Stat(filepath.Join(configRoot, "9")); !os.IsNotExist(err) {
+		t.Fatal("unreferenced configuration was not removed")
+	}
+	if _, err := os.Stat(filepath.Join(root, "releases", "manual")); err != nil {
+		t.Fatal("unknown release directory was removed")
 	}
 }
 
@@ -146,7 +158,7 @@ func TestCommitNeverDeletesTargetAfterRenameWhenDirectorySyncFails(t *testing.T)
 	if runtime.GOOS != "linux" {
 		t.Skip("symlink release activation is Linux-only")
 	}
-	root, previous := releaseFixture(t)
+	root, configRoot, previous := releaseFixture(t)
 	targetRelease := filepath.Join(root, "releases", "v0.7.1")
 	if err := os.Mkdir(targetRelease, 0o755); err != nil {
 		t.Fatal(err)
@@ -154,13 +166,14 @@ func TestCommitNeverDeletesTargetAfterRenameWhenDirectorySyncFails(t *testing.T)
 	if err := os.WriteFile(filepath.Join(targetRelease, "akastr-agent"), []byte("future"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	target, err := StageDeployment(root, "v0.7.1", 1, filepath.Join(root, "config.json"))
+	target, err := StageDeployment(root, "v0.7.1", 1, filepath.Join(configRoot, "1", "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := errors.New("fsync failed")
 	result, err := Commit(CommitOptions{
-		Version: "v0.7.1", ConfigurationRevision: 1, ReleaseRoot: root,
+		Version: "v0.7.1", ConfigurationRevision: 1,
+		ReleaseRoot: root, ConfigurationRoot: configRoot,
 		SyncDirectory: func(string) error { return want },
 	})
 	if !errors.Is(err, want) || !result.Committed {
@@ -178,16 +191,58 @@ func TestCommitNeverDeletesTargetAfterRenameWhenDirectorySyncFails(t *testing.T)
 	}
 }
 
+func TestCommitCleanupFailureDoesNotUndoActivation(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("symlink release activation is Linux-only")
+	}
+	root, configRoot, previous := releaseFixture(t)
+	targetRelease := filepath.Join(root, "releases", "v0.7.1")
+	if err := os.Mkdir(targetRelease, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(targetRelease, "akastr-agent"), []byte("future"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target, err := StageDeployment(root, "v0.7.1", 1, filepath.Join(configRoot, "1", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleDeployment := filepath.Join(root, "deployments", "v0.5.0-r1")
+	result, err := Commit(CommitOptions{
+		Version: "v0.7.1", ConfigurationRevision: 1,
+		ReleaseRoot: root, ConfigurationRoot: configRoot,
+		RemoveAll: func(path string) error {
+			if path == staleDeployment {
+				return errors.New("injected cleanup failure")
+			}
+			return os.RemoveAll(path)
+		},
+	})
+	if err != nil || !result.Committed || !result.CleanupFailed {
+		t.Fatalf("Commit() result=%#v error=%v", result, err)
+	}
+	current, resolveError := filepath.EvalSymlinks(filepath.Join(root, "current"))
+	if resolveError != nil || current != target {
+		t.Fatalf("current=%s error=%v", current, resolveError)
+	}
+	if _, statError := os.Stat(previous); statError != nil {
+		t.Fatalf("previous deployment was deleted: %v", statError)
+	}
+	if _, statError := os.Stat(filepath.Join(root, "releases", "v0.5.0")); statError != nil {
+		t.Fatalf("artifact cleanup continued after deployment cleanup failed: %v", statError)
+	}
+}
+
 func TestStageSyncsBinaryDirectoryBeforePublishingRelease(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("symlink release activation is Linux-only")
 	}
-	root, _ := releaseFixture(t)
+	root, configRoot, _ := releaseFixture(t)
 	binary := "future-agent-binary"
 	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
 	var synced []string
 	_, err := Stage(t.Context(), ApplyOptions{
-		Manifest: manifestForApply(checksum), ConfigPath: filepath.Join(root, "config.json"),
+		Manifest: manifestForApply(checksum), ConfigPath: filepath.Join(configRoot, "1", "config.json"),
 		ReleaseRoot: root,
 		HTTPClient:  &http.Client{Transport: responseTransport{body: binary}},
 		Runner:      &fakeRunner{},
@@ -205,21 +260,28 @@ func TestStageSyncsBinaryDirectoryBeforePublishingRelease(t *testing.T) {
 	}
 }
 
-func releaseFixture(t *testing.T) (string, string) {
+func releaseFixture(t *testing.T) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()
 	releases := filepath.Join(root, "releases")
+	configRoot := filepath.Join(root, "configurations")
 	previousRelease := filepath.Join(releases, "v0.7.0")
+	if err := os.MkdirAll(filepath.Join(configRoot, "1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(configRoot, "9"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(previousRelease, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(previousRelease, "akastr-agent"), []byte("current"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "config.json"), []byte("{}"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(configRoot, "1", "config.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	previous, err := StageDeployment(root, "v0.7.0", 1, filepath.Join(root, "config.json"))
+	previous, err := StageDeployment(root, "v0.7.0", 1, filepath.Join(configRoot, "1", "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,10 +289,16 @@ func releaseFixture(t *testing.T) (string, string) {
 	if err := os.Mkdir(stale, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Mkdir(filepath.Join(releases, "v0.5.0"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(releases, "manual"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(previous, filepath.Join(root, "current")); err != nil {
 		t.Fatal(err)
 	}
-	return root, previous
+	return root, configRoot, previous
 }
 
 func manifestForApply(checksum string) Manifest {
