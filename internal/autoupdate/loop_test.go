@@ -21,8 +21,12 @@ import (
 
 type loopClient struct{ called chan struct{} }
 
-func (client loopClient) Check(context.Context, string, string, int64, identity.Identity) (Manifest, error) {
-	client.called <- struct{}{}
+func (client loopClient) Check(ctx context.Context, _ string, _ string, _ int64, _ identity.Identity) (Manifest, error) {
+	select {
+	case client.called <- struct{}{}:
+	case <-ctx.Done():
+		return Manifest{}, ctx.Err()
+	}
 	return Manifest{
 		Schema: Schema, Status: "current",
 		Software: SoftwareTarget{
