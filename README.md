@@ -82,9 +82,7 @@ scripts/                release 构建与非交互安装模板
 需要 Go 1.25 或 `go.mod` 指定的兼容版本：
 
 ```bash
-go test ./...
-go vet ./...
-go build ./cmd/akastr-agent
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-go.ps1
 ```
 
 修改 installer 时，再在本机 Docker/WSL 运行一次性 Debian 12/13 回归；容器不连接 Cloud，也不使用真实 token：
@@ -106,7 +104,7 @@ done
 .\release.cmd agent -AgentVersion vX.Y.Z -Execute
 ```
 
-该命令要求两个仓库都位于 `main`、已经提交且工作树干净；它验证双方协议与 Agent 源码，直接推送 Agent `main`，创建并验证 `vX.Y.Z` 标签，等待 GitHub Actions 发布不可变的 Linux amd64 binary 与版本专用 `install.sh`，再把精确版本、URL 和内部摘要提交到 Cloud，并按 Cloud 差异自动选择 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段。流程不创建 PR；同一版本和 commit 可在中断后直接重跑，已发布资产不会被覆盖。
+该命令要求两个仓库都位于 `main`、已经提交且工作树干净；它验证双方协议与 Agent 源码，推送 Agent `main` 并等待该精确 commit 的 Linux CI 全部通过后才创建 `vX.Y.Z` 标签，随后验证 GitHub Actions 发布的不可变 Linux amd64 binary 与版本专用 `install.sh`，再把精确版本、URL 和内部摘要提交到 Cloud，并按 Cloud 差异自动选择 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段。流程不创建 PR；同一版本和 commit 可在中断后直接重跑，已发布资产不会被覆盖。
 
 本地排查发布构建时可以运行：
 

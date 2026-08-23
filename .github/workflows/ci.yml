@@ -33,14 +33,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          go test ./...
-          go vet ./...
-          go build ./cmd/akastr-agent
+          pwsh -NoProfile -File scripts/verify-go.ps1
           bash -n scripts/install.sh
           bash -n scripts/build-release.sh
           bash -n scripts/verify-ipquality-source.sh
           bash -n scripts/verify-debian-runtime-dependencies.sh
           bash -n scripts/test-installer-container.sh
+          bash scripts/verify-ipquality-source.sh
 
       - name: Build and verify release assets
         shell: bash

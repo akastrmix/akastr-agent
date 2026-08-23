@@ -164,6 +164,7 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	powerShellBuild := repositoryFile(t, "scripts", "build-release.ps1")
 	ci := repositoryFile(t, ".github", "workflows", "ci.yml")
 	releaseWorkflow := repositoryFile(t, ".github", "workflows", "release.yml")
+	goVerification := repositoryFile(t, "scripts", "verify-go.ps1")
 	containerIntegration := repositoryFile(t, "scripts", "test-installer-container.sh")
 	if !strings.Contains(build, "GOARCH=amd64") {
 		t.Fatal("release builder must target amd64")
@@ -209,8 +210,10 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"go test ./...",
-		"go vet ./...",
+		"Require successful main verification",
+		"actions/workflows/ci.yml/runs?branch=main&event=push",
+		"candidate_commit=$(git rev-parse HEAD)",
+		`.head_sha == \"$candidate_commit\"`,
 		"scripts/build-release.sh \"$RELEASE_TAG\" dist",
 		`grep -Fq "curl -fsSL --output" dist/install.sh`,
 		`! grep -Fq "wget " dist/install.sh`,
@@ -222,17 +225,34 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	if strings.Contains(releaseWorkflow, "go build ./cmd/akastr-agent") {
 		t.Fatal("release workflow must not compile a throwaway binary before building exact assets")
 	}
-	for name, workflow := range map[string]string{"CI": ci, "release": releaseWorkflow} {
-		for _, required := range []string{
-			"bash -n scripts/test-installer-container.sh",
-			"--env AKASTR_INSTALLER_CONTAINER_TEST=1",
-			"sh scripts/test-installer-container.sh",
-			"for version in 12 13",
-		} {
-			if !strings.Contains(workflow, required) {
-				t.Fatalf("%s workflow missing installer container integration %q", name, required)
-			}
+	for _, duplicatedGate := range []string{"go test ./...", "test-installer-container.sh"} {
+		if strings.Contains(releaseWorkflow, duplicatedGate) {
+			t.Fatalf("release workflow repeats a pre-tag main verification gate %q", duplicatedGate)
 		}
+	}
+	for _, required := range []string{
+		"bash -n scripts/test-installer-container.sh",
+		"--env AKASTR_INSTALLER_CONTAINER_TEST=1",
+		"sh scripts/test-installer-container.sh",
+		"for version in 12 13",
+	} {
+		if !strings.Contains(ci, required) {
+			t.Fatalf("CI workflow missing installer container integration %q", required)
+		}
+	}
+	for _, required := range []string{
+		"'test', '-count=100', '-timeout=2m', './internal/autoupdate'",
+		"'test', '-count=20', '-timeout=2m', './internal/features/ipwatch'",
+		"'test', '-count=1', '-timeout=2m', './...'",
+		"'vet', './...'",
+		"'build', './cmd/akastr-agent'",
+	} {
+		if !strings.Contains(goVerification, required) {
+			t.Fatalf("Go verification gate missing %q", required)
+		}
+	}
+	if !strings.Contains(ci, "pwsh -NoProfile -File scripts/verify-go.ps1") {
+		t.Fatal("CI must execute the shared cross-platform Go verification gate")
 	}
 	for _, required := range []string{
 		`[ "${AKASTR_INSTALLER_CONTAINER_TEST:-}" = '1' ] && [ -e /.dockerenv ]`,
@@ -388,7 +408,7 @@ func TestReleaseVerifiesPinnedIPQualityRawBytes(t *testing.T) {
 	const expected = "9823c560e0d19769eb627329a31cb47da655d087166d86e40d9b6c77bc7f32fb"
 	model := repositoryFile(t, "internal", "bootstrap", "model.go")
 	verifier := repositoryFile(t, "scripts", "verify-ipquality-source.sh")
-	workflow := repositoryFile(t, ".github", "workflows", "release.yml")
+	workflow := repositoryFile(t, ".github", "workflows", "ci.yml")
 	if !strings.Contains(model, `IPQualitySHA256  = "`+expected+`"`) {
 		t.Fatal("bootstrap runtime checksum does not match the pinned raw IPQuality source")
 	}
@@ -402,7 +422,7 @@ func TestReleaseVerifiesPinnedIPQualityRawBytes(t *testing.T) {
 		}
 	}
 	if !strings.Contains(workflow, "bash scripts/verify-ipquality-source.sh") {
-		t.Fatal("release workflow must verify the pinned IPQuality raw bytes before publishing")
+		t.Fatal("main verification must check the pinned IPQuality raw bytes before a release tag is allowed")
 	}
 }
 
@@ -410,7 +430,6 @@ func TestRunnerDependencyContractIsVerifiedOnEverySupportedDebian(t *testing.T) 
 	provider := repositoryFile(t, "internal", "providers", "ipquality", "script", "provider.go")
 	verifier := repositoryFile(t, "scripts", "verify-debian-runtime-dependencies.sh")
 	ci := repositoryFile(t, ".github", "workflows", "ci.yml")
-	release := repositoryFile(t, ".github", "workflows", "release.yml")
 	if !strings.Contains(provider, `var requiredCommands = []string{"/bin/bash", "bc", "curl", "dig", "ip", "jq", "nc"}`) {
 		t.Fatal("IPQuality runtime command contract changed without updating the installer dependency gate")
 	}
@@ -423,15 +442,13 @@ func TestRunnerDependencyContractIsVerifiedOnEverySupportedDebian(t *testing.T) 
 			t.Fatalf("Debian dependency verifier missing contract %q", required)
 		}
 	}
-	for name, workflow := range map[string]string{"CI": ci, "release": release} {
-		for _, required := range []string{
-			"for version in 12 13",
-			`"debian:${version}-slim"`,
-			"sh scripts/verify-debian-runtime-dependencies.sh",
-		} {
-			if !strings.Contains(workflow, required) {
-				t.Fatalf("%s workflow missing runtime dependency Gate %q", name, required)
-			}
+	for _, required := range []string{
+		"for version in 12 13",
+		`"debian:${version}-slim"`,
+		"sh scripts/verify-debian-runtime-dependencies.sh",
+	} {
+		if !strings.Contains(ci, required) {
+			t.Fatalf("main verification workflow missing runtime dependency Gate %q", required)
 		}
 	}
 }
