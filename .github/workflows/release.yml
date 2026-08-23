@@ -81,7 +81,9 @@ jobs:
           test "$installer_status" -eq 1
           grep -Fq 'usage: install.sh' <<<"$installer_usage"
           ! grep -Eq '@AKASTR_AGENT_(VERSION|BINARY_SHA256)@' dist/install.sh
-          grep -Fq "curl -fsSL --output" dist/install.sh
+          grep -Fq "curl --fail --show-error --silent --location" dist/install.sh
+          grep -Fq -- "--proto '=https' --proto-redir '=https' --retry 3" dist/install.sh
+          grep -Fq -- '--output "$destination" "$url"' dist/install.sh
           ! grep -Fq "wget " dist/install.sh
 
       - name: Publish immutable GitHub release

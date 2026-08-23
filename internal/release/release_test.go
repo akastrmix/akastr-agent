@@ -204,6 +204,10 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 		"bash -n \"$release_root/release/install.sh\"",
 		"BINARY_SHA256='$binary_sha'",
 		"@AKASTR_AGENT_(VERSION|BINARY_SHA256)@",
+		`grep -Fq "curl --fail --show-error --silent --location"`,
+		`grep -Fq -- "--proto '=https' --proto-redir '=https' --retry 3"`,
+		`grep -Fq -- '--output "$destination" "$url"'`,
+		`! grep -Fq "wget "`,
 	} {
 		if !strings.Contains(ci, required) {
 			t.Fatalf("CI must execute and verify generated release assets: %q", required)
@@ -215,7 +219,9 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 		"candidate_commit=$(git rev-parse HEAD)",
 		`.head_sha == \"$candidate_commit\"`,
 		"scripts/build-release.sh \"$RELEASE_TAG\" dist",
-		`grep -Fq "curl -fsSL --output" dist/install.sh`,
+		`grep -Fq "curl --fail --show-error --silent --location" dist/install.sh`,
+		`grep -Fq -- "--proto '=https' --proto-redir '=https' --retry 3" dist/install.sh`,
+		`grep -Fq -- '--output "$destination" "$url"' dist/install.sh`,
 		`! grep -Fq "wget " dist/install.sh`,
 	} {
 		if !strings.Contains(releaseWorkflow, required) {
