@@ -37,15 +37,16 @@ type changeAttempt struct {
 }
 
 type Monitor struct {
-	mu          sync.Mutex
-	file        *state.JSONFile
-	observer    AddressObserver
-	interval    time.Duration
-	now         func() time.Time
-	wake        chan struct{}
-	wakeIPv6    chan struct{}
-	observeIPv6 bool
-	snapshot    monitorSnapshot
+	mu               sync.Mutex
+	file             *state.JSONFile
+	observer         AddressObserver
+	interval         time.Duration
+	now              func() time.Time
+	wake             chan struct{}
+	wakeIPv6         chan struct{}
+	observeIPv6      bool
+	snapshotRequired bool
+	snapshot         monitorSnapshot
 }
 
 var errTransientMonitor = errors.New("transient IP monitor failure")
@@ -62,7 +63,8 @@ func OpenMonitor(filePath string, observer AddressObserver, interval time.Durati
 	monitor := &Monitor{
 		file: state.NewJSONFile(filePath), observer: observer, interval: interval, now: time.Now,
 		wake: make(chan struct{}, 1), wakeIPv6: make(chan struct{}, 1), observeIPv6: observeIPv6,
-		snapshot: monitorSnapshot{SchemaVersion: 2},
+		snapshotRequired: true,
+		snapshot:         monitorSnapshot{SchemaVersion: 2},
 	}
 	found, err := monitor.file.Load(&monitor.snapshot)
 	if err != nil {
@@ -270,7 +272,7 @@ func (m *Monitor) NotifyControlReady() {
 func (m *Monitor) SnapshotReady() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.snapshot.LastIPv4 != "" && m.snapshot.PendingSnapshot == nil
+	return !m.snapshotRequired && m.snapshot.LastIPv4 != "" && m.snapshot.PendingSnapshot == nil
 }
 
 func (m *Monitor) ArmChange(commandID, address string, startedAt time.Time) error {
@@ -358,8 +360,10 @@ func (m *Monitor) AckSnapshot(snapshotID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	next := m.snapshot
+	acknowledgedIPv4 := false
 	if next.PendingSnapshot != nil && next.PendingSnapshot.SnapshotID == snapshotID {
 		next.PendingSnapshot = nil
+		acknowledgedIPv4 = true
 	} else if next.PendingIPv6Snapshot != nil && next.PendingIPv6Snapshot.SnapshotID == snapshotID {
 		next.PendingIPv6Snapshot = nil
 	} else {
@@ -369,6 +373,9 @@ func (m *Monitor) AckSnapshot(snapshotID string) error {
 		return err
 	}
 	m.snapshot = next
+	if acknowledgedIPv4 {
+		m.snapshotRequired = false
+	}
 	return nil
 }
 
@@ -420,7 +427,7 @@ func (m *Monitor) step(ctx context.Context, publishSnapshot func(protocol.IPSnap
 	}
 	current := observation.Address.String()
 	m.mu.Lock()
-	if m.snapshot.LastIPv4 == "" {
+	if m.snapshot.LastIPv4 == "" || (m.snapshotRequired && m.snapshot.ChangeAttempt == nil) {
 		pending := &protocol.IPSnapshotBody{
 			SnapshotID: protocol.NewUUID(), Family: "ipv4", Address: current,
 			ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),

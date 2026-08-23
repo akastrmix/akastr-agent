@@ -90,7 +90,7 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 Target 首次成功 IPv6 观察发送 `family=ipv6` 的 `ip.snapshot`，之后地址改变发送 `family=ipv6` 的 `ip.observed`。IPv6 snapshot 只建立主控 baseline，不设置 IPv4 readiness；无 IPv6、探测失败或暂时不可达不发送消失事件，也不影响 IPv4、ChangeIP、IPQuality 或 SOCKS5。
 
-首次成功观察必须先持久化并发送 `ip.snapshot`，body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；当前 identity 的 snapshot readiness 与该提交原子持久化，重连和进程重启保留，重新 enrollment 时清除。重装后的 snapshot 若与既有 baseline 不同且节点没有未终结 command，Cloud 以既有地址作为 previous address 原子记录一次自然变化。存在未终结 command 时地址冲突安全失败。Agent 在确认前不得接受 ChangeIP，并跨重连、重启重发尚未确认的 snapshot。
+每次 Agent 进程启动后的首次成功 IPv4 观察必须先持久化并发送 `ip.snapshot`，body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；当前 identity 的 snapshot readiness 与该提交原子持久化，普通 WSS 重连保留，重新 enrollment 时清除。进程重启后的 snapshot 若与既有 baseline 不同且节点没有未终结 command，Cloud 以既有地址作为 previous address 原子记录一次自然变化。存在未终结 command 时地址冲突安全失败。Agent 在确认前不得接受新的 ChangeIP，并跨重连、重启重发尚未确认的 snapshot。
 
 `ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。事件时间必须晚于 Cloud 当前 baseline 且不得超前主控超过五分钟。只有 command 已 accepted、观测不早于 session 开始且仍在 session 窗口内，变化才归因于 ChangeIP；消息可以先于 `operation.result` 到达。尚未接受 command 时发生的变化仍是自然变化，不会被错误归因。
 

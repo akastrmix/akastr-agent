@@ -137,6 +137,52 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 	}
 }
 
+func TestMonitorReestablishesIPv4SnapshotAfterProcessRestart(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "ip-state.json")
+	first, err := OpenMonitor(filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initial protocol.IPSnapshotBody
+	if err := first.step(
+		context.Background(),
+		func(value protocol.IPSnapshotBody) error { initial = value; return nil },
+		func(protocol.IPObservationBody) error { return nil },
+		func(protocol.ChangeIPUnchangedBody) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.AckSnapshot(initial.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := OpenMonitor(filePath, &sequenceObserver{values: []string{"8.8.4.4"}}, time.Minute, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.SnapshotReady() {
+		t.Fatal("restarted monitor was ready before its session snapshot acknowledgement")
+	}
+	var sessionSnapshot protocol.IPSnapshotBody
+	observations := 0
+	if err := restarted.step(
+		context.Background(),
+		func(value protocol.IPSnapshotBody) error { sessionSnapshot = value; return nil },
+		func(protocol.IPObservationBody) error { observations++; return nil },
+		func(protocol.ChangeIPUnchangedBody) error { return nil },
+	); err != nil {
+		t.Fatal(err)
+	}
+	if sessionSnapshot.SnapshotID == initial.SnapshotID || sessionSnapshot.Address != "8.8.4.4" || observations != 0 {
+		t.Fatalf("session snapshot=%+v initial=%+v observations=%d", sessionSnapshot, initial, observations)
+	}
+	if err := restarted.AckSnapshot(sessionSnapshot.SnapshotID); err != nil {
+		t.Fatal(err)
+	}
+	if !restarted.SnapshotReady() {
+		t.Fatal("restarted monitor did not become ready after its session snapshot acknowledgement")
+	}
+}
+
 func TestControlReadinessWakesPendingSnapshotImmediately(t *testing.T) {
 	monitor, err := OpenMonitor(
 		filepath.Join(t.TempDir(), "ip-state.json"),
