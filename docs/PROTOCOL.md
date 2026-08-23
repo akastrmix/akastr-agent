@@ -45,7 +45,7 @@ akastr-agent-maintenance-check-v1
 
 主控返回严格的 `akastr-agent-maintenance.v1` 原子目标：顶层 `status`，以及完整 `software` 和 `configuration`。软件目标包含状态、批准语义版本、相同 WSS protocol、精确 immutable URL 和 SHA-256；配置目标包含状态、desired revision、bootstrap schema 与最低 Agent 版本。目标不允许软件降级、配置 revision 回退或跨 WSS 协议更新；存在未终结 command、active ChangeIP 或运行中的目标 IPQuality 时只能返回 `busy`。
 
-配置目标可用时，Agent 对 `akastr-agent-configuration-fetch-v1`、`agent_id`、desired revision、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration`。主控以内存解封既有密封 bootstrap，返回严格的 `akastr-agent-configuration.v1`，不建立第二份明文配置持久化。目标二进制必须先严格解析并物化该 bootstrap，再从 candidate 配置生成 capability。
+配置目标可用时，Agent 对 `akastr-agent-configuration-fetch-v1`、`agent_id`、desired revision、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration`。主控以内存解封既有密封 bootstrap，返回严格的 `akastr-agent-configuration.v1`，不建立第二份明文配置持久化。仅更新软件时，目标二进制必须接受 current 配置；软件与配置同时更新时，不要求目标二进制接受旧配置，但必须严格解析并物化 desired bootstrap，再以 candidate 二进制完整验证 candidate 配置并生成 capability。
 
 确定性维护失败或同一目标已被抑制时，Agent 向 `POST /internal/agents/maintenance-result` 发送严格的目标版本、目标 revision、`busy|failed|suppressed`、稳定错误码、nonce、时间和 Ed25519 签名。签名文本以 `akastr-agent-maintenance-result-v1` 开头并按请求字段顺序逐行连接。主控只接受当前批准版本与当前 desired revision，持久化有界投影；请求不得包含错误文本、URL、bootstrap 或 secret。结果投影失败不改变 deployment 或重试语义。
 

@@ -2,8 +2,11 @@ package autoupdate
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -118,10 +121,14 @@ func TestReconcileOnceDoesNotReexecWhenTargetsAreCurrent(t *testing.T) {
 
 type reconciliationClient struct {
 	configuration Configuration
+	manifest      *Manifest
 	results       []MaintenanceResult
 }
 
 func (client *reconciliationClient) Check(context.Context, string, string, int64, identity.Identity) (Manifest, error) {
+	if client.manifest != nil {
+		return *client.manifest, nil
+	}
 	return Manifest{
 		Schema: Schema, Status: "update_available",
 		Software: SoftwareTarget{
@@ -217,6 +224,26 @@ func (runner futureConfigurationRunner) Output(ctx context.Context, binary strin
 	return result, os.WriteFile(configPath, encoded, 0o600)
 }
 
+type jointUpdateRunner struct {
+	materializeRunner
+	checkConfigCalls int
+}
+
+func (runner *jointUpdateRunner) Output(ctx context.Context, binary string, arguments ...string) (string, error) {
+	if len(arguments) == 0 {
+		return "", errors.New("candidate command is missing")
+	}
+	switch arguments[0] {
+	case "version":
+		return "v1.0.7\n", nil
+	case "check-config":
+		runner.checkConfigCalls++
+		return "", errors.New("current configuration is unsupported")
+	default:
+		return runner.materializeRunner.Output(ctx, binary, arguments...)
+	}
+}
+
 func TestReconcileOnceMaterializesAndReexecsOneConfigurationTarget(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("deployment activation requires Unix symlinks")
@@ -273,6 +300,84 @@ func TestReconcileOnceMaterializesAndReexecsOneConfigurationTarget(t *testing.T)
 	})
 	if err != nil || !changed || !reexecuted {
 		t.Fatalf("changed=%v reexecuted=%v err=%v", changed, reexecuted, err)
+	}
+}
+
+func TestReconcileOnceJointUpdateValidatesOnlyCandidateConfiguration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deployment activation requires Unix symlinks")
+	}
+	root := t.TempDir()
+	agentID := "123e4567-e89b-42d3-a456-426614174000"
+	observeIPv6 := true
+	payload := bootstrap.Payload{
+		SchemaVersion: bootstrap.SchemaVersion, ConfigurationRevision: 2, Mode: "target", AgentID: agentID,
+		Name: "target", ControlEndpoint: "wss://control.example/internal/agents/ws",
+		Target: &bootstrap.Target{
+			IPWatchIntervalSeconds: 60,
+			ObserveIPv6:            &observeIPv6,
+			ChangeIP:               bootstrap.ChangeIP{Provider: "disabled"},
+			SOCKS5:                 bootstrap.SOCKS5{Enabled: true, Port: 1080},
+		},
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := "joint-update-agent-binary"
+	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
+	manifest := Manifest{
+		Schema: Schema, Status: "update_available",
+		Software: SoftwareTarget{
+			Status: "update_available", Version: "v1.0.7", Protocol: protocol.Version,
+			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v1.0.7/akastr-agent-linux-amd64",
+			BinarySHA256: checksum,
+		},
+		Configuration: ConfigurationTarget{
+			Status: "update_available", Revision: 2, SchemaVersion: bootstrap.SchemaVersion, MinimumAgentVersion: "v1.0.7",
+		},
+	}
+	client := &reconciliationClient{
+		manifest: &manifest,
+		configuration: Configuration{
+			Schema: ConfigurationSchema, ConfigurationRevision: 2,
+			BootstrapSchemaVersion: bootstrap.SchemaVersion, MinimumAgentVersion: "v1.0.7", Bootstrap: raw,
+		},
+	}
+	releases := filepath.Join(root, "releases")
+	currentDeployment := filepath.Join(root, "deployments", "v1.0.6-r1")
+	if err := os.MkdirAll(releases, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(currentDeployment, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(currentDeployment, filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
+	currentConfig := filepath.Join(root, "current-config.json")
+	if err := os.WriteFile(currentConfig, []byte(`{"schema_version":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &jointUpdateRunner{}
+	reexecuted := false
+	changed, err := ReconcileOnce(t.Context(), LoopOptions{
+		ControlEndpoint: payload.ControlEndpoint, CurrentVersion: "v1.0.6", ConfigurationRevision: 1,
+		Credentials: identity.Identity{AgentID: agentID}, ConfigPath: currentConfig,
+		ConfigurationRoot: filepath.Join(root, "configurations"), ReleaseRoot: root,
+		Lifecycle: lifecycle.New(), Client: client, Runner: runner,
+		Stage: func(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
+			options.HTTPClient = &http.Client{Transport: responseTransport{body: binary}}
+			return Stage(ctx, options)
+		},
+		Reexec: func(binaryPath, configPath, version string, revision int64) error {
+			reexecuted = version == "v1.0.7" && revision == 2 &&
+				filepath.Base(binaryPath) == "akastr-agent" && filepath.Base(configPath) == "config.json"
+			return nil
+		},
+	})
+	if err != nil || !changed || !reexecuted || runner.checkConfigCalls != 0 {
+		t.Fatalf("changed=%v reexecuted=%v check_config_calls=%d err=%v", changed, reexecuted, runner.checkConfigCalls, err)
 	}
 }
 

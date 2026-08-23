@@ -91,8 +91,13 @@ func Stage(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
 	if err := downloadBinary(ctx, options.HTTPClient, options.Manifest, stagedBinary); err != nil {
 		return StagedRelease{}, err
 	}
-	if err := verifyBinary(ctx, runner, stagedBinary, options.Manifest.Software.Version, options.ConfigPath); err != nil {
+	if err := verifyBinary(ctx, runner, stagedBinary, options.Manifest.Software.Version); err != nil {
 		return StagedRelease{}, err
+	}
+	if options.Manifest.Configuration.Status == "current" {
+		if err := verifyBinaryConfiguration(ctx, runner, stagedBinary, options.ConfigPath); err != nil {
+			return StagedRelease{}, err
+		}
 	}
 
 	targetRelease := filepath.Join(releasesRoot, options.Manifest.Software.Version)
@@ -104,8 +109,13 @@ func Stage(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
 		if err := verifyFileChecksum(existingBinary, options.Manifest.Software.BinarySHA256); err != nil {
 			return StagedRelease{}, errors.New("existing target Agent release is not immutable")
 		}
-		if err := verifyBinary(ctx, runner, existingBinary, options.Manifest.Software.Version, options.ConfigPath); err != nil {
+		if err := verifyBinary(ctx, runner, existingBinary, options.Manifest.Software.Version); err != nil {
 			return StagedRelease{}, errors.New("existing target Agent release failed validation")
+		}
+		if options.Manifest.Configuration.Status == "current" {
+			if err := verifyBinaryConfiguration(ctx, runner, existingBinary, options.ConfigPath); err != nil {
+				return StagedRelease{}, errors.New("existing target Agent release rejected the current configuration")
+			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return StagedRelease{}, err
@@ -328,11 +338,15 @@ func verifyFileChecksum(path, expected string) error {
 	return nil
 }
 
-func verifyBinary(ctx context.Context, runner CommandRunner, binary, version, configPath string) error {
+func verifyBinary(ctx context.Context, runner CommandRunner, binary, version string) error {
 	actualVersion, err := runner.Output(ctx, binary, "version")
 	if err != nil || strings.TrimSpace(actualVersion) != version {
 		return errors.New("Agent update binary version mismatch")
 	}
+	return nil
+}
+
+func verifyBinaryConfiguration(ctx context.Context, runner CommandRunner, binary, configPath string) error {
 	if _, err := runner.Output(ctx, binary, "check-config", "--config", configPath); err != nil {
 		return errors.New("Agent update binary rejected the current configuration")
 	}

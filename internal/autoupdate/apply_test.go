@@ -41,6 +41,25 @@ func (runner *fakeRunner) Output(_ context.Context, name string, arguments ...st
 	return "", fmt.Errorf("unexpected output: %s %v", name, arguments)
 }
 
+type currentConfigRejectingRunner struct {
+	checkConfigCalls int
+}
+
+func (runner *currentConfigRejectingRunner) Output(_ context.Context, name string, arguments ...string) (string, error) {
+	if !strings.HasSuffix(name, "akastr-agent") || len(arguments) == 0 {
+		return "", fmt.Errorf("unexpected output: %s %v", name, arguments)
+	}
+	switch arguments[0] {
+	case "version":
+		return "v0.7.1\n", nil
+	case "check-config":
+		runner.checkConfigCalls++
+		return "", errors.New("current configuration is unsupported")
+	default:
+		return "", fmt.Errorf("unexpected output: %s %v", name, arguments)
+	}
+}
+
 func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("symlink release activation is Linux-only")
@@ -103,6 +122,50 @@ func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "releases", "manual")); err != nil {
 		t.Fatal("unknown release directory was removed")
+	}
+}
+
+func TestStageRequiresCurrentConfigurationForSoftwareOnlyUpdate(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("automatic update staging is Linux-only")
+	}
+	root, configRoot, _ := releaseFixture(t)
+	binary := "future-agent-binary"
+	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
+	runner := &currentConfigRejectingRunner{}
+	_, err := Stage(t.Context(), ApplyOptions{
+		Manifest: manifestForApply(checksum), ConfigPath: filepath.Join(configRoot, "1", "config.json"),
+		ReleaseRoot: root,
+		HTTPClient:  &http.Client{Transport: responseTransport{body: binary}},
+		Runner:      runner,
+	})
+	if err == nil || runner.checkConfigCalls != 1 {
+		t.Fatalf("software-only stage error=%v check_config_calls=%d", err, runner.checkConfigCalls)
+	}
+}
+
+func TestStageDefersConfigurationValidationForJointUpdate(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("automatic update staging is Linux-only")
+	}
+	root, configRoot, _ := releaseFixture(t)
+	binary := "future-agent-binary"
+	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
+	manifest := manifestForApply(checksum)
+	manifest.Configuration.Status = "update_available"
+	manifest.Configuration.Revision = 2
+	runner := &currentConfigRejectingRunner{}
+	staged, err := Stage(t.Context(), ApplyOptions{
+		Manifest: manifest, ConfigPath: filepath.Join(configRoot, "1", "config.json"),
+		ReleaseRoot: root,
+		HTTPClient:  &http.Client{Transport: responseTransport{body: binary}},
+		Runner:      runner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runner.checkConfigCalls != 0 || staged.Version != manifest.Software.Version {
+		t.Fatalf("joint stage=%#v check_config_calls=%d", staged, runner.checkConfigCalls)
 	}
 }
 
