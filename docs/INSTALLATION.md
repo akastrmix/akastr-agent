@@ -68,7 +68,7 @@ curl -fsSL <固定版本 install.sh> | env <节点 UUID、机器 token、bootstr
 
 不要改写、拆分或公开这行命令。Cloud 固定 installer 的版本和发布摘要，节点通过 HTTPS 从该精确 GitHub Release 取得脚本；installer 随后仍会校验 Agent binary 的 SHA-256。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
-需要修改配置时点击“修改配置”，重新填写完整参数和 secret。后台不会回显旧 secret；保存会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，断开旧连接，并在新 revision 安装完成前暂停派发。随后执行页面显示的安装命令。普通修复或重装可直接再次获取同一命令。安装器拒绝覆盖不同节点或降级已装版本；同节点安装复用 identity，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
+需要修改配置时点击“修改配置”，重新填写完整参数和 secret。后台不会回显旧 secret；保存会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，断开旧连接，并在新 revision 应用完成前暂停派发。在线 Agent 会自动进入维护协调；需要立即处理时点击“检查更新”，离线 Agent 则在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖不同节点或降级已装版本；同节点安装复用 identity，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
 
 安装过程完全非交互。它会：
 
@@ -89,7 +89,7 @@ curl -fsSL <固定版本 install.sh> | env <节点 UUID、机器 token、bootstr
 Akastr Agent <release-version> installed successfully.
 ```
 
-所有下载、bootstrap、依赖和新配置检查都在停止现有 service 前完成。停止后的安装采用 fix-forward：失败不会尝试启动已经被 Cloud 判定为旧 revision 的配置，而是保留已写入的新文件并明确要求修复报错后重跑同一命令。新节点、配置变更和残缺安装使用相同收敛路径。
+所有下载、bootstrap、依赖和新配置检查都在停止现有 service 前完成。停止后的安装采用 fix-forward：失败不会尝试启动已经被 Cloud 判定为旧 revision 的配置，而是保留已写入的新文件并明确要求修复报错后重跑同一命令。新节点、人工重装和残缺安装使用相同安装收敛路径；普通配置变更使用第 7 节的自动维护流程。
 
 ## 4. 文件与权限
 
@@ -141,7 +141,26 @@ systemctl restart akastr-agent.service
 
 ## 7. 更新、状态与卸载
 
-正常情况下不需要手动更新或重新运行安装命令来应用普通配置修改。Agent 每次启动在 WSS 前先检查批准的软件与 desired 配置，ready 后等待 1–5 分钟随机延迟并每六小时复查。执行中的 command 会阻止协调；candidate binary 先验证并物化 revision 配置、向主控提交 capability acceptance，再把 binary/config 组成一个 deployment 试运行。只有 45 秒内重新完成 WSS readiness 才提交并 fsync `current`，否则 systemd 从旧 deployment 重启。
+普通配置修改不需要重新运行安装命令。新增 Agent 功能由维护者先发布软件；两种变更最终都由主控保存为节点的期望软件与配置，再由 Agent 自动协调：
+
+```mermaid
+flowchart TD
+    A{变更类型}
+    A -->|只修改节点配置| B[主控递增配置 revision]
+    A -->|新增 Agent 功能| C[发布脚本验证并发布新版 Agent]
+    B --> D[主控保存期望软件与配置]
+    C --> D
+    D --> E[Agent 检查更新]
+    E -->|节点忙碌| F[保持当前版本，稍后重试]
+    F --> E
+    E -->|发现变化| G[取得新版 Agent（如需要）与完整配置]
+    G --> H[候选 Agent 验证配置和 capability]
+    H -->|失败| I[保持当前 deployment]
+    H -->|通过| J[原子切换并重新启动]
+    J --> K[完成 WSS ready 并报告已应用 revision]
+```
+
+“检查更新”可以立即唤醒协调；Agent 也会在启动时检查，ready 后等待 1–5 分钟随机延迟并每六小时复查。执行中的 command 会阻止协调；candidate binary 先验证并物化 revision 配置、向主控提交 capability acceptance，再把 binary/config 组成一个 deployment 试运行。只有 45 秒内重新完成 WSS readiness 才提交并 fsync `current`，否则 systemd 从旧 deployment 重启。
 
 ```bash
 journalctl -u akastr-agent.service -n 100 --no-pager
@@ -182,7 +201,7 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 | `runner_busy` | Runner 单执行槽正忙，应由主控排队 |
 | enrollment 返回 `agent_node_busy` / HTTP 409 | 主控仍有 pending、offered、accepted command 或 active ChangeIP session；等待其终结后重新运行同一安装命令 |
 | enrollment 返回 `agent_release_required` | 安装命令引用的 binary 不是主控当前批准 release；回后台重新获取命令 |
-| enrollment 返回 `agent_configuration_stale` | 本地配置 revision 已过期；执行“修改配置”返回的新安装命令 |
+| enrollment 返回 `agent_configuration_stale` | 配置在本次注册期间又被修改；运行中的 Agent 点击“检查更新”或等待自动协调，安装过程则重新运行同一条后台一键命令以取得最新 revision |
 | service 启动超时 | WSS auth 或 hello 未完成；查看唯一主 service 日志，修复主控、网络或 identity 问题后重跑同一安装命令 |
 | service 反复重启 | 查看 `systemctl show`、`journalctl` 并运行 `check-config`；不要删除 state 逃避错误 |
 | 日志出现 `maintenance_reconciliation_failed` | 主控、网络、软件校验、配置物化或 acceptance 失败；`current` 未改变，查看相邻日志并修复根因 |
