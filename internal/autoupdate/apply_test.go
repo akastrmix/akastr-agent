@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
@@ -193,7 +194,7 @@ func manifestForApply(checksum string) Manifest {
 			BinarySHA256: checksum,
 		},
 		Configuration: ConfigurationTarget{
-			Status: "current", Revision: 1, SchemaVersion: 3, MinimumAgentVersion: "v0.7.1",
+			Status: "current", Revision: 1, SchemaVersion: bootstrap.SchemaVersion, MinimumAgentVersion: "v0.7.1",
 		},
 	}
 }

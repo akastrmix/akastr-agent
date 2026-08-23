@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
@@ -53,7 +54,7 @@ func TestClientSignsRevisionAwareMaintenanceCheck(t *testing.T) {
 				BinarySHA256: strings.Repeat("a", 64),
 			},
 			Configuration: ConfigurationTarget{
-				Status: "update_available", Revision: 8, SchemaVersion: 3, MinimumAgentVersion: "v1.0.7",
+				Status: "update_available", Revision: 8, SchemaVersion: bootstrap.SchemaVersion, MinimumAgentVersion: "v1.0.7",
 			},
 		})
 	}))
@@ -79,7 +80,7 @@ func TestManifestRejectsDowngradeAndInconsistentConfiguration(t *testing.T) {
 			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v1.0.7/akastr-agent-linux-amd64",
 			BinarySHA256: strings.Repeat("b", 64),
 		},
-		Configuration: ConfigurationTarget{Status: "current", Revision: 4, SchemaVersion: 3, MinimumAgentVersion: "v1.0.7"},
+		Configuration: ConfigurationTarget{Status: "current", Revision: 4, SchemaVersion: bootstrap.SchemaVersion, MinimumAgentVersion: "v1.0.7"},
 	}
 	if err := manifest.Validate("v1.0.6", 4); err != nil {
 		t.Fatal(err)
@@ -88,5 +89,20 @@ func TestManifestRejectsDowngradeAndInconsistentConfiguration(t *testing.T) {
 	manifest.Software.BinaryURL = "https://github.com/akastrmix/akastr-agent/releases/download/v1.0.5/akastr-agent-linux-amd64"
 	if err := manifest.Validate("v1.0.6", 4); err == nil {
 		t.Fatal("downgrade accepted")
+	}
+}
+
+func TestManifestRejectsObsoleteBootstrapSchema(t *testing.T) {
+	manifest := Manifest{
+		Schema: Schema, Status: "current",
+		Software: SoftwareTarget{
+			Status: "current", Version: "v1.0.7", Protocol: protocol.Version,
+			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v1.0.7/akastr-agent-linux-amd64",
+			BinarySHA256: strings.Repeat("b", 64),
+		},
+		Configuration: ConfigurationTarget{Status: "current", Revision: 4, SchemaVersion: 3, MinimumAgentVersion: "v1.0.7"},
+	}
+	if err := manifest.Validate("v1.0.7", 4); err == nil {
+		t.Fatal("obsolete bootstrap schema accepted")
 	}
 }

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
@@ -132,7 +133,7 @@ func (c Client) FetchConfiguration(ctx context.Context, controlEndpoint string, 
 		return Configuration{}, fmt.Errorf("fetch Agent configuration: %w", err)
 	}
 	if configuration.Schema != ConfigurationSchema || configuration.ConfigurationRevision != revision ||
-		configuration.BootstrapSchemaVersion < 1 || !semanticVersion.MatchString(configuration.MinimumAgentVersion) || len(configuration.Bootstrap) == 0 {
+		configuration.BootstrapSchemaVersion != bootstrap.SchemaVersion || !semanticVersion.MatchString(configuration.MinimumAgentVersion) || len(configuration.Bootstrap) == 0 {
 		return Configuration{}, errors.New("Agent configuration response is invalid")
 	}
 	return configuration, nil
@@ -280,7 +281,7 @@ func (m Manifest) Validate(currentVersion string, currentRevision int64) error {
 	}
 	minimum, err := parseVersion(m.Configuration.MinimumAgentVersion)
 	configurationChanged := m.Configuration.Revision > currentRevision
-	if err != nil || compareVersion(target, minimum) < 0 || m.Configuration.Revision < currentRevision || m.Configuration.SchemaVersion < 1 ||
+	if err != nil || compareVersion(target, minimum) < 0 || m.Configuration.Revision < currentRevision || m.Configuration.SchemaVersion != bootstrap.SchemaVersion ||
 		configurationChanged != (m.Configuration.Status == "update_available") {
 		return errors.New("Agent configuration target is invalid")
 	}

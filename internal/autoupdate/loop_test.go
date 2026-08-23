@@ -30,7 +30,7 @@ func (client loopClient) Check(context.Context, string, string, int64, identity.
 			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v1.0.6/akastr-agent-linux-amd64",
 			BinarySHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
-		Configuration: ConfigurationTarget{Status: "current", Revision: 1, SchemaVersion: 3, MinimumAgentVersion: "v1.0.6"},
+		Configuration: ConfigurationTarget{Status: "current", Revision: 1, SchemaVersion: bootstrap.SchemaVersion, MinimumAgentVersion: "v1.0.6"},
 	}, nil
 }
 func (loopClient) FetchConfiguration(context.Context, string, int64, identity.Identity, string) (Configuration, error) {
@@ -126,7 +126,7 @@ func (client *reconciliationClient) Check(context.Context, string, string, int64
 			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v1.0.6/akastr-agent-linux-amd64",
 			BinarySHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
-		Configuration: ConfigurationTarget{Status: "update_available", Revision: 2, SchemaVersion: 3, MinimumAgentVersion: "v1.0.6"},
+		Configuration: ConfigurationTarget{Status: "update_available", Revision: 2, SchemaVersion: bootstrap.SchemaVersion, MinimumAgentVersion: "v1.0.6"},
 	}, nil
 }
 func (client *reconciliationClient) FetchConfiguration(context.Context, string, int64, identity.Identity, string) (Configuration, error) {
@@ -223,11 +223,13 @@ func TestReconcileOnceMaterializesAcceptsAndReexecsOneConfigurationTarget(t *tes
 	}
 	root := t.TempDir()
 	agentID := "123e4567-e89b-42d3-a456-426614174000"
+	observeIPv6 := true
 	payload := bootstrap.Payload{
-		SchemaVersion: 3, ConfigurationRevision: 2, Mode: "target", AgentID: agentID,
+		SchemaVersion: bootstrap.SchemaVersion, ConfigurationRevision: 2, Mode: "target", AgentID: agentID,
 		Name: "target", ControlEndpoint: "wss://control.example/internal/agents/ws",
 		Target: &bootstrap.Target{
 			IPWatchIntervalSeconds: 60,
+			ObserveIPv6:            &observeIPv6,
 			ChangeIP:               bootstrap.ChangeIP{Provider: "disabled"},
 			SOCKS5:                 bootstrap.SOCKS5{Enabled: true, Port: 1080},
 		},
@@ -238,7 +240,7 @@ func TestReconcileOnceMaterializesAcceptsAndReexecsOneConfigurationTarget(t *tes
 	}
 	client := &reconciliationClient{configuration: Configuration{
 		Schema: ConfigurationSchema, ConfigurationRevision: 2,
-		BootstrapSchemaVersion: 3, MinimumAgentVersion: "v1.0.6", Bootstrap: raw,
+		BootstrapSchemaVersion: bootstrap.SchemaVersion, MinimumAgentVersion: "v1.0.6", Bootstrap: raw,
 	}}
 	release := filepath.Join(root, "releases", "v1.0.6")
 	if err := os.MkdirAll(release, 0o755); err != nil {
