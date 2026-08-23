@@ -14,9 +14,9 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 4. 操作者把命令复制到节点执行，安装器全程非交互；
 5. Agent 通过 HTTPS 取回并在本机解密配置，随后自动完成依赖、注册、root-only 文件和 systemd service；
 6. 同一个节点可以反复执行同一条命令；安装器拒绝跨节点覆盖和版本降级，复用同节点 identity，并以 fix-forward 方式收敛残缺安装；主动轮换 token 后原命令立即失效；
-7. 唯一的 `akastr-agent.service` 在 WSS 前及 ready 后定期协调 AkastrCloud 已批准的软件与配置；binary/config 作为一个 deployment 试运行，只有重新完成 WSS readiness 才提交 `current`。
+7. 唯一的 `akastr-agent.service` 在 WSS 前及 ready 后定期协调 AkastrCloud 已批准的软件与配置；binary/config 作为一个 deployment 试运行，Cloud 接受 trial 后才提交 `current`，随后完成最终 WSS readiness。
 
-用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不用手工核对 SHA-256。后台生成的短命令从固定版本 GitHub Release 取得 installer，并把它直接交给 shell；不要改用仓库 raw 地址或浮动版本。
+用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不用手工核对 SHA-256。后台生成的命令从固定版本 GitHub Release 完整下载 installer，核对固定 SHA-256 后才执行；不要改用仓库 raw 地址或浮动版本。
 
 目标节点参数包括：
 

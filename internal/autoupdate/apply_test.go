@@ -94,6 +94,54 @@ func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 	}
 }
 
+func TestDiscardRemovesOnlyAnUncommittedTrialDeployment(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("symlink release activation is Linux-only")
+	}
+	root := t.TempDir()
+	deployments := filepath.Join(root, "deployments")
+	current := filepath.Join(deployments, "v1.0.0-r1")
+	target := filepath.Join(deployments, "v1.0.1-r2")
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(current, filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
+	trial := &Trial{version: "v1.0.1", revision: 2, releaseRoot: root}
+	if err := trial.Discard(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("discarded trial still exists: %v", err)
+	}
+}
+
+func TestDiscardPreservesACommittedTrialDeployment(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("symlink release activation is Linux-only")
+	}
+	root := t.TempDir()
+	deployments := filepath.Join(root, "deployments")
+	target := filepath.Join(deployments, "v1.0.1-r2")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
+	trial := &Trial{version: "v1.0.1", revision: 2, releaseRoot: root}
+	if err := trial.Discard(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(target); err != nil || !info.IsDir() {
+		t.Fatalf("committed trial was removed: info=%v err=%v", info, err)
+	}
+}
+
 func TestCommitNeverDeletesTargetAfterRenameWhenDirectorySyncFails(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("symlink release activation is Linux-only")

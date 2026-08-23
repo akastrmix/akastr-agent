@@ -40,10 +40,6 @@ func (client loopClient) Check(ctx context.Context, _ string, _ string, _ int64,
 func (loopClient) FetchConfiguration(context.Context, string, int64, identity.Identity, string) (Configuration, error) {
 	return Configuration{}, errors.New("unexpected fetch")
 }
-func (loopClient) AcceptConfiguration(context.Context, string, string, int64, []capability.Descriptor, identity.Identity) error {
-	return errors.New("unexpected acceptance")
-}
-
 func TestRunLoopWaitsForReadyBeforePeriodicMaintenance(t *testing.T) {
 	ready := make(chan struct{})
 	called := make(chan struct{}, 1)
@@ -119,7 +115,6 @@ func TestReconcileOnceDoesNotReexecWhenTargetsAreCurrent(t *testing.T) {
 
 type reconciliationClient struct {
 	configuration Configuration
-	accepted      bool
 }
 
 func (client *reconciliationClient) Check(context.Context, string, string, int64, identity.Identity) (Manifest, error) {
@@ -135,13 +130,6 @@ func (client *reconciliationClient) Check(context.Context, string, string, int64
 }
 func (client *reconciliationClient) FetchConfiguration(context.Context, string, int64, identity.Identity, string) (Configuration, error) {
 	return client.configuration, nil
-}
-func (client *reconciliationClient) AcceptConfiguration(_ context.Context, _ string, version string, revision int64, capabilities []capability.Descriptor, _ identity.Identity) error {
-	if version != "v1.0.6" || revision != 2 || len(capabilities) != 2 {
-		return errors.New("unexpected acceptance")
-	}
-	client.accepted = true
-	return nil
 }
 
 type materializeRunner struct{}
@@ -221,7 +209,7 @@ func (runner futureConfigurationRunner) Output(ctx context.Context, binary strin
 	return result, os.WriteFile(configPath, encoded, 0o600)
 }
 
-func TestReconcileOnceMaterializesAcceptsAndReexecsOneConfigurationTarget(t *testing.T) {
+func TestReconcileOnceMaterializesAndReexecsOneConfigurationTarget(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("deployment activation requires Unix symlinks")
 	}
@@ -253,6 +241,13 @@ func TestReconcileOnceMaterializesAcceptsAndReexecsOneConfigurationTarget(t *tes
 	if err := os.WriteFile(filepath.Join(release, "akastr-agent"), []byte("binary"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	currentDeployment := filepath.Join(root, "deployments", "v1.0.6-r1")
+	if err := os.MkdirAll(currentDeployment, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(currentDeployment, filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
 	currentConfig := filepath.Join(root, "current-config.json")
 	if err := os.WriteFile(currentConfig, []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
@@ -268,8 +263,39 @@ func TestReconcileOnceMaterializesAcceptsAndReexecsOneConfigurationTarget(t *tes
 			return nil
 		},
 	})
-	if err != nil || !changed || !client.accepted || !reexecuted {
-		t.Fatalf("changed=%v accepted=%v reexecuted=%v err=%v", changed, client.accepted, reexecuted, err)
+	if err != nil || !changed || !reexecuted {
+		t.Fatalf("changed=%v reexecuted=%v err=%v", changed, reexecuted, err)
+	}
+}
+
+func TestReconcileOnceDoesNotRetryUncommittedImmutableTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("deployment activation requires Unix symlinks")
+	}
+	root := t.TempDir()
+	current := filepath.Join(root, "deployments", "v1.0.6-r1")
+	failed := filepath.Join(root, "deployments", "v1.0.6-r2")
+	if err := os.MkdirAll(current, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(failed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(current, filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
+	client := &reconciliationClient{}
+	changed, err := ReconcileOnce(t.Context(), LoopOptions{
+		ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
+		ConfigurationRevision: 1, ConfigPath: filepath.Join(current, "config", "config.json"),
+		ReleaseRoot: root, Lifecycle: lifecycle.New(), Client: client,
+		Reexec: func(string, string, string, int64) error {
+			t.Fatal("failed immutable target was retried")
+			return nil
+		},
+	})
+	if err != nil || changed {
+		t.Fatalf("changed=%v err=%v", changed, err)
 	}
 }
 

@@ -44,14 +44,14 @@ func TestAuthSigningTextMatchesApprovedWireFormat(t *testing.T) {
 }
 
 func TestDecodeRejectsUnknownEnvelopeFields(t *testing.T) {
-	_, err := Decode([]byte(`{"protocol":"2026-08-20.v5","message_id":"123e4567-e89b-42d3-a456-426614174000","type":"x","sent_at":"2026-08-13T00:00:00Z","body":{},"extra":true}`))
+	_, err := Decode([]byte(`{"protocol":"2026-08-23.v6","message_id":"123e4567-e89b-42d3-a456-426614174000","type":"x","sent_at":"2026-08-13T00:00:00Z","body":{},"extra":true}`))
 	if err == nil {
 		t.Fatal("Decode accepted an unknown envelope field")
 	}
 }
 
 func TestPairedProtocolFixturesValidateCloudToAgentMessages(t *testing.T) {
-	data, err := os.ReadFile("testdata/agent-protocol-v5.json")
+	data, err := os.ReadFile("testdata/agent-protocol-v6.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func decodeCloudFixture(data []byte) error {
 		}
 		_, err = AuthSigningText(body)
 		return err
-	case "auth.accepted", "hello.accepted", "maintenance.required":
+	case "auth.accepted", "hello.accepted", "maintenance.required", "deployment.trial_accepted":
 		body, err := DecodeBody[AgentIDBody](envelope, "agent_id")
 		if err != nil || !ValidUUID(body.AgentID) {
 			return errors.New("invalid Agent acknowledgement")

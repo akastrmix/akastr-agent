@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -20,18 +19,16 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/bootstrap"
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 const (
-	Schema                         = "akastr-agent-maintenance.v1"
-	ConfigurationSchema            = "akastr-agent-configuration.v1"
-	MaintenanceAuthContext         = "akastr-agent-maintenance-check-v1"
-	ConfigurationFetchAuthContext  = "akastr-agent-configuration-fetch-v1"
-	ConfigurationAcceptAuthContext = "akastr-agent-configuration-accept-v1"
-	maxResponse                    = 128 * 1024
+	Schema                        = "akastr-agent-maintenance.v1"
+	ConfigurationSchema           = "akastr-agent-configuration.v1"
+	MaintenanceAuthContext        = "akastr-agent-maintenance-check-v1"
+	ConfigurationFetchAuthContext = "akastr-agent-configuration-fetch-v1"
+	maxResponse                   = 128 * 1024
 )
 
 var (
@@ -143,53 +140,6 @@ func configurationFetchSigningText(request configurationFetchRequest) []byte {
 	return []byte(strings.Join([]string{
 		ConfigurationFetchAuthContext, request.AgentID,
 		strconv.FormatInt(request.ConfigurationRevision, 10), request.Nonce, request.SentAt,
-	}, "\n"))
-}
-
-type configurationAcceptRequest struct {
-	AgentID               string                  `json:"agent_id"`
-	AgentVersion          string                  `json:"agent_version"`
-	ConfigurationRevision int64                   `json:"configuration_revision"`
-	Capabilities          []capability.Descriptor `json:"capabilities"`
-	CapabilitiesSHA256    string                  `json:"capabilities_sha256"`
-	Nonce                 string                  `json:"nonce"`
-	SentAt                string                  `json:"sent_at"`
-	Signature             string                  `json:"signature"`
-}
-
-func (c Client) AcceptConfiguration(ctx context.Context, controlEndpoint, agentVersion string, revision int64, capabilities []capability.Descriptor, credentials identity.Identity) error {
-	encoded, err := json.Marshal(capabilities)
-	if err != nil {
-		return err
-	}
-	request := configurationAcceptRequest{
-		AgentID: credentials.AgentID, AgentVersion: agentVersion,
-		ConfigurationRevision: revision, Capabilities: capabilities,
-		CapabilitiesSHA256: fmt.Sprintf("%x", sha256.Sum256(encoded)),
-	}
-	if err := c.sign(credentials, &request.Nonce, &request.SentAt, &request.Signature, func() []byte { return configurationAcceptSigningText(request) }); err != nil {
-		return err
-	}
-	var response struct {
-		OK                    bool   `json:"ok"`
-		AgentID               string `json:"agent_id"`
-		ConfigurationRevision int64  `json:"configuration_revision"`
-		Accepted              bool   `json:"accepted"`
-	}
-	if err := c.post(ctx, controlEndpoint, "/internal/agents/configuration/accept", agentVersion, request, &response); err != nil {
-		return fmt.Errorf("accept Agent configuration: %w", err)
-	}
-	if !response.OK || !response.Accepted || response.AgentID != credentials.AgentID || response.ConfigurationRevision != revision {
-		return errors.New("Agent configuration acceptance response is invalid")
-	}
-	return nil
-}
-
-func configurationAcceptSigningText(request configurationAcceptRequest) []byte {
-	return []byte(strings.Join([]string{
-		ConfigurationAcceptAuthContext, request.AgentID, request.AgentVersion,
-		strconv.FormatInt(request.ConfigurationRevision, 10), request.CapabilitiesSHA256,
-		request.Nonce, request.SentAt,
 	}, "\n"))
 }
 

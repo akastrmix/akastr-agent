@@ -32,7 +32,6 @@ const (
 type MaintenanceClient interface {
 	Check(context.Context, string, string, int64, identity.Identity) (Manifest, error)
 	FetchConfiguration(context.Context, string, int64, identity.Identity, string) (Configuration, error)
-	AcceptConfiguration(context.Context, string, string, int64, []capability.Descriptor, identity.Identity) error
 }
 
 type LoopOptions struct {
@@ -82,6 +81,11 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 			return false, nil
 		}
 	}
+	if attempted, err := uncommittedDeploymentExists(options.ReleaseRoot, manifest.Software.Version, manifest.Configuration.Revision); err != nil {
+		return false, err
+	} else if attempted {
+		return false, nil
+	}
 
 	targetVersion := manifest.Software.Version
 	binary, err := os.Executable()
@@ -118,12 +122,8 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 		if configRoot == "" {
 			configRoot = DefaultConfigRoot
 		}
-		var candidateCapabilities []capability.Descriptor
-		configPath, candidateCapabilities, err = materializeCandidate(ctx, options.Runner, binary, configRoot, configuration, options.Credentials.AgentID)
+		configPath, _, err = materializeCandidate(ctx, options.Runner, binary, configRoot, configuration, options.Credentials.AgentID)
 		if err != nil {
-			return false, err
-		}
-		if err := client.AcceptConfiguration(ctx, options.ControlEndpoint, targetVersion, configuration.ConfigurationRevision, candidateCapabilities, options.Credentials); err != nil {
 			return false, err
 		}
 		targetRevision = configuration.ConfigurationRevision
@@ -138,6 +138,23 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 		return false, errors.Join(errors.New("automatic maintenance process replacement failed"), err)
 	}
 	return true, nil
+}
+
+func uncommittedDeploymentExists(releaseRoot, version string, revision int64) (bool, error) {
+	deploymentsRoot := filepath.Join(releaseRoot, "deployments")
+	current, err := safeCurrentTarget(filepath.Join(releaseRoot, "current"), deploymentsRoot)
+	if err != nil {
+		return false, err
+	}
+	target := filepath.Join(deploymentsRoot, deploymentName(version, revision))
+	info, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return false, errors.New("automatic maintenance target deployment is unsafe")
+	}
+	return filepath.Clean(target) != filepath.Clean(current), nil
 }
 
 func materializeCandidate(ctx context.Context, runner CommandRunner, binary, configRoot string, configuration Configuration, agentID string) (string, []capability.Descriptor, error) {

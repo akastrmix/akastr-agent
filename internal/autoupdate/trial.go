@@ -74,3 +74,31 @@ func (trial *Trial) Commit() (CommitResult, error) {
 	}
 	return result, nil
 }
+
+func (trial *Trial) Discard() error {
+	trial.mu.Lock()
+	defer trial.mu.Unlock()
+	if trial.committed {
+		return nil
+	}
+	deploymentsRoot := filepath.Join(trial.releaseRoot, "deployments")
+	target := filepath.Join(deploymentsRoot, deploymentName(trial.version, trial.revision))
+	current, err := safeCurrentTarget(filepath.Join(trial.releaseRoot, "current"), deploymentsRoot)
+	if err != nil {
+		return err
+	}
+	if filepath.Clean(current) == filepath.Clean(target) {
+		return nil
+	}
+	info, err := os.Lstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("automatic update trial deployment is unsafe")
+	}
+	if err := os.RemoveAll(target); err != nil {
+		return err
+	}
+	return syncDirectory(deploymentsRoot)
+}

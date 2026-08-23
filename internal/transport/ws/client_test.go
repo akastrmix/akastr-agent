@@ -2,9 +2,14 @@ package ws
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +18,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	"github.com/coder/websocket"
 )
 
 type recordingExecutor struct {
@@ -152,16 +158,19 @@ func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 		Version               string
 		ConfigurationRevision int64
 		Capabilities          []capability.Descriptor
+		DeploymentState       string
 		Executor              Executor
 		Observations          ObservationSource
 		Lifecycle             *lifecycle.Gate
 		OnReady               func() error
+		OnDeploymentTrial     func() error
 		OnMaintenanceCheck    func()
 		Logger                *slog.Logger
 	}{
 		Endpoint: "wss://control.example/internal/agents/ws", ConfigurationRevision: 1,
-		Executor:     &recordingExecutor{},
-		Observations: observations, Lifecycle: lifecycle.New(),
+		DeploymentState: "current",
+		Executor:        &recordingExecutor{},
+		Observations:    observations, Lifecycle: lifecycle.New(),
 	})
 	if err == nil || !strings.Contains(err.Error(), "nil implementation") {
 		t.Fatalf("New() error = %v, want typed nil rejection", err)
@@ -225,6 +234,172 @@ func TestHelloResponseSelectsMaintenanceOnlySession(t *testing.T) {
 	}
 	if _, err := helloSessionMode(envelope, "2bfadfbb-7481-4d96-9e0b-40a04aa4aeb4"); err == nil {
 		t.Fatal("maintenance response accepted another Agent identity")
+	}
+}
+
+func TestHelloResponseSelectsDeploymentTrial(t *testing.T) {
+	agentID := "f40a6d7e-bc54-4c8a-a68f-9895674677b6"
+	encoded, err := protocol.Encode("deployment.trial_accepted", protocol.AgentIDBody{AgentID: agentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := protocol.Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mode, err := helloSessionMode(envelope, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != sessionTrial {
+		t.Fatalf("trial response selected session mode %d", mode)
+	}
+}
+
+func TestDeploymentTrialCommitsBeforeReady(t *testing.T) {
+	agentID := "f40a6d7e-bc54-4c8a-a68f-9895674677b6"
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := identity.Identity{
+		SchemaVersion: identity.SchemaVersion, EnrollmentState: identity.EnrollmentConfirmed,
+		AgentID: agentID, PublicKey: base64.RawURLEncoding.EncodeToString(publicKey),
+		PrivateKey: base64.RawURLEncoding.EncodeToString(privateKey),
+	}
+	trialCommitted := make(chan struct{})
+	helloAcknowledged := make(chan struct{})
+	ready := make(chan struct{})
+	serverErrors := make(chan error, 1)
+	serverDone := make(chan struct{})
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		defer close(serverDone)
+		connection, acceptError := websocket.Accept(response, request, nil)
+		if acceptError != nil {
+			serverErrors <- acceptError
+			return
+		}
+		defer connection.CloseNow()
+		session := &session{connection: connection}
+		now := time.Now().UTC()
+		challenge := protocol.AuthChallenge{
+			ChallengeID: "123e4567-e89b-42d3-a456-426614174000", AgentID: agentID,
+			Nonce:     base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+			IssuedAt:  now.Add(-time.Second).Format(time.RFC3339Nano),
+			ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
+		}
+		if writeError := session.write(request.Context(), "auth.challenge", challenge); writeError != nil {
+			serverErrors <- writeError
+			return
+		}
+		if _, readError := readEnvelope(request.Context(), connection, "auth.response"); readError != nil {
+			serverErrors <- readError
+			return
+		}
+		if writeError := session.write(request.Context(), "auth.accepted", protocol.AgentIDBody{AgentID: agentID}); writeError != nil {
+			serverErrors <- writeError
+			return
+		}
+		helloEnvelope, readError := readEnvelope(request.Context(), connection, "agent.hello")
+		if readError != nil {
+			serverErrors <- readError
+			return
+		}
+		hello, decodeError := protocol.DecodeBody[protocol.HelloBody](
+			helloEnvelope, "agent_version", "configuration_revision", "deployment_state", "capabilities",
+		)
+		if decodeError != nil || hello.DeploymentState != "trial" {
+			serverErrors <- errors.New("client did not authenticate as a deployment trial")
+			return
+		}
+		if writeError := session.write(request.Context(), "deployment.trial_accepted", protocol.AgentIDBody{AgentID: agentID}); writeError != nil {
+			serverErrors <- writeError
+			return
+		}
+		committed, readError := readEnvelope(request.Context(), connection, "deployment.committed")
+		if readError != nil {
+			serverErrors <- readError
+			return
+		}
+		if _, decodeError := protocol.DecodeBody[struct{}](committed); decodeError != nil {
+			serverErrors <- decodeError
+			return
+		}
+		select {
+		case <-trialCommitted:
+		default:
+			serverErrors <- errors.New("deployment.committed was sent before the local trial callback")
+			return
+		}
+		if writeError := session.write(request.Context(), "hello.accepted", protocol.AgentIDBody{AgentID: agentID}); writeError != nil {
+			serverErrors <- writeError
+			return
+		}
+		close(helloAcknowledged)
+		<-ready
+	}))
+	defer server.Close()
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	defer func() { http.DefaultTransport = originalTransport }()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	trialCalls := 0
+	client, err := New(struct {
+		Endpoint              string
+		Identity              identity.Identity
+		Version               string
+		ConfigurationRevision int64
+		Capabilities          []capability.Descriptor
+		DeploymentState       string
+		Executor              Executor
+		Observations          ObservationSource
+		Lifecycle             *lifecycle.Gate
+		OnReady               func() error
+		OnDeploymentTrial     func() error
+		OnMaintenanceCheck    func()
+		Logger                *slog.Logger
+	}{
+		Endpoint: strings.Replace(server.URL, "https://", "wss://", 1) + "/internal/agents/ws",
+		Identity: credentials, Version: "v1.4.0", ConfigurationRevision: 2,
+		Capabilities: []capability.Descriptor{}, DeploymentState: "trial",
+		Executor: &recordingExecutor{executed: make(chan string, 1)}, Lifecycle: lifecycle.New(),
+		OnDeploymentTrial: func() error {
+			trialCalls++
+			close(trialCommitted)
+			return nil
+		},
+		OnReady: func() error {
+			select {
+			case <-helloAcknowledged:
+			default:
+				return errors.New("ready callback ran before hello.accepted")
+			}
+			close(ready)
+			cancel()
+			return nil
+		},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.runSession(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("runSession() error = %v", err)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("trial server did not finish")
+	}
+	select {
+	case serverError := <-serverErrors:
+		t.Fatal(serverError)
+	default:
+	}
+	if trialCalls != 1 || client.deploymentState != "current" {
+		t.Fatalf("trial callbacks=%d deployment_state=%s", trialCalls, client.deploymentState)
 	}
 }
 

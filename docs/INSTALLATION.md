@@ -61,12 +61,12 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、机器 token 和版本由后台填写：
 
 ```text
-curl -fsSL <固定版本 install.sh> | env <节点 UUID、机器 token、bootstrap endpoint> sh -s -- --install
+installer=$(mktemp) && ... curl <仅 HTTPS、固定版本 install.sh> --output "$installer" && ... sha256sum --check ... && env <节点 UUID、机器 token、bootstrap endpoint> sh "$installer" --install
 ```
 
 上面只展示命令结构；实际安装必须完整复制后台生成的命令，不要手工替换占位符。
 
-不要改写、拆分或公开这行命令。Cloud 固定 installer 的版本和发布摘要，节点通过 HTTPS 从该精确 GitHub Release 取得脚本；installer 随后仍会校验 Agent binary 的 SHA-256。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
+不要改写、拆分或公开这行命令。Cloud 固定 installer 的版本和发布摘要；命令只允许 HTTPS 跳转，完整下载到临时文件并校验 installer SHA-256 后才执行，installer 随后仍会校验 Agent binary 的 SHA-256。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
 需要修改配置时点击“修改配置”，重新填写完整参数和 secret。后台不会回显旧 secret；保存会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，断开旧连接，并在新 revision 应用完成前暂停派发。在线 Agent 会自动进入维护协调；需要立即处理时点击“检查更新”，离线 Agent 则在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖不同节点或降级已装版本；同节点安装复用 identity，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
 
@@ -156,17 +156,18 @@ flowchart TD
     E -->|发现变化| G[取得新版 Agent（如需要）与完整配置]
     G --> H[候选 Agent 验证配置和 capability]
     H -->|失败| I[保持当前 deployment]
-    H -->|通过| J[原子切换并重新启动]
-    J --> K[完成 WSS ready 并报告已应用 revision]
+    H -->|通过| J[trial WSS 通过主控校验]
+    J --> K[切换 current 并提交]
+    K --> L[主控推进 applied 并进入 ready]
 ```
 
-“检查更新”可以立即唤醒协调；Agent 也会在启动时检查，ready 后等待 1–5 分钟随机延迟并每六小时复查。执行中的 command 会阻止协调；candidate binary 先验证并物化 revision 配置、向主控提交 capability acceptance，再把 binary/config 组成一个 deployment 试运行。只有 45 秒内重新完成 WSS readiness 才提交并 fsync `current`，否则 systemd 从旧 deployment 重启。
+“检查更新”可以立即唤醒协调；Agent 也会在启动时检查，ready 后等待 1–5 分钟随机延迟并每六小时复查。执行中的 command 会阻止协调；candidate binary 先验证并物化 revision 配置，再把 binary/config 组成一个 deployment 试运行。trial WSS 通过当前 desired revision、批准版本、最低版本与 capability 校验后，Agent 才提交并 fsync `current`；随后主控重验、推进 applied 并返回 ready。提交前 45 秒内未完成时删除 trial deployment，systemd 从旧 deployment 重启并允许后续重试；本地已提交但确认中断时则从新 current 重连收敛。
 
 ```bash
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-Agent 不提供 `--update` 或本地回退 CLI。trial 失败不会改变 `current`；提交后保留 current 与 previous deployment。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。需要人工修复时，重新运行后台的一键命令。
+Agent 不提供 `--update` 或本地回退 CLI。提交前的确定性本地启动或配置失败不会改变 `current`，同一软件版本与 revision 不会反复试运行；未提交的 readiness 超时会清除 trial deployment，以便网络恢复后重试。提交后保留 current 与 previous deployment。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。需要人工修复时，重新运行后台的一键命令。
 
 日常状态直接从 systemd 读取，不需要再次下载安装器或使用机器 token：
 
@@ -204,7 +205,7 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 | enrollment 返回 `agent_configuration_stale` | 配置在本次注册期间又被修改；运行中的 Agent 点击“检查更新”或等待自动协调，安装过程则重新运行同一条后台一键命令以取得最新 revision |
 | service 启动超时 | WSS auth 或 hello 未完成；查看唯一主 service 日志，修复主控、网络或 identity 问题后重跑同一安装命令 |
 | service 反复重启 | 查看 `systemctl show`、`journalctl` 并运行 `check-config`；不要删除 state 逃避错误 |
-| 日志出现 `maintenance_reconciliation_failed` | 主控、网络、软件校验、配置物化或 acceptance 失败；`current` 未改变，查看相邻日志并修复根因 |
+| 日志出现 `maintenance_reconciliation_failed` | 主控、网络、软件校验或配置物化失败；若日志显示 trial 已提交，则由新 `current` 重连收敛，否则旧 `current` 保持生效；查看相邻日志并修复根因 |
 | 日志出现 `update_cleanup_failed` | 新 deployment 已提交，但更旧 deployment 未完全清理；保留 current/previous 并检查文件权限或磁盘 |
 
 ## 9. 维护者发布版本

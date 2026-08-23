@@ -1,4 +1,4 @@
-# Akastr Agent 协议 `2026-08-20.v5`
+# Akastr Agent 协议 `2026-08-23.v6`
 
 AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 64 KiB。未知字段、未知 message type、未知 capability 字段、binary frame、无效 UUID 和未来协议版本均会失败关闭。
 
@@ -23,7 +23,7 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version`、本地正整数 `configuration_revision` 与 capability。revision 同时精确等于 desired/applied 时，Cloud 返回 `hello.accepted` 并使连接进入 ready；已认证但 revision 过期且版本支持维护会话时，Cloud 返回只含 `agent_id` 的 `maintenance.required`。维护会话只允许 Cloud 发送 `maintenance.check`，Agent 不进入业务 ready、不发送 IP 消息且不接收 operation；其他消息使连接失败关闭。同协议旧 release 可以在 revision 已收敛时进入 ready 后使用签名更新接口。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version`、本地正整数 `configuration_revision`、`deployment_state=current|trial` 与 capability。`current` 必须精确匹配 desired revision、密封 bootstrap 的最低版本和 capability；校验后 Cloud 原子推进尚未收敛的 applied revision，再返回 `hello.accepted` 并使连接进入 ready。已认证但 revision 过期且版本支持维护会话时，Cloud 返回只含 `agent_id` 的 `maintenance.required`。维护会话只允许 Cloud 发送 `maintenance.check`，Agent 不进入业务 ready、不发送 IP 消息且不接收 operation；其他消息使连接失败关闭。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
 
 ## 自动维护与配置协调
 
@@ -47,7 +47,7 @@ akastr-agent-maintenance-check-v1
 
 配置目标可用时，Agent 对 `akastr-agent-configuration-fetch-v1`、`agent_id`、desired revision、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration`。主控以内存解封既有密封 bootstrap，返回严格的 `akastr-agent-configuration.v1`，不建立第二份明文配置持久化。目标二进制必须先严格解析并物化该 bootstrap，再从 candidate 配置生成 capability。
 
-物化成功后，Agent 对 `akastr-agent-configuration-accept-v1`、`agent_id`、candidate 版本、revision、规范 capability JSON 的 SHA-256、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration/accept`，请求体同时包含 capability。主控重新校验当前 desired revision、最低版本、角色能力、配置参数与空闲状态后推进 applied revision。maintenance/fetch/accept 均只使用 active Ed25519 identity，不接收机器 token。
+物化成功后，candidate 以 `deployment_state=trial` 建立 WSS。Cloud 重新校验当前 desired revision、批准 release、密封 bootstrap 的最低版本、角色 capability、配置参数与空闲状态；通过后仅返回 `deployment.trial_accepted`，不推进 applied、不注册 ready，也不派发 operation。Agent 随即原子替换并 fsync 本地 `current`，再发送 body 为空对象的 `deployment.committed`。Cloud 以同一 hello 内容按 `current` 规则重新校验并原子推进 applied、版本、capability 与 hello 时间，随后返回 `hello.accepted` 并进入 ready。若本地提交后连接在确认前中断，新进程以 `deployment_state=current` 重连即可完成同一收敛。提交前发生确定性的本地启动或配置失败时，candidate 留在不可变 deployment 目录中；旧 current 对相同软件版本与 revision 不再试运行，只有目标变化才重试。trial 在 readiness 超时前仍未提交时删除该 deployment，使临时 WSS 故障恢复后可以重试。maintenance/fetch 只使用 active Ed25519 identity，不接收机器 token。
 
 ## Operation
 
@@ -108,7 +108,7 @@ Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`
 
 ## 安全边界
 
-- 协议固定为 `2026-08-20.v5`，不自动降级，也不接受协议之外的字段。
+- 协议固定为 `2026-08-23.v6`，不自动降级，也不接受协议之外的字段。
 - SOCKS5 capability 只允许 `port`，不接受地址来源或自定义主机名字段。
 - bootstrap/enrollment 使用机器 token，WSS 与自动维护/配置协调只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、维护请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。

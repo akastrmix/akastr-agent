@@ -39,10 +39,12 @@ type Client struct {
 	version               string
 	configurationRevision int64
 	capabilities          []capability.Descriptor
+	deploymentState       string
 	executor              Executor
 	observations          ObservationSource
 	lifecycle             *lifecycle.Gate
 	onReady               func() error
+	onDeploymentTrial     func() error
 	onMaintenanceCheck    func()
 	logger                *slog.Logger
 
@@ -68,6 +70,7 @@ type sessionMode uint8
 const (
 	sessionReady sessionMode = iota + 1
 	sessionMaintenance
+	sessionTrial
 )
 
 func New(options struct {
@@ -76,10 +79,12 @@ func New(options struct {
 	Version               string
 	ConfigurationRevision int64
 	Capabilities          []capability.Descriptor
+	DeploymentState       string
 	Executor              Executor
 	Observations          ObservationSource
 	Lifecycle             *lifecycle.Gate
 	OnReady               func() error
+	OnDeploymentTrial     func() error
 	OnMaintenanceCheck    func()
 	Logger                *slog.Logger
 }) (*Client, error) {
@@ -101,6 +106,12 @@ func New(options struct {
 	if options.ConfigurationRevision < 1 {
 		return nil, errors.New("Agent configuration revision is invalid")
 	}
+	if options.DeploymentState != "current" && options.DeploymentState != "trial" {
+		return nil, errors.New("Agent deployment state is invalid")
+	}
+	if options.DeploymentState == "trial" && options.OnDeploymentTrial == nil {
+		return nil, errors.New("automatic deployment trial callback is required")
+	}
 	parsed, err := url.Parse(options.Endpoint)
 	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" ||
 		parsed.Path != "/internal/agents/ws" || parsed.User != nil ||
@@ -110,9 +121,11 @@ func New(options struct {
 	return &Client{
 		endpoint: options.Endpoint, identity: options.Identity, version: options.Version,
 		configurationRevision: options.ConfigurationRevision,
+		deploymentState:       options.DeploymentState,
 		capabilities:          append([]capability.Descriptor(nil), options.Capabilities...),
 		executor:              options.Executor, observations: options.Observations,
 		lifecycle: options.Lifecycle, onReady: options.OnReady,
+		onDeploymentTrial:  options.OnDeploymentTrial,
 		onMaintenanceCheck: options.OnMaintenanceCheck, logger: options.Logger,
 		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
 	}, nil
@@ -227,6 +240,25 @@ func (c *Client) runSession(ctx context.Context) error {
 			if err := c.handleMaintenanceSessionEnvelope(envelope); err != nil {
 				return err
 			}
+		}
+	}
+	if mode == sessionTrial {
+		if err := c.onDeploymentTrial(); err != nil {
+			fatal := fmt.Errorf("commit automatic deployment trial: %w", err)
+			c.recordFatal(fatal)
+			return fatal
+		}
+		c.deploymentState = "current"
+		if err := session.write(ctx, "deployment.committed", struct{}{}); err != nil {
+			return err
+		}
+		committed, err := readEnvelope(ctx, session.connection, "hello.accepted")
+		if err != nil {
+			return err
+		}
+		acknowledgement, err := protocol.DecodeBody[protocol.AgentIDBody](committed, "agent_id")
+		if err != nil || acknowledgement.AgentID != c.identity.AgentID {
+			return errors.New("deployment commit acknowledgement agent mismatch")
 		}
 	}
 	if c.onReady != nil {
@@ -431,7 +463,7 @@ func (c *Client) authenticate(ctx context.Context, session *session) (sessionMod
 	}
 	if err := session.write(ctx, "agent.hello", protocol.HelloBody{
 		AgentVersion: c.version, ConfigurationRevision: c.configurationRevision,
-		Capabilities: c.capabilities,
+		DeploymentState: c.deploymentState, Capabilities: c.capabilities,
 	}); err != nil {
 		return 0, err
 	}
@@ -439,11 +471,19 @@ func (c *Client) authenticate(ctx context.Context, session *session) (sessionMod
 	if err != nil {
 		return 0, err
 	}
-	return helloSessionMode(helloResponse, c.identity.AgentID)
+	mode, err := helloSessionMode(helloResponse, c.identity.AgentID)
+	if err != nil {
+		return 0, err
+	}
+	if (c.deploymentState == "trial" && mode == sessionReady) ||
+		(c.deploymentState == "current" && mode == sessionTrial) {
+		return 0, errors.New("hello response does not match deployment state")
+	}
+	return mode, nil
 }
 
 func helloSessionMode(helloResponse protocol.Envelope, agentID string) (sessionMode, error) {
-	if helloResponse.Type != "hello.accepted" && helloResponse.Type != "maintenance.required" {
+	if helloResponse.Type != "hello.accepted" && helloResponse.Type != "maintenance.required" && helloResponse.Type != "deployment.trial_accepted" {
 		return 0, fmt.Errorf("expected hello response, received %s", helloResponse.Type)
 	}
 	acknowledgement, err := protocol.DecodeBody[protocol.AgentIDBody](helloResponse, "agent_id")
@@ -452,6 +492,9 @@ func helloSessionMode(helloResponse protocol.Envelope, agentID string) (sessionM
 	}
 	if helloResponse.Type == "maintenance.required" {
 		return sessionMaintenance, nil
+	}
+	if helloResponse.Type == "deployment.trial_accepted" {
+		return sessionTrial, nil
 	}
 	return sessionReady, nil
 }

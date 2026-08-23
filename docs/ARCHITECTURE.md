@@ -24,7 +24,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 相同目标、香港日历日及 IPv4 代际的请求合并为一次真实执行，之后返回缓存报告。香港时间跨日或观测到 IPv4 改变时，主控创建新的缓存代际。
 
-协议 `2026-08-20.v5` 使用有效期 15 秒的服务端 nonce，以及绑定上下文、以换行分隔的 Ed25519 签名文本。机器 token 只用于 HTTPS bootstrap 和注册；WSS hello 同时绑定本地 configuration revision，Cloud 只允许 desired/applied 精确收敛的身份进入 ready；只读更新检查使用有效公钥身份。offer、accept、终态结果、结果确认、初始 IPv4 snapshot 和自然 IPv4 变化均使用稳定 UUID。消息按至少一次投递，本地日志和数据库唯一约束共同保证执行与结果幂等。
+当前协议使用有效期 15 秒的服务端 nonce，以及绑定上下文、以换行分隔的 Ed25519 签名文本。机器 token 只用于 HTTPS bootstrap 和注册；WSS hello 同时绑定本地 configuration revision、deployment 状态与 capability，Cloud 只在 current deployment 通过当前密封配置校验后推进 applied 并进入 ready；只读更新检查使用有效公钥身份。offer、accept、终态结果、结果确认、初始 IPv4 snapshot 和自然 IPv4 变化均使用稳定 UUID。消息按至少一次投递，本地日志和数据库唯一约束共同保证执行与结果幂等。
 
 ## 3. 目标节点网络模型
 
@@ -86,9 +86,9 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 ## 8. Fix-forward 安装与自动更新
 
-后台的一键命令描述节点的期望安装状态，可用于空白主机、同节点覆盖安装和残缺安装修复。覆盖安装先核对已有 identity/config 的节点 ID 和已装版本；不同节点或降级直接拒绝。installer 复用摘要正确的同版本 binary 和 Runner 脚本，在停止唯一 `akastr-agent.service` 前完成其余下载、bootstrap、依赖与 maintenance-safe 检查，停止后再对稳定状态检查并写入新配置。配置 revision 已前进时旧配置不能重新 ready，因此本机不维护目录或 unit 回滚事务；后续失败保留可重跑状态，由同一命令 fix-forward。同节点 identity 会复制到新配置并用新 configuration revision 重新 enrollment，不重新生成 private key。主控在未完成 command、active ChangeIP session 或目标 IPQuality run 存在时拒绝配置更新和注册。
+后台的一键命令先把固定版本 installer 完整下载到临时文件并核对发布摘要，校验通过后才执行。它描述节点的期望安装状态，可用于空白主机、同节点覆盖安装和残缺安装修复。覆盖安装先核对已有 identity/config 的节点 ID 和已装版本；不同节点或降级直接拒绝。installer 复用摘要正确的同版本 binary 和 Runner 脚本，在停止唯一 `akastr-agent.service` 前完成其余下载、bootstrap、依赖与 maintenance-safe 检查，停止后再对稳定状态检查并写入新配置。配置 revision 已前进时旧配置不能重新 ready，因此本机不维护目录或 unit 回滚事务；后续失败保留可重跑状态，由同一命令 fix-forward。同节点 identity 会复制到新配置并用新 configuration revision 重新 enrollment，不重新生成 private key。主控在未完成 command、active ChangeIP session 或目标 IPQuality run 存在时拒绝配置更新和注册。
 
-自动维护不由 GitHub `latest` 驱动。主进程在建立 WSS 前先使用 Ed25519 identity 协调 Cloud 批准的软件与配置目标，ready 后等待 1–5 分钟随机抖动并每六小时复查。取得 exclusive update lease 后，candidate binary 写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录，生成 capability 并由主控 accept。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；45 秒内重新完成 WSS auth/hello 后才原子替换并 fsync `current`。失败时 systemd 仍从旧 deployment 重启；清理只保留 current 与 previous deployment。
+自动维护不由 GitHub `latest` 驱动。主进程在建立 WSS 前先使用 Ed25519 identity 协调 Cloud 批准的软件与配置目标，ready 后等待 1–5 分钟随机抖动并每六小时复查。取得 exclusive update lease 后，candidate binary 写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录并生成 capability。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；Cloud 校验 trial hello 后不推进 applied，Agent 先原子替换并 fsync `current`，再提交 WSS commit，由 Cloud 重验并进入 ready。提交前的确定性本地失败保留 deployment 并抑制同一目标，未提交的 readiness 超时删除 deployment 以允许临时故障恢复后重试；本地已提交但确认中断时由新 current 重连收敛。清理只保留 current 与 previous deployment。
 
 正式版本由 AkastrCloud 仓库的同步发布入口生成。发布器先验证并推送 Agent `main` 与不可变标签，等待 GitHub Release 的两个精确资产并核对 binary 版本与内部摘要，再提交 Cloud 的唯一更新目标并走正常 backend 发布。该顺序允许同一版本在任一阶段中断后续跑，但不会覆盖已发布资产或让 Cloud 指向尚未验真的 binary。
 

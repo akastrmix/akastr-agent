@@ -218,16 +218,6 @@ func run(arguments []string, output io.Writer) error {
 			var readyError error
 			onReady := func() error {
 				readyOnce.Do(func() {
-					if trial != nil {
-						result, commitError := trial.Commit()
-						if commitError != nil {
-							readyError = fmt.Errorf("commit automatic update trial: %w", commitError)
-							return
-						}
-						if result.CleanupFailed {
-							logger.Warn("old Agent release cleanup incomplete", "code", "update_cleanup_failed")
-						}
-					}
 					if notifyError := systemdnotify.Ready(); notifyError != nil {
 						readyError = notifyError
 						return
@@ -235,6 +225,18 @@ func run(arguments []string, output io.Writer) error {
 					close(ready)
 				})
 				return readyError
+			}
+			deploymentState := "current"
+			var onDeploymentTrial func() error
+			if trial != nil {
+				deploymentState = "trial"
+				onDeploymentTrial = func() error {
+					result, commitError := trial.Commit()
+					if result.CleanupFailed {
+						logger.Warn("old Agent release cleanup incomplete", "code", "update_cleanup_failed")
+					}
+					return commitError
+				}
 			}
 			var observations transportws.ObservationSource
 			if monitor := runtime.IPMonitor(); monitor != nil {
@@ -247,18 +249,20 @@ func run(arguments []string, output io.Writer) error {
 				Version               string
 				ConfigurationRevision int64
 				Capabilities          []capability.Descriptor
+				DeploymentState       string
 				Executor              transportws.Executor
 				Observations          transportws.ObservationSource
 				Lifecycle             *lifecycle.Gate
 				OnReady               func() error
+				OnDeploymentTrial     func() error
 				OnMaintenanceCheck    func()
 				Logger                *slog.Logger
 			}{
 				Endpoint: model.Config.Control.Endpoint, Identity: credentials,
 				Version: version, ConfigurationRevision: model.Config.ConfigurationRevision,
-				Capabilities: model.Capabilities.List(),
-				Executor:     runtime, Observations: observations,
-				Lifecycle: lifecycleGate, OnReady: onReady,
+				Capabilities: model.Capabilities.List(), DeploymentState: deploymentState,
+				Executor: runtime, Observations: observations,
+				Lifecycle: lifecycleGate, OnReady: onReady, OnDeploymentTrial: onDeploymentTrial,
 				OnMaintenanceCheck: func() {
 					select {
 					case maintenanceTriggers <- struct{}{}:
@@ -319,7 +323,11 @@ func run(arguments []string, output io.Writer) error {
 				cancelRun()
 				<-updateDone
 				<-controlDone
-				return errors.New("automatic update trial did not reach control readiness")
+				trialError := errors.New("automatic update trial did not reach control readiness")
+				if discardError := trial.Discard(); discardError != nil {
+					return errors.Join(trialError, fmt.Errorf("discard timed out automatic update trial: %w", discardError))
+				}
+				return trialError
 			case firstError = <-updateDone:
 				cancelRun()
 				<-controlDone
