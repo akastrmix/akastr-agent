@@ -54,7 +54,7 @@ func TestRunLoopWaitsForReadyBeforePeriodicMaintenance(t *testing.T) {
 	go func() {
 		done <- RunLoop(ctx, LoopOptions{
 			ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
-			ConfigurationRevision: 1, ConfigPath: "/etc/akastr-agent/config.json",
+			ConfigurationRevision: 1, ConfigPath: "/var/lib/akastr-agent/configurations/1/config.json",
 			ReleaseRoot: "/usr/local/lib/akastr-agent", Lifecycle: lifecycle.New(),
 			Ready: ready, Client: loopClient{called: called}, InitialDelay: func() time.Duration { return 0 },
 			Reexec: func(string, string, string, int64) error { return nil },
@@ -86,7 +86,7 @@ func TestRunLoopMaintenanceRequiredTriggersBeforeReady(t *testing.T) {
 	go func() {
 		done <- RunLoop(ctx, LoopOptions{
 			ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
-			ConfigurationRevision: 1, ConfigPath: "/etc/akastr-agent/config.json",
+			ConfigurationRevision: 1, ConfigPath: "/var/lib/akastr-agent/configurations/1/config.json",
 			ReleaseRoot: "/usr/local/lib/akastr-agent", Lifecycle: lifecycle.New(),
 			Ready: ready, Triggers: triggers, Client: loopClient{called: called},
 			InitialDelay: func() time.Duration { return time.Hour },
@@ -110,7 +110,7 @@ func TestReconcileOnceDoesNotReexecWhenTargetsAreCurrent(t *testing.T) {
 	reexec := false
 	changed, err := ReconcileOnce(t.Context(), LoopOptions{
 		ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
-		ConfigurationRevision: 1, ConfigPath: "/etc/akastr-agent/config.json",
+		ConfigurationRevision: 1, ConfigPath: "/var/lib/akastr-agent/configurations/1/config.json",
 		ReleaseRoot: "/usr/local/lib/akastr-agent", Lifecycle: lifecycle.New(), Client: loopClient{called: called},
 		Reexec: func(string, string, string, int64) error { reexec = true; return nil },
 	})

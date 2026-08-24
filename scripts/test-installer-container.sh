@@ -317,32 +317,4 @@ printf '%s\n' "$ownership_output" | grep -Fq 'do not prove node ownership'
 rm -rf -- /usr/local/lib/akastr-agent
 rm -f -- /etc/systemd/system/akastr-agent.service
 
-mkdir -p /etc/akastr-agent /usr/local/lib/akastr-agent/releases/v9.9.8
-chmod 0700 /etc/akastr-agent
-cp "$test_root/fake-agent" /usr/local/lib/akastr-agent/releases/v9.9.8/akastr-agent
-ln -s /usr/local/lib/akastr-agent/releases/v9.9.8 /usr/local/lib/akastr-agent/current
-cat > /etc/akastr-agent/identity.json <<EOF
-{"schema_version":2,"enrollment_state":"confirmed","agent_id":"$agent_id","public_key":"fixture-public","private_key":"fixture-private"}
-EOF
-cat > /etc/akastr-agent/config.json <<EOF
-{"schema_version":3,"configuration_revision":1,"node":{"id":"$agent_id","name":"legacy"},"control":{}}
-EOF
-printf '%s\n' 'legacy-provider-secret' > /etc/akastr-agent/changeip-curl.conf
-printf '%s\n' 'legacy-runner-secret' > /etc/akastr-agent/proxy-profiles.json
-chmod 0600 /etc/akastr-agent/*
-printf '%s\n' '[Service]' > /etc/systemd/system/akastr-agent.service
-: > "$test_root/systemd-enabled"
-echo active > "$test_root/systemd-state"
-
-run_install target >/dev/null
-[ -f /etc/akastr-agent/identity.json ]
-[ ! -e /etc/akastr-agent/config.json ]
-[ ! -e /etc/akastr-agent/changeip-curl.conf ]
-[ ! -e /etc/akastr-agent/proxy-profiles.json ]
-[ -f /var/lib/akastr-agent/configurations/2/config.json ]
-[ "$(readlink /usr/local/lib/akastr-agent/current/config)" = /var/lib/akastr-agent/configurations/2 ]
-
-sh "$installer" --uninstall --confirm-destroy-local-agent >/dev/null
-sh "$installer" --uninstall --confirm-destroy-local-agent >/dev/null
-
 printf 'installer_container_integration_ok version=%s\n' "$(. /etc/os-release; printf '%s' "$VERSION_ID")"

@@ -60,7 +60,7 @@ func New(config Config) (*Provider, error) {
 }
 
 func validConfigFile(value string) bool {
-	return value == "/etc/akastr-agent/changeip-curl.conf" || reconciledConfigFile.MatchString(value)
+	return reconciledConfigFile.MatchString(value)
 }
 
 func (p *Provider) Run(ctx context.Context) changeprovider.Result {

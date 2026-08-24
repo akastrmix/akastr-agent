@@ -67,3 +67,14 @@ func TestCheckConfigValidatesRuntimeDependencies(t *testing.T) {
 		t.Fatalf("check-config error = %v, want missing ChangeIP program", err)
 	}
 }
+
+func TestRuntimeCommandsRequireManagedConfigurationPath(t *testing.T) {
+	for _, command := range []string{
+		"run", "enroll", "check-config", "check-idle", "capabilities", "validate-configuration",
+	} {
+		err := run([]string{command}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "configuration path is required") {
+			t.Fatalf("%s error = %v", command, err)
+		}
+	}
+}

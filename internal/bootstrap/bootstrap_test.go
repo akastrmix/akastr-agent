@@ -51,7 +51,8 @@ func TestFetchRejectsHTTPRedirects(t *testing.T) {
 	_, err := FetchAndWrite(context.Background(), FetchOptions{
 		Endpoint: server.URL + "/internal/agents/bootstrap", AgentID: testAgentID,
 		TokenFile: tokenFile, HTTPClient: server.Client(), OutputDir: outputDir,
-		IPQVersion: IPQualityVersion, IPQSHA256: IPQualitySHA256,
+		ConfigurationRoot: "/var/lib/akastr-agent/configurations",
+		IPQVersion:        IPQualityVersion, IPQSHA256: IPQualitySHA256,
 	})
 	if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
 		t.Fatalf("redirect error = %v, want HTTP 307 rejection", err)
@@ -210,10 +211,24 @@ func TestFetchRejectsTamperedCiphertext(t *testing.T) {
 	_, err := FetchAndWrite(context.Background(), FetchOptions{
 		Endpoint: server.URL + "/internal/agents/bootstrap", AgentID: testAgentID,
 		TokenFile: tokenFile, HTTPClient: server.Client(), OutputDir: outputDir,
-		IPQVersion: IPQualityVersion, IPQSHA256: IPQualitySHA256,
+		ConfigurationRoot: "/var/lib/akastr-agent/configurations",
+		IPQVersion:        IPQualityVersion, IPQSHA256: IPQualitySHA256,
 	})
 	if err == nil || !strings.Contains(err.Error(), "authentication failed") {
 		t.Fatalf("expected authentication failure, got %v", err)
+	}
+}
+
+func TestFetchRequiresManagedConfigurationRoot(t *testing.T) {
+	root := t.TempDir()
+	_, _, tokenFile := testToken(t, root)
+	_, err := FetchAndWrite(context.Background(), FetchOptions{
+		Endpoint: "https://control.example/internal/agents/bootstrap",
+		AgentID:  testAgentID, TokenFile: tokenFile, OutputDir: filepath.Join(root, "output"),
+		IPQVersion: IPQualityVersion, IPQSHA256: IPQualitySHA256,
+	})
+	if err == nil || !strings.Contains(err.Error(), "configuration root must be absolute") {
+		t.Fatalf("configuration root error = %v", err)
 	}
 }
 

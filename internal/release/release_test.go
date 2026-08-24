@@ -316,8 +316,6 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"maintenance_safe_check \"$binary_path\" \"$configuration_dir/config.json\"",
 		"CONFIGURATION_ROOT=$STATE_DIR/configurations",
 		"ln -s \"$configuration_dir\" \"$deployment_dir/config\"",
-		"\"$CONFIG_DIR/changeip-curl.conf\"",
-		"\"$CONFIG_DIR/proxy-profiles.json\"",
 		"preflight_install",
 		"preflight_status",
 		"preflight_uninstall",
@@ -376,6 +374,9 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		"akastr-agent*.service",
 		"akastr-agent*.timer",
 		"BASE_PACKAGES",
+		"$CONFIG_DIR/config.json",
+		"$CONFIG_DIR/changeip-curl.conf",
+		"$CONFIG_DIR/proxy-profiles.json",
 	} {
 		if strings.Contains(installer, forbidden) {
 			t.Fatalf("installer contains forbidden contract %q", forbidden)

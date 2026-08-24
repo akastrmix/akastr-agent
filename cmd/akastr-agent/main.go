@@ -113,12 +113,12 @@ func run(arguments []string, output io.Writer) error {
 	case "run", "enroll", "check-config", "check-idle", "capabilities", "validate-configuration":
 		flags := flag.NewFlagSet(arguments[0], flag.ContinueOnError)
 		flags.SetOutput(io.Discard)
-		configPath := flags.String("config", "/etc/akastr-agent/config.json", "configuration file")
+		configPath := flags.String("config", "", "managed configuration file")
 		if err := flags.Parse(arguments[1:]); err != nil {
 			return err
 		}
-		if flags.NArg() != 0 {
-			return errors.New("unexpected positional arguments")
+		if flags.NArg() != 0 || *configPath == "" {
+			return errors.New("configuration path is required and positional arguments are not accepted")
 		}
 		model, err := app.Load(*configPath)
 		if err != nil {
@@ -233,7 +233,7 @@ func run(arguments []string, output io.Writer) error {
 				onDeploymentTrial = func() error {
 					result, commitError := trial.Commit()
 					if result.CleanupFailed {
-						logger.Warn("old Agent release cleanup incomplete", "code", "update_cleanup_failed")
+						logger.Warn("managed Agent release cleanup incomplete", "code", "update_cleanup_failed")
 					}
 					return commitError
 				}

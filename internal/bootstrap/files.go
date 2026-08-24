@@ -31,10 +31,7 @@ func writeFiles(directory, runtimeDirectory string, payload Payload, token, ipQu
 	if err := prepareEmptyRootOnlyDirectory(directory); err != nil {
 		return err
 	}
-	cfg := payload.AgentConfig(ipQualityVersion, ipQualitySHA256)
-	if runtimeDirectory != "" {
-		cfg = payload.AgentConfigForDirectory(filepath.ToSlash(runtimeDirectory), ipQualityVersion, ipQualitySHA256)
-	}
+	cfg := payload.AgentConfig(filepath.ToSlash(runtimeDirectory), ipQualityVersion, ipQualitySHA256)
 	if err := writeRuntimeFiles(directory, payload, cfg); err != nil {
 		return err
 	}
@@ -64,7 +61,7 @@ func MaterializeConfiguration(directory, runtimeDirectory string, raw []byte, ex
 	if err := prepareEmptyRootOnlyDirectory(directory); err != nil {
 		return Payload{}, err
 	}
-	cfg := payload.AgentConfigForDirectory(runtimeDirectory, IPQualityVersion, IPQualitySHA256)
+	cfg := payload.AgentConfig(filepath.ToSlash(runtimeDirectory), IPQualityVersion, IPQualitySHA256)
 	if err := writeRuntimeFiles(directory, payload, cfg); err != nil {
 		return Payload{}, err
 	}

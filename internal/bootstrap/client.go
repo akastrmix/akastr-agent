@@ -47,6 +47,9 @@ type FetchOptions struct {
 }
 
 func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
+	if !path.IsAbs(options.ConfigurationRoot) {
+		return Payload{}, errors.New("bootstrap configuration root must be absolute")
+	}
 	token, tokenBytes, err := readToken(options.TokenFile)
 	if err != nil {
 		return Payload{}, err
@@ -120,13 +123,7 @@ func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
 	if err := payload.Validate(options.AgentID); err != nil {
 		return Payload{}, err
 	}
-	runtimeDirectory := ""
-	if options.ConfigurationRoot != "" {
-		if !path.IsAbs(options.ConfigurationRoot) {
-			return Payload{}, errors.New("bootstrap configuration root must be absolute")
-		}
-		runtimeDirectory = path.Join(options.ConfigurationRoot, fmt.Sprint(payload.ConfigurationRevision))
-	}
+	runtimeDirectory := path.Join(options.ConfigurationRoot, fmt.Sprint(payload.ConfigurationRevision))
 	if err := writeFiles(options.OutputDir, runtimeDirectory, payload, token, options.IPQVersion, options.IPQSHA256); err != nil {
 		return Payload{}, err
 	}

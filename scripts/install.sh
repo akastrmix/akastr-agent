@@ -176,9 +176,6 @@ inspect_existing_install() {
   requested_id=$1
   existing_identity="$CONFIG_DIR/identity.json"
   existing_config="$RELEASE_ROOT/current/config/config.json"
-  if [ ! -f "$existing_config" ]; then
-    existing_config="$CONFIG_DIR/config.json"
-  fi
   existing_binary="$RELEASE_ROOT/current/akastr-agent"
   identity_id=''
   config_id=''
@@ -601,13 +598,8 @@ fresh_install() {
   systemctl is-active --quiet akastr-agent.service \
     || fail 'the Agent service did not reach control-plane readiness'
 
-  rm -f -- \
-    "$CONFIG_DIR/config.json" \
-    "$CONFIG_DIR/changeip-curl.conf" \
-    "$CONFIG_DIR/proxy-profiles.json"
-
   if ! cleanup_managed_artifacts; then
-    printf 'Warning: old Agent artifact cleanup is incomplete; active deployment is unchanged.\n' >&2
+    printf 'Warning: managed Agent artifact cleanup is incomplete; active deployment is unchanged.\n' >&2
   fi
 
   installation_complete=true
