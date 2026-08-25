@@ -1,65 +1,44 @@
-# Akastr Agent — Agent 工作说明
+# Akastr Agent — 仓库约束
 
-接手任务先读本文件与 `README.md`，再根据任务只选择一份相关权威文档。先用 `rg` 定位具体代码和说明，不要默认加载整个 `docs/`，避免无关上下文占用 token。
+接手任务先读本文件与 `README.md`，再按任务只读取必要的权威文档。优先用 `rg` 定位代码和说明，不默认加载整个 `docs/`。
 
-## 产品边界
+## 1. 产品与仓库边界
 
-- Akastr Agent 是 AkastrCloud 服务节点上的唯一受控运行时，不提供 HTTP 控制面或兼容接口。
-- AkastrCloud 始终是主控，也是唯一的业务事实来源。Telegram、使用资格、IPQuality 每日限次策略、队列、缓存元数据和用户消息投递均不属于本仓库。
-- AkastrCloud 由独立仓库 `akastrmix/AkastrCloud` 维护；跨仓库任务通过 `$local-project-paths` 解析本地位置，不在源码中写死机器路径。
-- 修改 bootstrap、enrollment、WSS 认证、capability、operation、IPv4 event 或自动更新契约时，必须同时读取双方 `AGENTS.md` 并验证两边实现。wire contract 以本仓库 `docs/PROTOCOL.md` 为权威；Cloud HTTP 路由、持久状态和业务语义以 AkastrCloud 对应权威文档为准。
-- 运行时是一个由 systemd 管理的 Go 单进程。优先使用 Go 标准库；只有第三方依赖具备明确的运行时用途时才可引入。
-- Agent 只能执行预先配置、具有明确类型的操作。不得加入远程 shell、任意命令载荷、终端、通用主机监控、通用离线告警或 Telegram channel 投递。
+- Akastr Agent 是部署在服务节点上的受控 node runtime；AkastrCloud 是 control plane 与跨节点业务事实来源。
+- Agent 只负责本机 identity、配置物化、观察、typed operation、本地 durable recovery、provider、安装/systemd 与自动维护；Telegram、用户资格、业务队列、缓存策略和跨节点调度不属于本仓库。
+- Cloud × Agent 的 ownership 与跨仓库路由以 AkastrCloud `docs/AGENT_INTEGRATION.md` 为总地图。跨仓库任务可用 `$local-project-paths` 定位两个仓库。
+- 共享 wire contract 以本仓库 `docs/PROTOCOL.md` 为权威；Cloud HTTP、PostgreSQL 与业务语义由 Cloud 对应权威文档负责。
+- Agent 是 systemd 管理的单 Go 进程，只主动建立出站控制连接，不提供 HTTP 控制面、远程终端或任意主机执行入口。
 
-## 能力边界
+## 2. 文档职责
 
-已实现能力：
+- `README.md`：项目入口、产品边界、目录与验证入口。
+- `docs/ARCHITECTURE.md`：当前长期运行时架构、模块职责、本地状态与 lifecycle。
+- `docs/PROTOCOL.md`：Cloud ↔ Agent HTTPS/WSS wire contract。
+- `docs/INSTALLATION.md`：安装、重装、验收、维护与排障。
+- 同一事实只维护一份权威说明；其他文档引用而不复制完整字段、状态机、命令或流程。
+- 长期跨仓库架构决定记录在 AkastrCloud `docs/ADR/`；现行文档只描述当前有效行为，不保存 rollout 流水或已取代实现。
 
-- 观察公网 IPv4，以及可选的 IPv6。
-- 执行预先配置的 ChangeIP HTTP API 或固定命令 provider。
-- 描述已配置的 SOCKS5 端点，但不得暴露凭据。
-- 当 installation 被配置为 Runner 时，执行固定版本的 IPQuality 脚本。
+## 3. 安全、执行与状态边界
 
-明确不在实现范围内的能力：
+- Agent 只能执行本机预配置、协议明确允许的 typed operation；不得加入远程 shell、任意 argv/script/URL、通用终端或开放式主机控制能力。
+- secret 只存在 Git 外、root-only 的本地文件；不得进入 capability、普通日志、测试 fixture、错误正文或 wire payload（协议明确需要的受控 credential 流程除外）。
+- 配置严格解析并拒绝未知字段；配置型 provider 不经 `/bin/sh -c`。
+- 本地持久状态必须有界；schema 未知、状态损坏或无法证明安全恢复时 fail closed，不静默重置可能涉及副作用的状态。
+- ChangeIP 与目标 IPQuality 按当前协议/业务模型互斥；Runner 并发是独立资源约束。
+- 任何可能导致不可重复副作用再次执行的恢复路径都必须由稳定幂等键和 durable state 约束。
 
-- ChangeIP HTTP-flow provider。
-- Xray 流量与日志观察。
-- 长期跑满带宽的策略与限速。
+## 4. 跨仓库与高风险变更
 
-新增能力应作为同级 package 加入。未实现功能不得创建空实现、占位协议字段或臆想式接口。
+- 修改 bootstrap、enrollment、WSS authentication/hello/readiness、capability、operation wire、IP event/ACK、maintenance/configuration/update/trial contract 时，必须读取 Cloud `docs/AGENT_INTEGRATION.md` 和双方相关权威文档，并验证两边实现。
+- **paired review 不等于 paired edit**：wire 未变时只修改真正拥有该行为的一侧。
+- 生产 schema、持久契约、认证/secret、安全边界或发布模型的高风险变化遵循 Cloud ADR 0024；真实批准不能由代码注释、ADR 或 AI 自行推定。
+- 值得长期保存的跨仓库职责、持久契约、安全和升级决定统一记录在 Cloud `docs/ADR/`，不要在 Agent 新建第二套 ADR 注册表。
 
-## 文档职责与防偏移
+## 5. 实现与验证
 
-- 同一事实只允许有一份权威说明。`README.md` 只负责项目入口、产品边界、仓库结构和验证入口；`docs/ARCHITECTURE.md` 负责长期架构与模块职责；`docs/PROTOCOL.md` 负责 HTTPS/WSS 协议契约；`docs/INSTALLATION.md` 负责操作者安装、验收、维护和排障。
-- 非权威文档只链接到权威说明，不复制完整流程、命令、字段表、状态表或约束。修改前先判断事实归属，不能为了“方便阅读”在多个文件重复维护。
-- 现行文档只描述系统现在如何工作。不得写迁移过程、实施进度、版本阶段、批准流水、已完成事项或被取代方案；历史变化通过 Git commit/diff 查询。只有理解当前安全边界不可缺少的长期原因，才可在权威文档中用最短篇幅说明。
-- 文档内容应紧凑并服务当前任务。优先删掉重复、过期和可从代码直接推导的文字；先定位再读取，避免全库读取、长篇复述和无边界扩写，以控制维护成本和模型 token 消耗。
-- 具体 release 版本、部署代际和动态生产状态不进入本仓库的长期文档；安装命令由 AkastrCloud 后台生成，协议版本仅在 `docs/PROTOCOL.md` 作为当前契约标识维护。
-
-## 安全与契约
-
-- secret 只能存放在 Git 之外、仅 root 可读的文件中。不得将凭据写入能力清单、操作日志、普通日志、测试或示例配置。
-- 网络控制只允许使用出站 WSS。认证方式和消息字段必须与 AkastrCloud 端一起获得批准后才能实现。
-- 任何生产 schema、持久队列或 payload、认证、secret 流程或发布边界的变更，都必须先按照 AkastrCloud ADR 0024 提交方案，并在获得操作者明确批准后实施。
-- Agent 本地状态只能包含有界的操作元数据。状态损坏或 schema 未知时必须安全失败，不得静默重置。
-- 对同一个目标节点，ChangeIP 与 IPQuality 在逻辑上互斥。Runner 并发限制是另一项独立的资源约束。
-
-## 开发要求
-
-- package 应保持小而清晰，并与 `docs/ARCHITECTURE.md` 的职责划分一致。
-- 使用固定参数向量；配置型 provider 不得调用 `/bin/sh -c`。
-- 严格校验配置，并拒绝未知字段。
-- 每个状态转换、冲突规则和解析行为变更都必须增加测试。
-- 修改 installer 或安装状态转换时，必须运行 `scripts/test-installer-container.sh` 的 Debian 12/13 一次性容器回归，覆盖首次安装、同节点覆盖、systemd failed/unloaded、失败后重跑、Target/Runner 与卸载收敛。
-- 交付前运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-go.ps1`；它包含全量测试、自动维护/IP 观察压力测试、显式超时、vet 与构建，Linux CI 通过 `pwsh` 执行同一文件。
-- 行为或边界发生变化时，只更新对应的权威文档；只有项目入口或顶层产品边界变化时才同步修改 README。
-
-## 工作方式
-
-- 保持 Agent 轻量、低资源、少依赖且适合长期运行，并在不增加复杂度的前提下适当优化性能。
-- 涉及通用探针主控或 Agent 功能开发时，应参考市面上成熟探针的设计与实践，避免完全自行发明。
-- 不写兼容层、临时补丁、启发式兜底或过度防御代码；设计过时或不合理时直接删除，并重构为清晰的现行实现。
-- 对低概率故障，只有在受支持运行模型中存在明确可达路径，且可能破坏安全、数据完整性或造成不可逆重复副作用时，才增加专门防御；其他情况优先使用现有的 fail-fast/fail-closed 行为，不为其新增持久状态、兼容层、后台任务或复杂状态机。
-- 保持项目结构清晰、模块化、易维护，避免将大量不同组件堆积到一个文件。
-- 选择能满足当前需求的最简单实现，避免过度设计、预防性设计等多余复杂度。
-- 架构决策面向长期，不接受“先这样以后再换”的临时方案。
+- package 职责应与 `docs/ARCHITECTURE.md` 一致；新增 feature 优先放入清晰的同级 package，不创建空实现、占位 wire 字段或未被真实需求使用的框架。
+- 修改状态转换、冲突规则、解析/校验、恢复语义时必须补相应测试。
+- 修改 installer 或安装状态转换时，运行 `scripts/test-installer-container.sh` 的 Debian 12/13 容器回归，覆盖首次安装、同节点覆盖、残缺/failed 状态、失败重跑、Target/Runner 与卸载收敛。
+- 交付前运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-go.ps1`；Linux CI 使用 `pwsh` 执行同一 Gate。
+- 行为或边界变化只更新对应权威文档；README 仅在入口或顶层产品边界变化时修改。
