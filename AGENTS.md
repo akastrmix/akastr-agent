@@ -43,6 +43,7 @@
 ## 5. 实现与验证
 
 - package 职责应与 `docs/ARCHITECTURE.md` 一致；新增 feature 优先放入清晰的同级 package，不创建空实现、占位 wire 字段或未被真实需求使用的框架。
+- 新增 feature 前先定位可复用的现有 package、协议、测试与相近 feature 接入方式，并按需参考成熟实现；只有现有边界确实无法自然承载时才新增机制，不用固定模板限制具体设计。
 - 修改状态转换、冲突规则、解析/校验、恢复语义时必须补相应测试。
 - 修改 installer 或安装状态转换时，运行 `scripts/test-installer-container.sh` 的 Debian 12/13 容器回归，覆盖首次安装、同节点覆盖、残缺/failed 状态、失败重跑、Target/Runner 与卸载收敛。
 - 交付前运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-go.ps1`；Linux CI 使用 `pwsh` 执行同一 Gate。

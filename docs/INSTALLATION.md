@@ -167,7 +167,7 @@ flowchart TD
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-Agent 不提供 `--update` 或本地回退 CLI。提交前的确定性本地启动或配置失败不会改变 `current`，同一软件版本与 revision 不会反复试运行；未提交的 readiness 超时会清除 trial deployment，以便网络恢复后重试。提交或重装成功后只保留 current、previous deployment 及其引用的 release/configuration。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。需要人工修复时，重新运行后台的一键命令。
+Agent 不提供 `--update` 或本地回退 CLI。提交前的确定性本地启动或配置失败不会改变 `current`，同一软件版本与 revision 不会反复试运行；未提交的 readiness 超时会清除 trial deployment，以便网络恢复后重试。提交或重装成功后只保留 current、previous deployment 及其引用的 release/configuration。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。需要人工修复，或 Cloud 已因破坏性协议版本进入只读维护时，重新取得并运行后台当前的一键命令；不要从 VPS 本地猜测目标版本或绕过 installer 校验。
 
 日常状态直接从 systemd 读取，不需要再次下载安装器或使用机器 token：
 
@@ -216,6 +216,6 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 .\release.cmd agent -AgentVersion vX.Y.Z -Execute
 ```
 
-两个仓库都必须位于 `main`、已经提交且工作树干净。同步发布器验证双方协议与 Agent 源码，直接推送 Agent `main` 和语义化标签；GitHub Actions 从标签重新验证，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`。发布器验真两个不可变资产后，自动提交 Cloud 的精确更新目标，并根据 Cloud 差异执行 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段。流程不创建 PR；同一 tag 与 commit 可在中断后直接重跑，已存在的 Release 不允许覆盖或替换。
+两个仓库都必须位于 `main`、已经提交且工作树干净。同步发布器验证双方协议与 Agent 源码，直接推送 Agent `main` 和语义化标签；GitHub Actions 从标签重新验证，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`。同协议更新使用上面的普通命令，不暂停 worker。破坏性协议更新使用 `release.cmd agent -AgentVersion vX.Y.Z -BreakingProtocol -Execute`：第一次运行排空并把 Cloud 留在只读新协议，逐节点运行后台当前的一键命令后，再运行同一发布命令；只有全部 active 节点达到批准版本、revision 收敛且没有未完成 Agent 工作时才恢复 scheduler。该过程不增加双协议、兼容 reader 或本地升级 CLI。流程不创建 PR；同一 tag 与 commit 可在中断后直接重跑，已存在的 Release 不允许覆盖或替换。
 
 每个版本使用独立的 `releases/download/vX.Y.Z/...` 地址。只有同步流程中的 Cloud backend 激活成功，主进程的六小时循环才会收到 `update_available`；系统不跟随 GitHub `latest`。发布动作不会创建节点或触发 ChangeIP/IPQuality。

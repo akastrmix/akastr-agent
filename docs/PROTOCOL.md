@@ -23,7 +23,7 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version`、本地正整数 `configuration_revision`、`deployment_state=current|trial` 与 capability。`current` 必须精确匹配 desired revision、密封 bootstrap 的最低版本和 capability；校验后 Cloud 原子推进尚未收敛的 applied revision，再返回 `hello.accepted` 并使连接进入 ready。已认证但 revision 过期且版本支持维护会话时，Cloud 返回只含 `agent_id` 的 `maintenance.required`。维护会话只允许 Cloud 发送 `maintenance.check`，Agent 不进入业务 ready、不发送 IP 消息且不接收 operation；其他消息使连接失败关闭。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version`、本地正整数 `configuration_revision`、`deployment_state=current|trial` 与 capability。`trial` 必须使用 Cloud 当前批准 release；`current` 版本不得低于密封 bootstrap 的最低版本，也不得高于 Cloud 当前批准 release，并须精确匹配 desired revision 与 capability。校验后 Cloud 原子推进尚未收敛的 applied revision，再返回 `hello.accepted` 并使连接进入 ready。已认证但 revision 过期且版本支持维护会话时，Cloud 返回只含 `agent_id` 的 `maintenance.required`。维护会话只允许 Cloud 发送 `maintenance.check`，Agent 不进入业务 ready、不发送 IP 消息且不接收 operation；其他消息使连接失败关闭。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
 
 ## 自动维护与配置协调
 

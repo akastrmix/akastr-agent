@@ -123,4 +123,4 @@ install.sh
 
 `install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件只提供可重复的 `--install`、只读 `--status` 和显式确认的 `--uninstall`。
 
-GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的六小时循环才会看到该版本。WSS/auth/config 的破坏性版本继续走维护 Gate，不自动跨协议升级。
+GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的六小时循环才会看到该版本。同协议版本走普通同步发布；WSS/auth/config 的破坏性版本使用相同入口加 `-BreakingProtocol`，由 Cloud 只读维护和逐节点当前一键安装命令收敛，不自动跨协议升级。

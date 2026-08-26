@@ -90,7 +90,7 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 自动维护不由 GitHub `latest` 驱动。主进程在建立 WSS 前先使用 Ed25519 identity 协调 Cloud 批准的软件与配置目标，ready 后等待 1–5 分钟随机抖动并每六小时复查。取得 exclusive update lease 后，candidate binary 写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录并生成 capability。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；Cloud 校验 trial hello 后不推进 applied，Agent 先原子替换并 fsync `current`，再提交 WSS commit，由 Cloud 重验并进入 ready。提交前的确定性本地失败保留 deployment 并抑制同一目标，未提交的 readiness 超时删除 deployment 以允许临时故障恢复后重试；本地已提交但确认中断时由新 current 重连收敛。成功提交或重装收敛后只保留 current、previous deployment 及其引用的 release/configuration；清理失败只告警，不回滚 active deployment。
 
-正式版本由 AkastrCloud 仓库的同步发布入口生成。发布器先验证并推送 Agent `main` 与不可变标签，等待 GitHub Release 的两个精确资产并核对 binary 版本与内部摘要，再提交 Cloud 的唯一更新目标并走正常 backend 发布。该顺序允许同一版本在任一阶段中断后续跑，但不会覆盖已发布资产或让 Cloud 指向尚未验真的 binary。
+正式版本由 AkastrCloud 仓库的同步发布入口生成。同协议版本先验证并发布 Agent 不可变资产，再提交 Cloud 的唯一更新目标并由在线 Agent 自动收敛。协议、认证或配置契约发生破坏性变化时，发布器显式进入只读维护窗口，只激活单一新协议；操作者逐节点重新运行后台当前的一行安装命令，全部节点达到批准版本和 revision 后，重跑同一发布命令恢复业务。两种模式都不会覆盖已发布资产或让 Cloud 指向尚未验真的 binary，也不保留双协议或跨协议自动升级路径。
 
 唯一主 service 使用 `Type=notify`，只有 WSS 完成 auth、hello 并收到 `hello.accepted` 后才向 systemd 报告 ready。service 使用 `ProtectSystem=strict`，并明确允许写状态目录与 Agent release root；固定 ChangeIP 程序可使用 service 可见的任意干净绝对路径，运行时不经 shell 且系统目录只读。Agent 不提供手工 `--update` 或本地回退 CLI；更新故障由 AkastrCloud 批准修复版本，或由操作者重新运行后台的一键 `--install`。WSS、认证或配置的破坏性版本必须走人工维护 Gate，不能通过自动更新跨协议部署。
 
