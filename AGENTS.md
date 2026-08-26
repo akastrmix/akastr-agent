@@ -9,6 +9,7 @@
 - Cloud × Agent 的 ownership 与跨仓库路由以 AkastrCloud `docs/AGENT_INTEGRATION.md` 为总地图。跨仓库任务可用 `$local-project-paths` 定位两个仓库。
 - 共享 wire contract 以本仓库 `docs/PROTOCOL.md` 为权威；Cloud HTTP、PostgreSQL 与业务语义由 Cloud 对应权威文档负责。
 - Agent 是 systemd 管理的单 Go 进程，只主动建立出站控制连接，不提供 HTTP 控制面、远程终端或任意主机执行入口。
+- Agent 应保持轻量、低资源、少依赖且适合长期运行，并在不增加复杂度的前提下适当优化性能。
 
 ## 2. 文档职责与自动维护
 
