@@ -50,9 +50,16 @@ IPQuality 的“每天一次”按 `Asia/Hong_Kong` 日历日计算；超过一�
 
 ## 文档
 
-- [安装与使用教程](docs/INSTALLATION.md)
-- [架构说明](docs/ARCHITECTURE.md)
-- [WSS 协议](docs/PROTOCOL.md)
+- [安装与使用教程](docs/INSTALLATION.md)：安装、重装、验收、维护与排障。
+- [架构说明](docs/ARCHITECTURE.md)：运行时职责、本地状态与 lifecycle。
+- [WSS 协议](docs/PROTOCOL.md)：Cloud ↔ Agent HTTPS/WSS wire contract。
+
+## 文档维护
+
+- README 负责项目入口、产品边界、目录和验证入口，这些事实变化时同步更新。每个事实只维护一份权威说明，其他文档只概览或引用，不复制完整字段、状态机、命令或流程。
+- 现行文档只描述当前有效行为，不保留迁移流水和已取代实现；长期跨仓库决定进入 Cloud ADR，历史变化通过 Git 查询。行为变化同步更新对应说明并清理相关旧描述。
+- 文档可拆分、合并、重命名或删除，路径不是兼容接口；结构调整不改变未批准的产品或架构语义。只有新的稳定职责无法由现有文档自然承载时才新建权威文档，并明确 authority、更新入口和链接、移除重复内容。
+- 文档维护以语义一致性为目标；若存在文档 Gate，体量阈值仅作为异常膨胀信号，不为控制文件数量或字符数删除必要行为、决策理由与恢复说明。
 
 ## 仓库结构
 
@@ -75,9 +82,9 @@ internal/transport/ws/  带认证和重连的控制连接
 scripts/                release 构建与非交互安装模板
 ```
 
-新增能力必须作为 `internal/features/` 或 `internal/providers/` 下职责单一的同级包加入；仓库不为未实现能力创建空接口。
-
 ## 本地开发
+
+状态转换、冲突规则、解析/校验和恢复语义的变化须有相应测试覆盖。代码变更交付前运行下面的 Go Gate；Linux CI 使用 `pwsh` 执行同一脚本。纯文档变更检查内容、链接和差异。
 
 需要 Go 1.25 或 `go.mod` 指定的兼容版本：
 
@@ -85,7 +92,7 @@ scripts/                release 构建与非交互安装模板
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-go.ps1
 ```
 
-修改 installer 时，再在本机 Docker/WSL 运行一次性 Debian 12/13 回归；容器不连接 Cloud，也不使用真实 token：
+修改 installer 或安装状态转换时，在本机 Docker/WSL 运行 Debian 12/13 回归，覆盖首次安装、同节点覆盖、残缺/failed 状态、失败重跑、Target/Runner 与卸载收敛；容器不连接 Cloud，也不使用真实 token：
 
 ```bash
 for version in 12 13; do
@@ -98,13 +105,7 @@ for version in 12 13; do
 done
 ```
 
-每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查和 Debian 12/13 installer 容器回归。正式版本不在本仓库手工拆成“打标签”和“再改 Cloud”两次操作；唯一入口位于 AkastrCloud 仓库：
-
-```powershell
-.\release.cmd agent -AgentVersion vX.Y.Z -Execute
-```
-
-该命令要求两个仓库都位于 `main`、已经提交且工作树干净；它验证双方协议与 Agent 源码，推送 Agent `main` 并等待该精确 commit 的 Linux CI 全部通过后才创建 `vX.Y.Z` 标签，随后验证 GitHub Actions 发布的不可变 Linux amd64 binary 与版本专用 `install.sh`，再把精确版本、URL 和内部摘要提交到 Cloud，并按 Cloud 差异自动选择 backend 或包含 Pages 的完整发布。普通更新不暂停 worker，也不要求人工拆成两阶段。流程不创建 PR；同一版本和 commit 可在中断后直接重跑，已发布资产不会被覆盖。
+每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查和 Debian 12/13 installer 容器回归。正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真和重跑规则见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围)，不在本仓库手工拆分发布步骤。
 
 本地排查发布构建时可以运行：
 

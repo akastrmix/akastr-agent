@@ -210,12 +210,6 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 
 ## 9. 维护者发布版本
 
-普通 `main` 提交和 Pull Request 会自动执行测试、静态检查、构建与安装脚本语法检查，但不会发布文件。正式发布从 AkastrCloud 仓库执行唯一同步入口：
-
-```powershell
-.\release.cmd agent -AgentVersion vX.Y.Z -Execute
-```
-
-两个仓库都必须位于 `main`、已经提交且工作树干净。同步发布器验证双方协议与 Agent 源码，直接推送 Agent `main` 和语义化标签；GitHub Actions 从标签重新验证，只构建 `akastr-agent-linux-amd64` 和版本专用 `install.sh`。同协议更新使用上面的普通命令，不暂停 worker。破坏性协议更新使用 `release.cmd agent -AgentVersion vX.Y.Z -BreakingProtocol -Execute`：第一次运行排空并把 Cloud 留在只读新协议，逐节点运行后台当前的一键命令后，再运行同一发布命令；只有全部 active 节点达到批准版本、revision 收敛且没有未完成 Agent 工作时才恢复 scheduler。该过程不增加双协议、兼容 reader 或本地升级 CLI。流程不创建 PR；同一 tag 与 commit 可在中断后直接重跑，已存在的 Release 不允许覆盖或替换。
+正式发布的命令、前置条件、CI 验真与重跑流程统一见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围)。同协议版本由自动维护协调；破坏性协议维护窗口中，操作者按本文安装流程逐节点执行后台当前的一键命令，再回到 Cloud 发布入口完成验收。不要绕过同步发布器手工打标签或修改 Cloud pin。
 
 每个版本使用独立的 `releases/download/vX.Y.Z/...` 地址。只有同步流程中的 Cloud backend 激活成功，主进程的六小时循环才会收到 `update_available`；系统不跟随 GitHub `latest`。发布动作不会创建节点或触发 ChangeIP/IPQuality。

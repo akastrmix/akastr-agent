@@ -54,8 +54,6 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 - `internal/autoupdate`：主进程内六小时循环，签名请求 Cloud 批准清单，只接受同一 WSS 协议的前向语义版本，并完成有界下载、内部 digest 校验和不可变 release 切换。
 - `internal/app`：组合配置、executor 与运行时入口。
 
-新增能力只有在行为得到批准后才能实现，并应使用职责单一的同级包。未实现能力不创建目录、空接口或占位协议字段。
-
 ## 5. 本地操作状态
 
 每个可执行操作都有一个 exclusive group。引擎在执行前持久化 active 记录，得到终态后再移动到有界 recent 历史。即使主控调度错误，同一组内的第二个操作也会被本地拒绝。

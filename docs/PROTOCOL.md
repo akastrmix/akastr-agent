@@ -117,4 +117,4 @@ Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`
 - capability list、journal 和日志不得含密码或脚本输出。
 - 公网 IPv4 字段拒绝 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 - Agent 不实现任意命令、远程 shell 或 HTTP 控制端点。
-- 修改认证、消息字段、持久 payload 或发布边界时，必须与 AkastrCloud 侧按 ADR 0024 一并批准和实现。
+- 修改认证、消息字段、持久 payload 或发布边界时，仍须按 Cloud ADR 0024 在实施前批准；共享契约变化核对双方实现，仅修改实际受影响的一侧或双方。跨仓库验证范围见 Cloud `docs/AGENT_INTEGRATION.md`。
