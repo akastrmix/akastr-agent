@@ -7,24 +7,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/app"
-	"github.com/akastrmix/akastr-agent/internal/autoupdate"
 	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/capability"
-	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/daemon"
 	"github.com/akastrmix/akastr-agent/internal/identity"
-	"github.com/akastrmix/akastr-agent/internal/lifecycle"
-	"github.com/akastrmix/akastr-agent/internal/operation"
-	"github.com/akastrmix/akastr-agent/internal/systemdnotify"
-	transportws "github.com/akastrmix/akastr-agent/internal/transport/ws"
 )
 
 var version = "dev"
@@ -145,7 +138,7 @@ func run(arguments []string, output io.Writer) error {
 			return err
 		}
 		if arguments[0] == "check-idle" {
-			if err := checkIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit); err != nil {
+			if err := app.CheckIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit); err != nil {
 				return err
 			}
 			_, err = fmt.Fprintln(output, "Agent is idle")
@@ -179,166 +172,9 @@ func run(arguments []string, output io.Writer) error {
 			return err
 		}
 		if arguments[0] == "run" {
-			const releaseRoot = "/usr/local/lib/akastr-agent"
-			credentials, err := identity.Load(model.Config.Control.CredentialFile)
-			if err != nil {
-				return err
-			}
-			if credentials.AgentID != model.Config.Node.ID {
-				return errors.New("configured node ID does not match enrolled identity")
-			}
-			logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-			lifecycleGate := lifecycle.New()
-			startupContext, startupCancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_, err = autoupdate.ReconcileOnce(startupContext, autoupdate.LoopOptions{
-				ControlEndpoint: model.Config.Control.Endpoint,
-				CurrentVersion:  version, ConfigurationRevision: model.Config.ConfigurationRevision,
-				Credentials: credentials, ConfigPath: *configPath, ReleaseRoot: releaseRoot,
-				Lifecycle: lifecycleGate,
-				CheckIdle: func() error {
-					return checkMaintenanceSafe(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
-				},
-				Reexec: reexecAgent,
-				Logger: logger,
-			})
-			startupCancel()
-			if err != nil {
-				logger.Warn("startup maintenance reconciliation failed", "code", "maintenance_reconciliation_failed")
-			}
-			runtime, err := app.BuildRuntime(model)
-			if err != nil {
-				return err
-			}
-			trial, err := autoupdate.LoadTrial(version, model.Config.ConfigurationRevision, releaseRoot, *configPath)
-			if err != nil {
-				return err
-			}
-			ready := make(chan struct{})
-			var readyOnce sync.Once
-			var readyError error
-			onReady := func() error {
-				readyOnce.Do(func() {
-					if notifyError := systemdnotify.Ready(); notifyError != nil {
-						readyError = notifyError
-						return
-					}
-					close(ready)
-				})
-				return readyError
-			}
-			deploymentState := "current"
-			var onDeploymentTrial func() error
-			if trial != nil {
-				deploymentState = "trial"
-				onDeploymentTrial = func() error {
-					result, commitError := trial.Commit()
-					if result.CleanupFailed {
-						logger.Warn("managed Agent release cleanup incomplete", "code", "update_cleanup_failed")
-					}
-					return commitError
-				}
-			}
-			var observations transportws.ObservationSource
-			if monitor := runtime.IPMonitor(); monitor != nil {
-				observations = monitor
-			}
-			maintenanceTriggers := make(chan struct{}, 1)
-			client, err := transportws.New(struct {
-				Endpoint              string
-				Identity              identity.Identity
-				Version               string
-				ConfigurationRevision int64
-				Capabilities          []capability.Descriptor
-				DeploymentState       string
-				Executor              transportws.Executor
-				Observations          transportws.ObservationSource
-				Lifecycle             *lifecycle.Gate
-				OnReady               func() error
-				OnDeploymentTrial     func() error
-				OnMaintenanceCheck    func()
-				Logger                *slog.Logger
-			}{
-				Endpoint: model.Config.Control.Endpoint, Identity: credentials,
-				Version: version, ConfigurationRevision: model.Config.ConfigurationRevision,
-				Capabilities: model.Capabilities.List(), DeploymentState: deploymentState,
-				Executor: runtime, Observations: observations,
-				Lifecycle: lifecycleGate, OnReady: onReady, OnDeploymentTrial: onDeploymentTrial,
-				OnMaintenanceCheck: func() {
-					select {
-					case maintenanceTriggers <- struct{}{}:
-					default:
-					}
-				},
-				Logger: logger,
-			})
-			if err != nil {
-				return err
-			}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			runContext, cancelRun := context.WithCancel(ctx)
-			defer cancelRun()
-			updateDone := make(chan error, 1)
-			controlDone := make(chan error, 1)
-			var trialExpired <-chan time.Time
-			if trial != nil {
-				trialTimer := time.NewTimer(autoupdate.TrialReadinessTimeout)
-				defer trialTimer.Stop()
-				trialExpired = trialTimer.C
-				go func() {
-					select {
-					case <-ready:
-						if !trialTimer.Stop() {
-							select {
-							case <-trialTimer.C:
-							default:
-							}
-						}
-					case <-runContext.Done():
-					}
-				}()
-			}
-			go func() {
-				updateDone <- autoupdate.RunLoop(runContext, autoupdate.LoopOptions{
-					ControlEndpoint:       model.Config.Control.Endpoint,
-					CurrentVersion:        version,
-					ConfigurationRevision: model.Config.ConfigurationRevision,
-					Credentials:           credentials,
-					ConfigPath:            *configPath,
-					ReleaseRoot:           releaseRoot,
-					Lifecycle:             lifecycleGate,
-					Ready:                 ready,
-					Triggers:              maintenanceTriggers,
-					CheckIdle: func() error {
-						return checkMaintenanceSafe(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
-					},
-					Reexec: reexecAgent,
-					Logger: logger,
-				})
-			}()
-			go func() { controlDone <- client.Run(runContext) }()
-			var firstError error
-			select {
-			case <-trialExpired:
-				cancelRun()
-				<-updateDone
-				<-controlDone
-				trialError := errors.New("automatic update trial did not reach control readiness")
-				if discardError := trial.Discard(); discardError != nil {
-					return errors.Join(trialError, fmt.Errorf("discard timed out automatic update trial: %w", discardError))
-				}
-				return trialError
-			case firstError = <-updateDone:
-				cancelRun()
-				<-controlDone
-			case firstError = <-controlDone:
-				cancelRun()
-				<-updateDone
-			}
-			if ctx.Err() != nil || errors.Is(firstError, context.Canceled) {
-				return nil
-			}
-			return firstError
+			return daemon.Run(ctx, model, daemon.Options{ConfigPath: *configPath, Version: version, Reexec: reexecAgent})
 		}
 		encoder := json.NewEncoder(output)
 		encoder.SetIndent("", "  ")
@@ -346,29 +182,4 @@ func run(arguments []string, output io.Writer) error {
 	default:
 		return fmt.Errorf("unknown command %q", arguments[0])
 	}
-}
-
-func checkIdle(stateFile, ipStateFile string, recentLimit int) error {
-	if err := checkOperationIdle(stateFile, recentLimit); err != nil {
-		return err
-	}
-	return ipwatch.CheckIdle(ipStateFile)
-}
-
-func checkMaintenanceSafe(stateFile, ipStateFile string, recentLimit int) error {
-	if err := checkOperationIdle(stateFile, recentLimit); err != nil {
-		return err
-	}
-	return ipwatch.CheckMaintenanceSafe(ipStateFile)
-}
-
-func checkOperationIdle(stateFile string, recentLimit int) error {
-	engine, err := operation.Open(operation.Options{StateFile: stateFile, RecentLimit: recentLimit})
-	if err != nil {
-		return err
-	}
-	if len(engine.Snapshot().Active) != 0 {
-		return errors.New("an Agent operation is active")
-	}
-	return nil
 }

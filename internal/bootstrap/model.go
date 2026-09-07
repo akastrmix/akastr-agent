@@ -52,11 +52,12 @@ type Target struct {
 }
 
 type ChangeIP struct {
-	Provider    string   `json:"provider"`
-	URL         string   `json:"url,omitempty"`
-	BearerToken string   `json:"bearer_token,omitempty"`
-	Program     string   `json:"program,omitempty"`
-	Args        []string `json:"args,omitempty"`
+	SourceCommand string   `json:"source_command,omitempty"`
+	Provider      string   `json:"provider"`
+	URL           string   `json:"url,omitempty"`
+	BearerToken   string   `json:"bearer_token,omitempty"`
+	Program       string   `json:"program,omitempty"`
+	Args          []string `json:"args,omitempty"`
 }
 
 type SOCKS5 struct {
@@ -121,6 +122,9 @@ func (t Target) validate() error {
 }
 
 func (c ChangeIP) validate() error {
+	if len(c.SourceCommand) > 8192 || strings.ContainsRune(c.SourceCommand, '\x00') || (c.Provider != "http_bearer" && c.SourceCommand != "") {
+		return errors.New("ChangeIP source command is invalid")
+	}
 	switch c.Provider {
 	case "disabled":
 		if c.URL != "" || c.BearerToken != "" || c.Program != "" || len(c.Args) != 0 {

@@ -200,6 +200,15 @@ type futureConfigurationRunner struct{ materializeRunner }
 
 func (runner futureConfigurationRunner) Output(ctx context.Context, binary string, arguments ...string) (string, error) {
 	result, err := runner.materializeRunner.Output(ctx, binary, arguments...)
+	if err == nil && len(arguments) > 0 && arguments[0] == "validate-configuration" {
+		var document map[string]any
+		if err := json.Unmarshal([]byte(result), &document); err != nil {
+			return "", err
+		}
+		document["capabilities"] = []any{map[string]any{"name": "future.capability", "version": 99, "future_field": true}}
+		encoded, err := json.Marshal(document)
+		return string(encoded), err
+	}
 	if err != nil || len(arguments) == 0 || arguments[0] != "materialize-configuration" {
 		return result, err
 	}
@@ -430,7 +439,7 @@ func TestMaterializeCandidateRejectsAReusedRevisionWithDifferentBootstrap(t *tes
 	); err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := materializeCandidate(
+	_, err := materializeCandidate(
 		t.Context(), materializeRunner{}, "unused", root,
 		Configuration{ConfigurationRevision: 2, Bootstrap: []byte(`{"desired":"different"}`)},
 		"123e4567-e89b-42d3-a456-426614174000",

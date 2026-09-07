@@ -8,7 +8,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 
 `POST /internal/agents/enroll` 请求必须且只能包含 `machine_token`、raw 32-byte `public_key`、当前批准的语义化 `agent_version`、正整数 `configuration_revision` 和不含秘密的 `capabilities`。版本必须精确等于 Cloud 当前批准 release，revision 必须精确等于节点的 desired revision，否则分别返回 `agent_release_required` 或 `agent_configuration_stale`。首次安装生成 Ed25519 keypair；同节点完整重装复用已确认 identity，并再次提交同一公钥。注册成功把 applied revision 推进到 desired revision，并断开既有 WSS。只有状态码与已知 enrollment 业务错误严格匹配的 JSON 4xx 响应才会删除新生成的 pending identity；已确认 identity 不因重装被拒绝而删除。重定向、408、425、429、5xx、非 JSON 代理响应、网络中断和无法严格解析的响应均保留 identity 供重试。主控在该节点存在 pending、offered 或 accepted command，或 Target 对应服务器仍有 active ChangeIP session 时，以 `agent_node_busy` 拒绝注册。
 
-机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。配置更新保持节点 ID、target/Runner 角色、服务器绑定、机器 token 和 identity 不变；ChangeIP 与 Runner credential 只接受显式 `keep|replace|clear`，空字符串不表示保留。主控在一个事务中解封、合并、递增 desired revision 并重新密封 bootstrap，随后断开连接；新 revision ready 前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受当前 bootstrap v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
+机器 token 是长期安装凭据，不是 WSS bearer。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。HTTP ChangeIP 可含 `source_command`（最多 8192 字符），保存 Cloud 已解析校验的编辑原文，仅供回填，不作为 shell 执行；缺少该字段的既有配置仍有效。配置更新保持节点 ID、target/Runner 角色、服务器绑定、机器 token 和 identity 不变；Cloud 管理员添加/编辑共用完整配置，空字符串不表示保留；Runner 省略项表示移除，停用服务器仅可保留原有凭据。主控在一个事务中解封并比较完整配置，无变化不推进 revision、不打断连接；真实变更才递增 desired revision 并重新密封 bootstrap，随后断开业务连接；新 revision ready 前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受当前 bootstrap v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -29,6 +29,10 @@ Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`�
 
 ready WSS 会话可接收 `maintenance.check`，body 必须为空对象；`maintenance.required` 会在维护会话建立时立即唤醒同一协调，后续仍可接收 `maintenance.check`。这些消息只唤醒现有维护协调，不创建 operation、不绕过进程级更新 lease，也不表示存在或完成了更新；重复的未处理唤醒可以合并。Cloud 只向已知支持对应消息的 Agent release 发送。
 
+`POST /internal/agents/maintenance-wait` 使用与 maintenance check 相同的严格请求字段，签名首行改为 `akastr-agent-maintenance-wait-v1`；其余签名行顺序不变。只接受 active identity，业务协议不匹配仍可等待。每节点最多一个等待请求，新请求结束旧请求；单次请求结束后维护会话继续保留 60 秒重连宽限期，该窗口内最多合并一条通知，下一次经过身份认证的等待立即取走。会话过期才判离线，API 关闭清理全部会话。最多等待 25 秒，管理员检查更新或配置保存可提前唤醒。响应严格为 `{ "check": boolean }`：收到唤醒或请求中的版本/revision 已落后时为 true，普通超时为 false；不承诺业务连接已就绪或更新已经完成。节点断开释放单次等待，通知仅在上述有界内存会话中保留，不写数据库。Agent 连续重新等待，首次成功或断线恢复会额外触发一次检查；失败等待 10 秒再重连。busy 目标在后续等待周期继续检查。
+
+此通知、维护目标、配置 fetch、结果上报和 candidate CLI 是稳定维护契约，独立于 WSS 业务 envelope。管理员按钮优先使用 HTTPS 维护会话（包括重连宽限期）；尚通过现有业务连接的节点也可收到 `maintenance.check`。两种通道都不可用时明确显示离线。当前 deployment 可在 WSS 不兼容时保持主进程运行并维护；trial 仍须通过当前业务协议验证后提交。
+
 已持久化、可在新 ready 会话重放的待确认 IP snapshot/observation 不阻断配置切换；active operation、ChangeIP attempt 或待确认 unchanged 结果仍会阻断。
 
 `POST /internal/agents/maintenance` 独立于 WSS envelope。请求必须且只能包含 `agent_id`、`agent_version`、正整数 `configuration_revision`、`protocol`、32-byte nonce、`sent_at` 和 64-byte Ed25519 signature；时间与主控相差超过五分钟即拒绝。签名文本为以下 UTF-8 行，末尾没有换行，时间保持 Agent 发送的原文：
@@ -43,9 +47,11 @@ akastr-agent-maintenance-check-v1
 <sent_at>
 ```
 
-主控返回严格的 `akastr-agent-maintenance.v1` 原子目标：顶层 `status`，以及完整 `software` 和 `configuration`。软件目标包含状态、批准语义版本、相同 WSS protocol、精确 immutable URL 和 SHA-256；配置目标包含状态、desired revision、bootstrap schema 与最低 Agent 版本。目标不允许软件降级、配置 revision 回退或跨 WSS 协议更新；存在未终结 command、active ChangeIP 或运行中的目标 IPQuality 时只能返回 `busy`。
+主控返回严格的 `akastr-agent-maintenance.v1` 原子目标：顶层 `status`，以及完整 `software` 和 `configuration`。软件目标包含状态、批准语义版本、目标 WSS protocol、精确 immutable URL 和 SHA-256；配置目标包含状态、desired revision、bootstrap schema 与最低 Agent 版本。维护请求的 `protocol` 为 1–64 字符的版本标识，参与签名但不要求等于当前业务协议。允许跨业务协议更新；目标不允许软件降级或配置 revision 回退，同一 binary 版本不能改变业务协议；存在未终结 command、active ChangeIP 或运行中的目标 IPQuality 时只能返回 `busy`。
 
-配置目标可用时，Agent 对 `akastr-agent-configuration-fetch-v1`、`agent_id`、desired revision、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration`。主控以内存解封既有密封 bootstrap，返回严格的 `akastr-agent-configuration.v1`，不建立第二份明文配置持久化。仅更新软件时，目标二进制必须接受 current 配置；软件与配置同时更新时，不要求目标二进制接受旧配置，但必须严格解析并物化 desired bootstrap，再以 candidate 二进制完整验证 candidate 配置并生成 capability。
+配置目标可用时，Agent 对 `akastr-agent-configuration-fetch-v1`、`agent_id`、desired revision、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration`。主控以内存解封既有密封 bootstrap，返回严格的 `akastr-agent-configuration.v1`，不建立第二份明文配置持久化。仅更新软件时，目标二进制必须接受 current 配置；软件与配置同时更新时，不要求目标二进制接受旧配置，但必须严格解析并物化 desired bootstrap，再以 candidate 二进制完整验证 candidate 配置并生成 capability。旧更新器只验证正整数 schema 标识与稳定外层，不解析未来 bootstrap 内容；candidate 的 `validate-configuration` 输出保留 `agent_id`、`configuration_revision`、`capabilities` 外层，旧更新器只核对身份/revision，capability 内容由 candidate 和当前 Cloud 校验。配置格式变化必须发布新 revision，不在同一 revision 目录重新解释不同内容。
+
+试运行前的 candidate 命令明确拒绝或稳定验证外层不一致时，在当前进程内抑制同一 version/revision，报告 `suppressed/candidate_target_rejected`；临时网络或本地 I/O 失败按 1、2、4、5 分钟延迟重试（上限 5 分钟），等待期间报告 `busy/maintenance_retry_wait`，取消不计失败。目标变化清除进程内抑制，本地依赖修复后重启也可重新验证；不新增持久失败记录。已验证 binary 先复用，配置验证失败不会删除该制品。
 
 确定性维护失败或同一目标已被抑制时，Agent 向 `POST /internal/agents/maintenance-result` 发送严格的目标版本、目标 revision、`busy|failed|suppressed`、稳定错误码、nonce、时间和 Ed25519 签名。签名文本以 `akastr-agent-maintenance-result-v1` 开头并按请求字段顺序逐行连接。主控只接受当前批准版本与当前 desired revision，持久化有界投影；请求不得包含错误文本、URL、bootstrap 或 secret。结果投影失败不改变 deployment 或重试语义。
 

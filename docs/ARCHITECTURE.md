@@ -41,7 +41,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 ## 4. 包职责
 
-- `internal/config`：严格读取和验证操作者配置；未知字段直接报错。
+- `internal/config`：严格读取和验证 Cloud 生成的本地配置；未知字段直接报错。
 - `internal/capability`：生成确定性且不含秘密的能力描述。
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
 - `internal/operation`：本地 exclusive group 和有界操作日志；不保存 command payload 或凭据。
@@ -51,8 +51,9 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 - `internal/providers/ipquality/script`：通过秘密 SOCKS5 profile 执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/bootstrap`：下载持久密封配置，以节点 UUID 作为 AAD 完成认证解密，并生成 root-only 运行文件。
-- `internal/autoupdate`：主进程内六小时循环，签名请求 Cloud 批准清单，只接受同一 WSS 协议的前向语义版本，并完成有界下载、内部 digest 校验和不可变 release 切换。
-- `internal/app`：组合配置、executor 与运行时入口。
+- `internal/autoupdate`：主进程内六小时循环，签名请求 Cloud 批准清单，独立 HTTPS 长轮询接收更新通知，接受包括跨业务协议的批准前向语义版本，并完成有界下载、内部 digest 校验和不可变 release 切换。
+- `internal/app`：组合配置与 executor，提供本地空闲检查。
+- `internal/daemon`：组织启动检查、WSS、维护循环、trial 和退出；CLI 只负责参数和进程信号。
 
 ## 5. 本地操作状态
 
@@ -86,11 +87,11 @@ bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd4
 
 后台的一键命令先把固定版本 installer 完整下载到临时文件并核对发布摘要，校验通过后才执行。它描述节点的期望安装状态，可用于空白主机、同节点覆盖安装和残缺安装修复。覆盖安装先核对已有 identity/config 的节点 ID 和已装版本；不同节点或降级直接拒绝。installer 复用摘要正确的同版本 binary 和 Runner 脚本，在停止唯一 `akastr-agent.service` 前完成其余下载、bootstrap、依赖与 maintenance-safe 检查，停止后再对稳定状态检查并写入新配置。配置 revision 已前进时旧配置不能重新 ready，因此本机不维护目录或 unit 回滚事务；后续失败保留可重跑状态，由同一命令 fix-forward。同节点 identity 会复制到新配置并用新 configuration revision 重新 enrollment，不重新生成 private key。主控在未完成 command、active ChangeIP session 或目标 IPQuality run 存在时拒绝配置更新和注册。
 
-自动维护不由 GitHub `latest` 驱动。主进程在建立 WSS 前先使用 Ed25519 identity 协调 Cloud 批准的软件与配置目标，ready 后等待 1–5 分钟随机抖动并每六小时复查。取得 exclusive update lease 后，candidate binary 写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录并生成 capability。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；Cloud 校验 trial hello 后不推进 applied，Agent 先原子替换并 fsync `current`，再提交 WSS commit，由 Cloud 重验并进入 ready。提交前的确定性本地失败保留 deployment 并抑制同一目标，未提交的 readiness 超时删除 deployment 以允许临时故障恢复后重试；本地已提交但确认中断时由新 current 重连收敛。成功提交或重装收敛后只保留 current、previous deployment 及其引用的 release/configuration；清理失败只告警，不回滚 active deployment。
+自动维护不由 GitHub `latest` 驱动。主进程在建立 WSS 前先使用 Ed25519 identity 协调 Cloud 批准的软件与配置目标，业务 ready 或维护通知唤醒后定期复查；独立 HTTPS 等待不依赖 WSS ready，重连和落后目标持续触发协调。取得 exclusive update lease 后，先复用摘要/版本已验证的 binary，仅缺失时下载写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录并生成 capability。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；Cloud 校验 trial hello 后不推进 applied，Agent 先原子替换并 fsync `current`，再提交 WSS commit，由 Cloud 重验并进入 ready。试运行前的确定性目标拒绝由串行协调器在进程内抑制，临时失败有界延迟重试；完整策略由 PROTOCOL 维护。已形成 deployment 后的确定性本地失败保留 deployment 并抑制同一目标，未提交的 readiness 超时删除 deployment 以允许临时故障恢复后重试；本地已提交但确认中断时由新 current 重连收敛。成功提交或重装收敛后只保留 current、previous deployment 及其引用的 release/configuration；清理失败只告警，不回滚 active deployment。
 
-正式版本由 AkastrCloud 仓库的同步发布入口生成。同协议版本先验证并发布 Agent 不可变资产，再提交 Cloud 的唯一更新目标并由在线 Agent 自动收敛。协议、认证或配置契约发生破坏性变化时，发布器显式进入只读维护窗口，只激活单一新协议；操作者逐节点重新运行后台当前的一行安装命令，全部节点达到批准版本和 revision 后，重跑同一发布命令恢复业务。两种模式都不会覆盖已发布资产或让 Cloud 指向尚未验真的 binary，也不保留双协议或跨协议自动升级路径。
+正式版本由 AkastrCloud 仓库的同步发布入口生成，先验真并发布不可变 Agent 资产，再激活 Cloud 的唯一更新目标。业务只保留当前协议，破坏性变化在激活时短暂只读，随后恢复 Cloud；节点通过稳定维护通道自动更新，不等待整个 fleet 人工重装。维护外层、身份签名和 candidate CLI 自身保持稳定；其破坏性变化需要单独设计接入方案。
 
-唯一主 service 使用 `Type=notify`，只有 WSS 完成 auth、hello 并收到 `hello.accepted` 后才向 systemd 报告 ready。service 使用 `ProtectSystem=strict`，并明确允许写状态目录与 Agent release root；固定 ChangeIP 程序可使用 service 可见的任意干净绝对路径，运行时不经 shell 且系统目录只读。Agent 不提供手工 `--update` 或本地回退 CLI；更新故障由 AkastrCloud 批准修复版本，或由操作者重新运行后台的一键 `--install`。WSS、认证或配置的破坏性版本必须走人工维护 Gate，不能通过自动更新跨协议部署。
+唯一主 service 使用 `Type=notify`。current deployment 在运行时及独立维护启动后报告进程 ready，业务是否可用由 WSS 单独表示；trial 仍只在 WSS 提交并收到 `hello.accepted` 后报告 ready。service 使用 `ProtectSystem=strict`，只允许写状态目录与 Agent release root；固定 ChangeIP 程序由操作者准备，运行时不经 shell 且系统目录只读。Agent 不提供手工 `--update` 或本地回退 CLI；维护身份或本地部署损坏时使用后台的一键安装命令修复。
 
 ## 9. 节点接入边界
 

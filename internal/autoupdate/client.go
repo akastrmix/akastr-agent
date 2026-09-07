@@ -18,7 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
@@ -151,7 +150,7 @@ func (c Client) FetchConfiguration(ctx context.Context, controlEndpoint string, 
 		return Configuration{}, fmt.Errorf("fetch Agent configuration: %w", err)
 	}
 	if configuration.Schema != ConfigurationSchema || configuration.ConfigurationRevision != revision ||
-		configuration.BootstrapSchemaVersion != bootstrap.SchemaVersion || !semanticVersion.MatchString(configuration.MinimumAgentVersion) || len(configuration.Bootstrap) == 0 {
+		configuration.BootstrapSchemaVersion < 1 || !semanticVersion.MatchString(configuration.MinimumAgentVersion) || len(configuration.Bootstrap) == 0 {
 		return Configuration{}, errors.New("Agent configuration response is invalid")
 	}
 	return configuration, nil
@@ -277,17 +276,20 @@ func (m Manifest) Validate(currentVersion string, currentRevision int64) error {
 		return err
 	}
 	target, err := parseVersion(m.Software.Version)
-	if err != nil || m.Software.Protocol != protocol.Version || !sha256Hex.MatchString(m.Software.BinarySHA256) {
+	if err != nil || !stableCodePattern.MatchString(m.Software.Protocol) || !sha256Hex.MatchString(m.Software.BinarySHA256) {
 		return errors.New("Agent software target is invalid")
 	}
 	expectedURL := "https://github.com/akastrmix/akastr-agent/releases/download/" + m.Software.Version + "/akastr-agent-linux-amd64"
 	softwareChanged := compareVersion(target, current) > 0
+	if !softwareChanged && m.Software.Protocol != protocol.Version {
+		return errors.New("different business protocol requires a new Agent release")
+	}
 	if m.Software.BinaryURL != expectedURL || compareVersion(target, current) < 0 || softwareChanged != (m.Software.Status == "update_available") {
 		return errors.New("Agent software target is not a forward exact release")
 	}
 	minimum, err := parseVersion(m.Configuration.MinimumAgentVersion)
 	configurationChanged := m.Configuration.Revision > currentRevision
-	if err != nil || compareVersion(target, minimum) < 0 || m.Configuration.Revision < currentRevision || m.Configuration.SchemaVersion != bootstrap.SchemaVersion ||
+	if err != nil || compareVersion(target, minimum) < 0 || m.Configuration.Revision < currentRevision || m.Configuration.SchemaVersion < 1 ||
 		configurationChanged != (m.Configuration.Status == "update_available") {
 		return errors.New("Agent configuration target is invalid")
 	}

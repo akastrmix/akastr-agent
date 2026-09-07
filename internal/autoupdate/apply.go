@@ -79,6 +79,27 @@ func Stage(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
 	if runner == nil {
 		runner = systemRunner{}
 	}
+	targetRelease := filepath.Join(releasesRoot, options.Manifest.Software.Version)
+	if info, err := os.Lstat(targetRelease); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return StagedRelease{}, errors.New("target Agent release path is unsafe")
+		}
+		existingBinary := filepath.Join(targetRelease, "akastr-agent")
+		if err := verifyFileChecksum(existingBinary, options.Manifest.Software.BinarySHA256); err != nil {
+			return StagedRelease{}, fmt.Errorf("%w: existing target Agent release is not immutable", ErrCandidateRejected)
+		}
+		if err := verifyBinary(ctx, runner, existingBinary, options.Manifest.Software.Version); err != nil {
+			return StagedRelease{}, fmt.Errorf("existing target Agent release failed validation: %w", err)
+		}
+		if options.Manifest.Configuration.Status == "current" {
+			if err := verifyBinaryConfiguration(ctx, runner, existingBinary, options.ConfigPath); err != nil {
+				return StagedRelease{}, fmt.Errorf("existing target Agent release rejected the current configuration: %w", err)
+			}
+		}
+		return StagedRelease{Version: options.Manifest.Software.Version, Binary: existingBinary}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return StagedRelease{}, err
+	}
 	staging, err := os.MkdirTemp(releasesRoot, ".update-")
 	if err != nil {
 		return StagedRelease{}, fmt.Errorf("create Agent update staging directory: %w", err)
@@ -94,45 +115,24 @@ func Stage(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
 	if err := verifyBinary(ctx, runner, stagedBinary, options.Manifest.Software.Version); err != nil {
 		return StagedRelease{}, err
 	}
-	if options.Manifest.Configuration.Status == "current" {
-		if err := verifyBinaryConfiguration(ctx, runner, stagedBinary, options.ConfigPath); err != nil {
-			return StagedRelease{}, err
-		}
-	}
 
-	targetRelease := filepath.Join(releasesRoot, options.Manifest.Software.Version)
-	if info, err := os.Lstat(targetRelease); err == nil {
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return StagedRelease{}, errors.New("target Agent release path is unsafe")
-		}
-		existingBinary := filepath.Join(targetRelease, "akastr-agent")
-		if err := verifyFileChecksum(existingBinary, options.Manifest.Software.BinarySHA256); err != nil {
-			return StagedRelease{}, errors.New("existing target Agent release is not immutable")
-		}
-		if err := verifyBinary(ctx, runner, existingBinary, options.Manifest.Software.Version); err != nil {
-			return StagedRelease{}, errors.New("existing target Agent release failed validation")
-		}
-		if options.Manifest.Configuration.Status == "current" {
-			if err := verifyBinaryConfiguration(ctx, runner, existingBinary, options.ConfigPath); err != nil {
-				return StagedRelease{}, errors.New("existing target Agent release rejected the current configuration")
-			}
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return StagedRelease{}, err
-	} else {
-		syncFn := options.SyncDirectory
-		if syncFn == nil {
-			syncFn = syncDirectory
-		}
-		if err := syncFn(staging); err != nil {
-			return StagedRelease{}, fmt.Errorf("sync Agent update staging directory: %w", err)
-		}
-		if err := os.Rename(staging, targetRelease); err != nil {
-			return StagedRelease{}, fmt.Errorf("install Agent update release: %w", err)
-		}
-		staging = ""
-		if err := syncFn(releasesRoot); err != nil {
-			return StagedRelease{}, fmt.Errorf("sync Agent releases directory: %w", err)
+	syncFn := options.SyncDirectory
+	if syncFn == nil {
+		syncFn = syncDirectory
+	}
+	if err := syncFn(staging); err != nil {
+		return StagedRelease{}, fmt.Errorf("sync Agent update staging directory: %w", err)
+	}
+	if err := os.Rename(staging, targetRelease); err != nil {
+		return StagedRelease{}, fmt.Errorf("install Agent update release: %w", err)
+	}
+	staging = ""
+	if err := syncFn(releasesRoot); err != nil {
+		return StagedRelease{}, fmt.Errorf("sync Agent releases directory: %w", err)
+	}
+	if options.Manifest.Configuration.Status == "current" {
+		if err := verifyBinaryConfiguration(ctx, runner, filepath.Join(targetRelease, "akastr-agent"), options.ConfigPath); err != nil {
+			return StagedRelease{}, err
 		}
 	}
 	return StagedRelease{Version: options.Manifest.Software.Version, Binary: filepath.Join(targetRelease, "akastr-agent")}, nil
@@ -340,15 +340,18 @@ func verifyFileChecksum(path, expected string) error {
 
 func verifyBinary(ctx context.Context, runner CommandRunner, binary, version string) error {
 	actualVersion, err := runner.Output(ctx, binary, "version")
-	if err != nil || strings.TrimSpace(actualVersion) != version {
-		return errors.New("Agent update binary version mismatch")
+	if err != nil {
+		return candidateCommandError(ctx, err)
+	}
+	if strings.TrimSpace(actualVersion) != version {
+		return fmt.Errorf("%w: Agent update binary version mismatch", ErrCandidateRejected)
 	}
 	return nil
 }
 
 func verifyBinaryConfiguration(ctx context.Context, runner CommandRunner, binary, configPath string) error {
 	if _, err := runner.Output(ctx, binary, "check-config", "--config", configPath); err != nil {
-		return errors.New("Agent update binary rejected the current configuration")
+		return fmt.Errorf("Agent update binary rejected the current configuration: %w", candidateCommandError(ctx, err))
 	}
 	return nil
 }

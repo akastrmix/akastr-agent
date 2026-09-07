@@ -81,7 +81,7 @@ installer=$(mktemp) && ... curl <仅 HTTPS、固定版本 install.sh> --output "
 7. 用新 binary 和新配置再次执行 maintenance-safe 检查；
 8. 只停止唯一的 `akastr-agent.service`，仅在 unit 确实 failed 时清除 failed 状态，再对稳定状态执行相同检查；
 9. 运行 `check-config`；首次安装生成 identity，同节点重装复用已确认 identity，并以配置 revision 完成注册，再删除本机机器 token 副本；
-10. 启用唯一的 `akastr-agent.service`；服务只有完成 WSS 认证和 hello 后才向 systemd 报告 ready。
+10. 启用唯一的 `akastr-agent.service`；current 进程启动后向 systemd 报告 ready，业务连接须另外在后台验收。
 
 成功时最后显示：
 
@@ -119,7 +119,7 @@ systemctl show akastr-agent.service --property=MainPID,ActiveState,SubState,NRes
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-正确结果是：系统中只有 `akastr-agent.service`，其状态为 `active`、`MainPID` 非 0、版本与后台批准的 release 一致、配置输出 `configuration valid`，日志出现 `control connection ready`。因为 service 使用 `Type=notify`，`active` 代表 WSS auth 与 hello 已完成，不只是进程存活。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
+正确结果是：系统中只有 `akastr-agent.service`，其状态为 `active`、`MainPID` 非 0、版本与后台批准的 release 一致、配置输出 `configuration valid`，日志出现 `control connection ready`。service 的 `active` 表示进程运行，不能单独证明业务连接可用；业务不兼容时仍需保持独立更新能力。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
 
 再回到后台确认节点为“在线”，版本和类型正确；只有在线且 capability 完整的节点才能接收业务操作。
 
@@ -141,7 +141,7 @@ systemctl restart akastr-agent.service
 
 ## 7. 更新、状态与卸载
 
-普通配置修改不需要重新运行安装命令。新增 Agent 功能由维护者先发布软件；两种变更最终都由主控保存为节点的期望软件与配置，再由 Agent 自动协调：
+普通配置修改不需要重新运行安装命令。在 Cloud 的添加/编辑表单管理同一套完整参数，curl 原文、脚本路径/参数和 Runner 凭据会回填；Cloud 加密保存，管理员读取时解密，密码可显示。节点上的自定义程序由操作者准备。新增 Agent 功能由维护者先发布软件；两种变更最终都由主控保存为节点的期望软件与配置，再由 Agent 自动协调：
 
 ```mermaid
 flowchart TD
@@ -161,13 +161,13 @@ flowchart TD
     K --> L[主控推进 applied 并进入 ready]
 ```
 
-“检查更新”可以立即唤醒协调；Agent 也会在启动时检查，ready 后等待 1–5 分钟随机延迟并每六小时复查。执行中的 command 会阻止协调；candidate binary 先验证并物化 revision 配置，再把 binary/config 组成一个 deployment 试运行。trial WSS 通过当前 desired revision、批准版本、最低版本与 capability 校验后，Agent 才提交并 fsync `current`；随后主控重验、推进 applied 并返回 ready。提交前 45 秒内未完成时删除 trial deployment，systemd 从旧 deployment 重启并允许后续重试；本地已提交但确认中断时则从新 current 重连收敛。
+“检查更新”优先通过独立 HTTPS 维护连接唤醒协调，业务协议不兼容时仍可使用；两次正常请求之间保留重连宽限期，点击的通知会在重连后取走；超过宽限期仍未重连则显示离线。Agent 也会在启动、维护重连、目标落后以及定期维护时检查。执行中的 command 会阻止协调；candidate binary 先验证并物化 revision 配置，再把 binary/config 组成一个 deployment 试运行。trial WSS 通过当前 desired revision、批准版本、最低版本与 capability 校验后，Agent 才提交并 fsync `current`；随后主控重验、推进 applied 并返回 ready。提交前 45 秒内未完成时删除 trial deployment，systemd 从旧 deployment 重启并允许后续重试；本地已提交但确认中断时则从新 current 重连收敛。
 
 ```bash
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-Agent 不提供 `--update` 或本地回退 CLI。提交前的确定性本地启动或配置失败不会改变 `current`，同一软件版本与 revision 不会反复试运行；未提交的 readiness 超时会清除 trial deployment，以便网络恢复后重试。提交或重装成功后只保留 current、previous deployment 及其引用的 release/configuration。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。需要人工修复，或 Cloud 已因破坏性协议版本进入只读维护时，重新取得并运行后台当前的一键命令；不要从 VPS 本地猜测目标版本或绕过 installer 校验。
+Agent 不提供 `--update` 或本地回退 CLI。提交前的确定性本地启动或配置失败不会改变 `current`，试运行前的同一目标拒绝会在本次进程中暂停重试，修正 Cloud 配置后自动重新验证；如果修复的是节点本地脚本或依赖，可重启 Agent 重新验证。临时失败会延迟重试，已校验的软件文件会复用；未提交的 readiness 超时会清除 trial deployment，以便网络恢复后重试。提交或重装成功后只保留 current、previous deployment 及其引用的 release/configuration。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。业务协议破坏性更新由独立维护通道下载主控指定版本后恢复连接。只有维护身份、本地部署等需要人工修复时，才重新取得并运行后台当前的一键命令；不要从 VPS 本地猜测目标版本或绕过 installer 校验。
 
 日常状态直接从 systemd 读取，不需要再次下载安装器或使用机器 token：
 

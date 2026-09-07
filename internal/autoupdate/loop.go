@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/bootstrap"
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 )
@@ -54,9 +53,10 @@ type LoopOptions struct {
 	Reexec                func(string, string, string, int64) error
 	InitialDelay          func() time.Duration
 	Logger                *slog.Logger
+	Retry                 *RetryState
 }
 
-func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
+func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resultErr error) {
 	if options.ControlEndpoint == "" || options.CurrentVersion == "" || options.ConfigurationRevision < 1 ||
 		options.ConfigPath == "" || options.ReleaseRoot == "" || options.Lifecycle == nil || options.Reexec == nil {
 		return false, errors.New("automatic maintenance options are incomplete")
@@ -80,6 +80,19 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 			Status: status, ErrorCode: code,
 		})
 	}
+	if code := options.Retry.blocked(deploymentName(targetVersion, reportedTargetRevision)); code != "" {
+		status := "busy"
+		if code == "candidate_target_rejected" {
+			status = "suppressed"
+		}
+		report(status, code)
+		return false, nil
+	}
+	defer func() {
+		if resultErr != nil {
+			options.Retry.failed(resultErr)
+		}
+	}()
 	lease, acquired := options.Lifecycle.TryUpdate()
 	if !acquired {
 		report("busy", "maintenance_local_busy")
@@ -138,7 +151,7 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (bool, error) {
 		if configRoot == "" {
 			configRoot = DefaultConfigRoot
 		}
-		configPath, _, err = materializeCandidate(ctx, options.Runner, binary, configRoot, configuration, options.Credentials.AgentID)
+		configPath, err = materializeCandidate(ctx, options.Runner, binary, configRoot, configuration, options.Credentials.AgentID)
 		if err != nil {
 			report("failed", "candidate_configuration_invalid")
 			return false, err
@@ -176,59 +189,59 @@ func uncommittedDeploymentExists(releaseRoot, version string, revision int64) (b
 	return filepath.Clean(target) != filepath.Clean(current), nil
 }
 
-func materializeCandidate(ctx context.Context, runner CommandRunner, binary, configRoot string, configuration Configuration, agentID string) (string, []capability.Descriptor, error) {
+func materializeCandidate(ctx context.Context, runner CommandRunner, binary, configRoot string, configuration Configuration, agentID string) (string, error) {
 	if !filepath.IsAbs(configRoot) {
-		return "", nil, errors.New("configuration root must be absolute")
+		return "", errors.New("configuration root must be absolute")
 	}
 	if err := os.MkdirAll(configRoot, 0o700); err != nil {
-		return "", nil, err
+		return "", err
 	}
 	if info, err := os.Lstat(configRoot); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
-		return "", nil, errors.New("configuration root is unsafe")
+		return "", errors.New("configuration root is unsafe")
 	}
 	target := filepath.Join(configRoot, strconv.FormatInt(configuration.ConfigurationRevision, 10))
 	if info, err := os.Lstat(target); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return "", nil, errors.New("target configuration path is unsafe")
+			return "", errors.New("target configuration path is unsafe")
 		}
 		digest := sha256.Sum256(configuration.Bootstrap)
 		storedDigest, readErr := os.ReadFile(filepath.Join(target, bootstrap.ConfigurationBootstrapDigestFile))
 		if readErr != nil || strings.TrimSpace(string(storedDigest)) != fmt.Sprintf("%x", digest) {
-			return "", nil, errors.New("target configuration does not match desired bootstrap")
+			return "", fmt.Errorf("%w: target configuration does not match desired bootstrap", ErrCandidateRejected)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", nil, err
+		return "", err
 	} else {
 		staging, stageErr := os.MkdirTemp(configRoot, ".configuration-")
 		if stageErr != nil {
-			return "", nil, stageErr
+			return "", stageErr
 		}
 		defer os.RemoveAll(staging)
 		if err := os.Chmod(staging, 0o700); err != nil {
-			return "", nil, err
+			return "", err
 		}
 		input := filepath.Join(staging, "bootstrap.json")
 		if err := os.WriteFile(input, configuration.Bootstrap, 0o600); err != nil {
-			return "", nil, err
+			return "", err
 		}
 		output := filepath.Join(staging, "materialized")
 		if err := os.Mkdir(output, 0o700); err != nil {
-			return "", nil, err
+			return "", err
 		}
 		if runner == nil {
 			runner = systemRunner{}
 		}
 		if _, err := runner.Output(ctx, binary, "materialize-configuration", "--input", input, "--output-dir", output, "--runtime-dir", target, "--agent-id", agentID, "--revision", strconv.FormatInt(configuration.ConfigurationRevision, 10)); err != nil {
-			return "", nil, fmt.Errorf("candidate Agent rejected desired configuration: %w", err)
+			return "", fmt.Errorf("candidate Agent rejected desired configuration: %w", candidateCommandError(ctx, err))
 		}
 		if err := os.Remove(input); err != nil {
-			return "", nil, err
+			return "", err
 		}
 		if err := os.Rename(output, target); err != nil {
-			return "", nil, err
+			return "", err
 		}
 		if err := syncDirectory(configRoot); err != nil {
-			return "", nil, fmt.Errorf("sync Agent configuration root: %w", err)
+			return "", fmt.Errorf("sync Agent configuration root: %w", err)
 		}
 	}
 	if runner == nil {
@@ -237,32 +250,34 @@ func materializeCandidate(ctx context.Context, runner CommandRunner, binary, con
 	configPath := filepath.Join(target, "config.json")
 	validation, err := runner.Output(ctx, binary, "validate-configuration", "--config", configPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("candidate Agent runtime validation failed: %w", err)
+		return "", fmt.Errorf("candidate Agent runtime validation failed: %w", candidateCommandError(ctx, err))
 	}
 	var result struct {
-		AgentID               string                  `json:"agent_id"`
-		ConfigurationRevision int64                   `json:"configuration_revision"`
-		Capabilities          []capability.Descriptor `json:"capabilities"`
+		AgentID               string          `json:"agent_id"`
+		ConfigurationRevision int64           `json:"configuration_revision"`
+		Capabilities          json.RawMessage `json:"capabilities"`
 	}
 	decoder := json.NewDecoder(strings.NewReader(validation))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&result); err != nil {
-		return "", nil, errors.New("candidate Agent validation result is invalid")
+		return "", fmt.Errorf("%w: candidate Agent validation result is invalid", ErrCandidateRejected)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return "", nil, errors.New("candidate Agent validation result contains trailing JSON")
+		return "", fmt.Errorf("%w: candidate Agent validation result contains trailing JSON", ErrCandidateRejected)
 	}
 	if result.AgentID != agentID || result.ConfigurationRevision != configuration.ConfigurationRevision {
-		return "", nil, errors.New("candidate Agent validation identity is inconsistent")
+		return "", fmt.Errorf("%w: candidate Agent validation identity is inconsistent", ErrCandidateRejected)
 	}
-	if _, err := capability.New(result.Capabilities...); err != nil {
-		return "", nil, fmt.Errorf("candidate Agent capabilities are invalid: %w", err)
-	}
-	return configPath, result.Capabilities, nil
+	// The approved candidate validates its own capability schema. The old updater
+	// only checks the stable identity/revision envelope.
+	return configPath, nil
 }
 
 func RunLoop(ctx context.Context, options LoopOptions) error {
+	if options.Retry == nil {
+		options.Retry = &RetryState{}
+	}
 	logger := options.Logger
 	if logger == nil {
 		logger = slog.Default()

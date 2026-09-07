@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"github.com/akastrmix/akastr-agent/internal/app"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,16 +18,16 @@ func TestCheckIdleRejectsAnActiveOperation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := checkIdle(statePath, ipStatePath, 16); err != nil {
+	if err := app.CheckIdle(statePath, ipStatePath, 16); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := engine.Begin("active-command", "changeip", "target-network"); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkIdle(statePath, ipStatePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
+	if err := app.CheckIdle(statePath, ipStatePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
 		t.Fatalf("checkIdle error = %v, want active operation rejection", err)
 	}
-	if err := checkMaintenanceSafe(statePath, ipStatePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
+	if err := app.CheckMaintenanceSafe(statePath, ipStatePath, 16); err == nil || !strings.Contains(err.Error(), "active") {
 		t.Fatalf("checkMaintenanceSafe error = %v, want active operation rejection", err)
 	}
 }

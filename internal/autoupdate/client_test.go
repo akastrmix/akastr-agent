@@ -1,6 +1,7 @@
 package autoupdate
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -15,6 +16,74 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
+
+func TestClientWaitUsesIndependentSignatureAndCancels(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := identity.Identity{SchemaVersion: identity.SchemaVersion, EnrollmentState: identity.EnrollmentConfirmed,
+		AgentID:   "123e4567-e89b-42d3-a456-426614174000",
+		PublicKey: base64.RawURLEncoding.EncodeToString(publicKey), PrivateKey: base64.RawURLEncoding.EncodeToString(privateKey)}
+	entered := make(chan struct{}, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/agents/maintenance-wait" {
+			t.Error("wrong wait path")
+			w.WriteHeader(404)
+			return
+		}
+		var request CheckRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		signature, _ := base64.RawURLEncoding.DecodeString(request.Signature)
+		text := []byte(strings.Replace(string(SigningText(request)), MaintenanceAuthContext, "akastr-agent-maintenance-wait-v1", 1))
+		if !ed25519.Verify(publicKey, text, signature) || ed25519.Verify(publicKey, SigningText(request), signature) {
+			t.Error("wait signature must be bound to its own purpose")
+		}
+		entered <- struct{}{}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := (Client{HTTPClient: server.Client()}).Wait(ctx,
+			"wss"+strings.TrimPrefix(server.URL, "https")+"/internal/agents/ws", "v1.0.7", 1, credentials)
+		done <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("wait did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled wait succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("wait leaked")
+	}
+}
+
+func TestMaintenanceAcceptsFutureBusinessProtocolAndConfiguration(t *testing.T) {
+	manifest := Manifest{Schema: Schema, Status: "update_available",
+		Software: SoftwareTarget{Status: "update_available", Version: "v2.0.0", Protocol: "2030-01-01.v99",
+			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v2.0.0/akastr-agent-linux-amd64",
+			BinarySHA256: strings.Repeat("b", 64)},
+		Configuration: ConfigurationTarget{Status: "update_available", Revision: 2, SchemaVersion: 99, MinimumAgentVersion: "v2.0.0"}}
+	if err := manifest.Validate("v1.0.7", 1); err != nil {
+		t.Fatal(err)
+	}
+	manifest.Software.Status = "current"
+	if err := manifest.Validate("v2.0.0", 1); err == nil {
+		t.Fatal("same binary cannot change its own protocol")
+	}
+}
 
 func TestClientSignsRevisionAwareMaintenanceCheck(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -92,7 +161,7 @@ func TestManifestRejectsDowngradeAndInconsistentConfiguration(t *testing.T) {
 	}
 }
 
-func TestManifestRejectsObsoleteBootstrapSchema(t *testing.T) {
+func TestManifestRejectsInvalidBootstrapSchema(t *testing.T) {
 	manifest := Manifest{
 		Schema: Schema, Status: "current",
 		Software: SoftwareTarget{
@@ -100,10 +169,10 @@ func TestManifestRejectsObsoleteBootstrapSchema(t *testing.T) {
 			BinaryURL:    "https://github.com/akastrmix/akastr-agent/releases/download/v1.0.7/akastr-agent-linux-amd64",
 			BinarySHA256: strings.Repeat("b", 64),
 		},
-		Configuration: ConfigurationTarget{Status: "current", Revision: 4, SchemaVersion: 3, MinimumAgentVersion: "v1.0.7"},
+		Configuration: ConfigurationTarget{Status: "current", Revision: 4, SchemaVersion: 0, MinimumAgentVersion: "v1.0.7"},
 	}
 	if err := manifest.Validate("v1.0.7", 4); err == nil {
-		t.Fatal("obsolete bootstrap schema accepted")
+		t.Fatal("invalid bootstrap schema accepted")
 	}
 }
 

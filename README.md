@@ -14,7 +14,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 4. 操作者把命令复制到节点执行，安装器全程非交互；
 5. Agent 通过 HTTPS 取回并在本机解密配置，随后自动完成依赖、注册、root-only 文件和 systemd service；
 6. 同一个节点可以反复执行同一条命令；安装器拒绝跨节点覆盖和版本降级，复用同节点 identity，并以 fix-forward 方式收敛残缺安装；主动轮换 token 后原命令立即失效；
-7. 唯一的 `akastr-agent.service` 在 WSS 前及 ready 后定期协调 AkastrCloud 已批准的软件与配置；binary/config 作为一个 deployment 试运行，Cloud 接受 trial 后才提交 `current`，随后完成最终 WSS readiness。
+7. 唯一的 `akastr-agent.service` 在 WSS 前、独立 HTTPS 更新通知与定期检查时协调 AkastrCloud 已批准的软件与配置；binary/config 作为一个 deployment 试运行，Cloud 接受 trial 后才提交 `current`，随后完成最终 WSS readiness。
 
 用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不用手工核对 SHA-256。后台生成的命令从固定版本 GitHub Release 完整下载 installer，核对固定 SHA-256 后才执行；不要改用仓库 raw 地址或浮动版本。
 
@@ -66,7 +66,8 @@ IPQuality 的“每天一次”按 `Asia/Hong_Kong` 日历日计算；超过一�
 ```text
 cmd/akastr-agent/       CLI 入口
 docs/                   架构、协议和安装教程
-internal/app/           应用组装
+internal/app/           应用组装与空闲检查
+internal/daemon/        启动、维护与退出协调
 internal/capability/    不含秘密的能力注册表
 internal/config/        严格 JSON 配置
 internal/operation/     有界操作日志和能力内互斥
@@ -124,4 +125,4 @@ install.sh
 
 `install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件只提供可重复的 `--install`、只读 `--status` 和显式确认的 `--uninstall`。
 
-GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的六小时循环才会看到该版本。同协议版本走普通同步发布；WSS/auth/config 的破坏性版本使用相同入口加 `-BreakingProtocol`，由 Cloud 只读维护和逐节点当前一键安装命令收敛，不自动跨协议升级。
+GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的独立维护协调才会看到该版本。同协议版本走普通同步发布；业务协议的破坏性版本使用相同入口加 `-BreakingProtocol`，Cloud 短暂只读切换后恢复，节点通过独立 HTTPS 维护通道自动更新；维护契约本身保持稳定，不维护多套业务协议。

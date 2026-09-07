@@ -19,6 +19,43 @@ import (
 
 type responseTransport struct{ body string }
 
+type countingTransport struct {
+	body  string
+	calls int
+}
+
+func (transport *countingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	transport.calls++
+	return (responseTransport{body: transport.body}).RoundTrip(request)
+}
+
+func TestStageReusesVerifiedBinaryAcrossConfigurationFailure(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("release activation is Linux-only")
+	}
+	root, configRoot, _ := releaseFixture(t)
+	transport := &countingTransport{body: "future-agent-binary"}
+	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(transport.body)))
+	options := ApplyOptions{Manifest: manifestForApply(checksum),
+		ConfigPath: filepath.Join(configRoot, "1", "config.json"), ReleaseRoot: root,
+		HTTPClient: &http.Client{Transport: transport}, Runner: &currentConfigRejectingRunner{}}
+	for range 2 {
+		if _, err := Stage(t.Context(), options); err == nil {
+			t.Fatal("invalid configuration accepted")
+		}
+	}
+	if transport.calls != 1 {
+		t.Fatalf("downloaded %d times", transport.calls)
+	}
+	options.Runner = &fakeRunner{}
+	if _, err := Stage(t.Context(), options); err != nil {
+		t.Fatal(err)
+	}
+	if transport.calls != 1 {
+		t.Fatal("repaired configuration downloaded the same release again")
+	}
+}
+
 func (transport responseTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusOK,
