@@ -164,7 +164,7 @@ func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 		Lifecycle             *lifecycle.Gate
 		OnReady               func() error
 		OnDeploymentTrial     func() error
-		OnMaintenanceCheck    func()
+		OnMaintenanceCheck    func(string)
 		Logger                *slog.Logger
 	}{
 		Endpoint: "wss://control.example/internal/agents/ws", ConfigurationRevision: 1,
@@ -179,7 +179,8 @@ func TestNewRejectsTypedNilObservationSource(t *testing.T) {
 
 func TestMaintenanceCheckTriggersExistingReconciliationLoop(t *testing.T) {
 	triggered := 0
-	client := &Client{onMaintenanceCheck: func() { triggered++ }}
+	var retryID string
+	client := &Client{onMaintenanceCheck: func(id string) { triggered++; retryID = id }}
 	encoded, err := protocol.Encode("maintenance.check", struct{}{})
 	if err != nil {
 		t.Fatal(err)
@@ -194,6 +195,9 @@ func TestMaintenanceCheckTriggersExistingReconciliationLoop(t *testing.T) {
 	if triggered != 1 {
 		t.Fatalf("manual maintenance triggers = %d, want 1", triggered)
 	}
+	if retryID != envelope.MessageID {
+		t.Fatal("manual WSS notification lost its one-use ID")
+	}
 	envelope.Body = []byte(`{"unexpected":true}`)
 	if err := client.handleMaintenanceCheck(envelope); err == nil {
 		t.Fatal("maintenance.check accepted an unknown body field")
@@ -201,7 +205,7 @@ func TestMaintenanceCheckTriggersExistingReconciliationLoop(t *testing.T) {
 }
 
 func TestMaintenanceOnlySessionRejectsBusinessMessages(t *testing.T) {
-	client := &Client{onMaintenanceCheck: func() {}}
+	client := &Client{onMaintenanceCheck: func(string) {}}
 	encoded, err := protocol.Encode("operation.offer", struct{}{})
 	if err != nil {
 		t.Fatal(err)
@@ -358,7 +362,7 @@ func TestDeploymentTrialCommitsBeforeReady(t *testing.T) {
 		Lifecycle             *lifecycle.Gate
 		OnReady               func() error
 		OnDeploymentTrial     func() error
-		OnMaintenanceCheck    func()
+		OnMaintenanceCheck    func(string)
 		Logger                *slog.Logger
 	}{
 		Endpoint: strings.Replace(server.URL, "https://", "wss://", 1) + "/internal/agents/ws",

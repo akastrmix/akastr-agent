@@ -29,7 +29,7 @@ Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`�
 
 ready WSS 会话可接收 `maintenance.check`，body 必须为空对象；`maintenance.required` 会在维护会话建立时立即唤醒同一协调，后续仍可接收 `maintenance.check`。这些消息只唤醒现有维护协调，不创建 operation、不绕过进程级更新 lease，也不表示存在或完成了更新；重复的未处理唤醒可以合并。Cloud 只向已知支持对应消息的 Agent release 发送。
 
-`POST /internal/agents/maintenance-wait` 使用与 maintenance check 相同的严格请求字段，签名首行改为 `akastr-agent-maintenance-wait-v1`；其余签名行顺序不变。只接受 active identity，业务协议不匹配仍可等待。每节点最多一个等待请求，新请求结束旧请求；单次请求结束后维护会话继续保留 60 秒重连宽限期，该窗口内最多合并一条通知，下一次经过身份认证的等待立即取走。会话过期才判离线，API 关闭清理全部会话。最多等待 25 秒，管理员检查更新或配置保存可提前唤醒。响应严格为 `{ "check": boolean }`：收到唤醒或请求中的版本/revision 已落后时为 true，普通超时为 false；不承诺业务连接已就绪或更新已经完成。节点断开释放单次等待，通知仅在上述有界内存会话中保留，不写数据库。Agent 连续重新等待，首次成功或断线恢复会额外触发一次检查；失败等待 10 秒再重连。busy 目标在后续等待周期继续检查。
+`POST /internal/agents/maintenance-wait` 使用与 maintenance check 相同的严格请求字段，签名首行改为 `akastr-agent-maintenance-wait-v1`；其余签名行顺序不变。只接受 active identity，业务协议不匹配仍可等待。每节点最多一个等待请求，新请求结束旧请求；单次请求结束后维护会话继续保留 60 秒重连宽限期，该窗口内最多合并一条通知，下一次经过身份认证的等待立即取走。会话过期才判离线，API 关闭清理全部会话。最多等待 25 秒，管理员检查更新或配置保存可提前唤醒。响应严格为 `{ "check": boolean }`：收到唤醒或请求中的版本/revision 已落后时为 true，普通超时为 false；不承诺业务连接已就绪或更新已经完成。管理员显式检查更新时，HTTPS 响应额外携带 X-Akastr-Agent-Retry header（一次性 UUID）；JSON 形状不变，旧 Agent 可忽略 header。配置通知/普通轮询不发该 header。支持有界恢复的 Agent 将标识保存到本地当前目标记录，同一标识不能重复增加试运行次数。WSS maintenance.check 使用已有 message_id 表达同一手动授权，maintenance.required 不授权。节点断开释放单次等待，通知仅在上述有界内存会话中保留，不写数据库。Agent 连续重新等待，首次成功或断线恢复会额外触发一次检查；失败等待 10 秒再重连。busy 目标在后续等待周期继续检查。
 
 此通知、维护目标、配置 fetch、结果上报和 candidate CLI 是稳定维护契约，独立于 WSS 业务 envelope。管理员按钮优先使用 HTTPS 维护会话（包括重连宽限期）；尚通过现有业务连接的节点也可收到 `maintenance.check`。两种通道都不可用时明确显示离线。当前 deployment 可在 WSS 不兼容时保持主进程运行并维护；trial 仍须通过当前业务协议验证后提交。
 
@@ -55,7 +55,7 @@ akastr-agent-maintenance-check-v1
 
 确定性维护失败或同一目标已被抑制时，Agent 向 `POST /internal/agents/maintenance-result` 发送严格的目标版本、目标 revision、`busy|failed|suppressed`、稳定错误码、nonce、时间和 Ed25519 签名。签名文本以 `akastr-agent-maintenance-result-v1` 开头并按请求字段顺序逐行连接。主控只接受当前批准版本与当前 desired revision，持久化有界投影；请求不得包含错误文本、URL、bootstrap 或 secret。结果投影失败不改变 deployment 或重试语义。
 
-物化成功后，candidate 以 `deployment_state=trial` 建立 WSS。Cloud 重新校验当前 desired revision、批准 release、密封 bootstrap 的最低版本、角色 capability、配置参数与空闲状态；通过后仅返回 `deployment.trial_accepted`，不推进 applied、不注册 ready，也不派发 operation。Agent 随即原子替换并 fsync 本地 `current`，再发送 body 为空对象的 `deployment.committed`。Cloud 以同一 hello 内容按 `current` 规则重新校验并原子推进 applied、版本、capability 与 hello 时间，随后返回 `hello.accepted` 并进入 ready。若本地提交后连接在确认前中断，新进程以 `deployment_state=current` 重连即可完成同一收敛。提交前发生确定性的本地启动或配置失败时，candidate 留在不可变 deployment 目录中；旧 current 对相同软件版本与 revision 不再试运行，只有目标变化才重试。trial 在 readiness 超时前仍未提交时删除该 deployment，使临时 WSS 故障恢复后可以重试。maintenance/fetch 只使用 active Ed25519 identity，不接收机器 token。
+物化成功后，candidate 以 `deployment_state=trial` 建立 WSS。Cloud 重新校验当前 desired revision、批准 release、密封 bootstrap 的最低版本、角色 capability、配置参数与空闲状态；通过后仅返回 `deployment.trial_accepted`，不推进 applied、不注册 ready，也不派发 operation。Agent 随即原子替换并 fsync 本地 `current`，再发送 body 为空对象的 `deployment.committed`。Cloud 以同一 hello 内容按 `current` 规则重新校验并原子推进 applied、版本、capability 与 hello 时间，随后返回 `hello.accepted` 并进入 ready。若本地提交后连接在确认前中断，新进程以 `deployment_state=current` 重连即可完成同一收敛。每个 version/revision 在替换进程前持久计数，最多首次试运行加一次自动补试；突然退出、断电或重启不会重置次数。达到上限后报告 trial_suppressed_after_failure，保留旧 current；管理员显式检查更新可重新授权一次试运行，仍须通过全部校验。trial 在 readiness 超时前仍未提交时删除临时 deployment，但不删除尝试次数；主控新目标获得新预算，损坏的本地记录拒绝自动重置。maintenance/fetch 只使用 active Ed25519 identity，不接收机器 token。
 
 ## Operation
 

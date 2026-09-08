@@ -14,6 +14,7 @@ var ErrCandidateRejected = errors.New("candidate rejected the update target")
 // RetryState is bounded to the current target and owned by the serial coordinator.
 // Restarting the process permits a fresh pre-trial validation after local repairs.
 type RetryState struct {
+	manualID string
 	target   string
 	rejected bool
 	delay    time.Duration

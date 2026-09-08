@@ -46,7 +46,7 @@ type LoopOptions struct {
 	Ready                 <-chan struct{}
 	Client                MaintenanceClient
 	Ticks                 <-chan time.Time
-	Triggers              <-chan struct{}
+	Triggers              <-chan Trigger
 	Stage                 func(context.Context, ApplyOptions) (StagedRelease, error)
 	Runner                CommandRunner
 	CheckIdle             func() error
@@ -61,6 +61,9 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 		options.ConfigPath == "" || options.ReleaseRoot == "" || options.Lifecycle == nil || options.Reexec == nil {
 		return false, errors.New("automatic maintenance options are incomplete")
 	}
+	if options.Retry == nil {
+		options.Retry = &RetryState{}
+	}
 	client := options.Client
 	if client == nil {
 		client = Client{}
@@ -70,6 +73,9 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 		return false, err
 	}
 	if manifest.Status != "update_available" {
+		if manifest.Status == "current" {
+			options.Retry.manualID = ""
+		}
 		return false, nil
 	}
 	targetVersion := manifest.Software.Version
@@ -80,6 +86,24 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 			Status: status, ErrorCode: code,
 		})
 	}
+	defer func() {
+		if resultErr != nil {
+			options.Retry.failed(resultErr)
+		}
+	}()
+	ledger, manual, err := loadAttempts(options.ReleaseRoot, targetVersion, reportedTargetRevision, options.Retry.manualID)
+	if err != nil {
+		report("failed", "maintenance_state_invalid")
+		return false, err
+	}
+	options.Retry.manualID = ""
+	if manual {
+		*options.Retry = RetryState{}
+	}
+	if ledger.record.Attempts >= 2 {
+		report("suppressed", "trial_suppressed_after_failure")
+		return false, nil
+	}
 	if code := options.Retry.blocked(deploymentName(targetVersion, reportedTargetRevision)); code != "" {
 		status := "busy"
 		if code == "candidate_target_rejected" {
@@ -88,11 +112,7 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 		report(status, code)
 		return false, nil
 	}
-	defer func() {
-		if resultErr != nil {
-			options.Retry.failed(resultErr)
-		}
-	}()
+
 	lease, acquired := options.Lifecycle.TryUpdate()
 	if !acquired {
 		report("busy", "maintenance_local_busy")
@@ -104,13 +124,6 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 			report("busy", "maintenance_local_busy")
 			return false, nil
 		}
-	}
-	if attempted, err := uncommittedDeploymentExists(options.ReleaseRoot, manifest.Software.Version, manifest.Configuration.Revision); err != nil {
-		report("failed", "maintenance_state_invalid")
-		return false, err
-	} else if attempted {
-		report("suppressed", "trial_suppressed_after_failure")
-		return false, nil
 	}
 
 	binary, err := os.Executable()
@@ -157,6 +170,10 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 			return false, err
 		}
 		targetRevision = configuration.ConfigurationRevision
+	}
+	if err := ledger.begin(); err != nil {
+		report("failed", "maintenance_state_invalid")
+		return false, err
 	}
 	deployment, err := StageDeployment(options.ReleaseRoot, targetVersion, targetRevision, configPath)
 	if err != nil {
@@ -282,6 +299,7 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	initialRetryID := ""
 	ticks := options.Ticks
 	var ticker *time.Ticker
 	if ticks == nil {
@@ -293,7 +311,8 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-options.Ready:
-		case <-options.Triggers:
+		case trigger := <-options.Triggers:
+			initialRetryID = trigger.RetryID
 			triggeredBeforeReady = true
 		}
 		if !triggeredBeforeReady {
@@ -310,7 +329,8 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 				initial.Stop()
 				return ctx.Err()
 			case <-initial.C:
-			case <-options.Triggers:
+			case trigger := <-options.Triggers:
+				initialRetryID = trigger.RetryID
 				if !initial.Stop() {
 					select {
 					case <-initial.C:
@@ -325,12 +345,22 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 		defer ticker.Stop()
 		ticks = mergeTicks(ctx, initialTick, ticker.C)
 	}
-	ticks = mergeTriggers(ctx, ticks, options.Triggers)
+	events := mergeTriggers(ctx, ticks, options.Triggers)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-ticks:
+		case trigger, ok := <-events:
+			if !ok {
+				return ctx.Err()
+			}
+			if trigger.RetryID != "" {
+				options.Retry.manualID = trigger.RetryID
+			}
+			if initialRetryID != "" {
+				options.Retry.manualID = initialRetryID
+				initialRetryID = ""
+			}
 			checkContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			_, err := ReconcileOnce(checkContext, options)
 			cancel()
@@ -342,33 +372,52 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 	}
 }
 
-func mergeTriggers(ctx context.Context, ticks <-chan time.Time, triggers <-chan struct{}) <-chan time.Time {
-	if triggers == nil {
-		return ticks
+type Trigger struct{ RetryID string }
+
+// Coalesce notifications, but never replace a queued manual grant with a poll.
+func Notify(triggers chan Trigger, trigger Trigger) {
+	for {
+		select {
+		case triggers <- trigger:
+			return
+		default:
+		}
+		if trigger.RetryID == "" {
+			return
+		}
+		select {
+		case pending := <-triggers:
+			if pending.RetryID != "" {
+				trigger = pending
+			}
+		default:
+		}
 	}
-	merged := make(chan time.Time)
+}
+
+func mergeTriggers(ctx context.Context, ticks <-chan time.Time, triggers <-chan Trigger) <-chan Trigger {
+	merged := make(chan Trigger)
 	go func() {
 		defer close(merged)
 		for ticks != nil || triggers != nil {
-			var tick time.Time
+			var trigger Trigger
 			var ok bool
 			select {
 			case <-ctx.Done():
 				return
-			case tick, ok = <-ticks:
+			case _, ok = <-ticks:
 				if !ok {
 					ticks = nil
 					continue
 				}
-			case _, ok = <-triggers:
+			case trigger, ok = <-triggers:
 				if !ok {
 					triggers = nil
 					continue
 				}
-				tick = time.Now()
 			}
 			select {
-			case merged <- tick:
+			case merged <- trigger:
 			case <-ctx.Done():
 				return
 			}

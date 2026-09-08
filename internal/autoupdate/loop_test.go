@@ -79,7 +79,7 @@ func TestRunLoopWaitsForReadyBeforePeriodicMaintenance(t *testing.T) {
 
 func TestRunLoopMaintenanceRequiredTriggersBeforeReady(t *testing.T) {
 	ready := make(chan struct{})
-	triggers := make(chan struct{}, 1)
+	triggers := make(chan Trigger, 1)
 	called := make(chan struct{}, 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -93,7 +93,7 @@ func TestRunLoopMaintenanceRequiredTriggersBeforeReady(t *testing.T) {
 			Reexec:       func(string, string, string, int64) error { return nil },
 		})
 	}()
-	triggers <- struct{}{}
+	triggers <- Trigger{}
 	select {
 	case <-called:
 	case <-time.After(time.Second):
@@ -120,12 +120,17 @@ func TestReconcileOnceDoesNotReexecWhenTargetsAreCurrent(t *testing.T) {
 }
 
 type reconciliationClient struct {
+	checkFailures int
 	configuration Configuration
 	manifest      *Manifest
 	results       []MaintenanceResult
 }
 
 func (client *reconciliationClient) Check(context.Context, string, string, int64, identity.Identity) (Manifest, error) {
+	if client.checkFailures > 0 {
+		client.checkFailures--
+		return Manifest{}, errors.New("temporary check failure")
+	}
 	if client.manifest != nil {
 		return *client.manifest, nil
 	}
@@ -406,6 +411,9 @@ func TestReconcileOnceDoesNotRetryUncommittedImmutableTarget(t *testing.T) {
 	if err := os.Symlink(current, filepath.Join(root, "current")); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "maintenance-attempt.json"), []byte(`{"schema":1,"target":"v1.0.6-r2","attempts":2,"retry_id":""}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	client := &reconciliationClient{}
 	changed, err := ReconcileOnce(t.Context(), LoopOptions{
 		ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
@@ -423,6 +431,55 @@ func TestReconcileOnceDoesNotRetryUncommittedImmutableTarget(t *testing.T) {
 		client.results[0].ErrorCode != "trial_suppressed_after_failure" ||
 		client.results[0].TargetConfigurationRevision != 2 {
 		t.Fatalf("unexpected maintenance results %#v", client.results)
+	}
+}
+
+func TestManualRetrySurvivesCheckFailureBusyAndRestart(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("release activation requires Linux")
+	}
+	root, configRoot, _ := releaseFixture(t)
+	if err := os.WriteFile(filepath.Join(root, "maintenance-attempt.json"), []byte(`{"schema":1,"target":"v0.7.1-r1","attempts":2,"retry_id":""}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binary := "candidate-binary"
+	manifest := manifestForApply(fmt.Sprintf("%x", sha256.Sum256([]byte(binary))))
+	client := &reconciliationClient{manifest: &manifest, checkFailures: 1}
+	busy := true
+	executions := 0
+	options := LoopOptions{ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v0.7.0", ConfigurationRevision: 1,
+		ConfigPath: filepath.Join(configRoot, "1", "config.json"), ReleaseRoot: root, Lifecycle: lifecycle.New(),
+		Client: client, Runner: &fakeRunner{}, Retry: &RetryState{manualID: "one-manual-click"},
+		CheckIdle: func() error {
+			if busy {
+				return errors.New("operation active")
+			}
+			return nil
+		},
+		Stage: func(ctx context.Context, apply ApplyOptions) (StagedRelease, error) {
+			apply.HTTPClient = &http.Client{Transport: responseTransport{body: binary}}
+			return Stage(ctx, apply)
+		},
+		Reexec: func(string, string, string, int64) error { executions++; return nil },
+	}
+	if _, err := ReconcileOnce(t.Context(), options); err == nil || options.Retry.manualID == "" {
+		t.Fatal("check failure consumed manual request")
+	}
+	if changed, err := ReconcileOnce(t.Context(), options); err != nil || changed || executions != 0 {
+		t.Fatalf("busy update executed: %v", err)
+	}
+	saved, _, err := loadAttempts(root, "v0.7.1", 1, "")
+	if err != nil || saved.record.Attempts != 1 {
+		t.Fatalf("busy lost persisted grant: %v", err)
+	}
+	busy = false
+	options.Retry = &RetryState{} // process restart: only durable authorization remains
+	if changed, err := ReconcileOnce(t.Context(), options); err != nil || !changed || executions != 1 {
+		t.Fatalf("authorized retry did not resume: %v", err)
+	}
+	options.Retry = &RetryState{}
+	if changed, err := ReconcileOnce(t.Context(), options); err != nil || changed || executions != 1 {
+		t.Fatalf("manual grant reused after restart: %v", err)
 	}
 }
 

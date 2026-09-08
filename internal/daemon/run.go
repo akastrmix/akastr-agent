@@ -93,7 +93,7 @@ func Run(ctx context.Context, model *app.Model, options Options) error {
 	if monitor := runtime.IPMonitor(); monitor != nil {
 		observations = monitor
 	}
-	maintenanceTriggers := make(chan struct{}, 1)
+	maintenanceTriggers := make(chan autoupdate.Trigger, 1)
 	client, err := transportws.New(struct {
 		Endpoint              string
 		Identity              identity.Identity
@@ -106,7 +106,7 @@ func Run(ctx context.Context, model *app.Model, options Options) error {
 		Lifecycle             *lifecycle.Gate
 		OnReady               func() error
 		OnDeploymentTrial     func() error
-		OnMaintenanceCheck    func()
+		OnMaintenanceCheck    func(string)
 		Logger                *slog.Logger
 	}{
 		Endpoint: model.Config.Control.Endpoint, Identity: credentials,
@@ -114,11 +114,8 @@ func Run(ctx context.Context, model *app.Model, options Options) error {
 		Capabilities: model.Capabilities.List(), DeploymentState: deploymentState,
 		Executor: runtime, Observations: observations,
 		Lifecycle: lifecycleGate, OnReady: onReady, OnDeploymentTrial: onDeploymentTrial,
-		OnMaintenanceCheck: func() {
-			select {
-			case maintenanceTriggers <- struct{}{}:
-			default:
-			}
+		OnMaintenanceCheck: func(retryID string) {
+			autoupdate.Notify(maintenanceTriggers, autoupdate.Trigger{RetryID: retryID})
 		},
 		Logger: logger,
 	})

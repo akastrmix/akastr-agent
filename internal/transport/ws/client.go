@@ -45,7 +45,7 @@ type Client struct {
 	lifecycle             *lifecycle.Gate
 	onReady               func() error
 	onDeploymentTrial     func() error
-	onMaintenanceCheck    func()
+	onMaintenanceCheck    func(string)
 	logger                *slog.Logger
 
 	mu       sync.Mutex
@@ -85,7 +85,7 @@ func New(options struct {
 	Lifecycle             *lifecycle.Gate
 	OnReady               func() error
 	OnDeploymentTrial     func() error
-	OnMaintenanceCheck    func()
+	OnMaintenanceCheck    func(string)
 	Logger                *slog.Logger
 }) (*Client, error) {
 	if options.Executor == nil {
@@ -223,7 +223,7 @@ func (c *Client) runSession(ctx context.Context) error {
 		if c.onMaintenanceCheck == nil {
 			return errors.New("maintenance-only control session is unavailable")
 		}
-		c.onMaintenanceCheck()
+		c.onMaintenanceCheck("")
 		c.logger.Info("maintenance-only control connection ready")
 		for {
 			messageType, data, err := connection.Read(ctx)
@@ -377,7 +377,7 @@ func (c *Client) handleMaintenanceCheck(envelope protocol.Envelope) error {
 	if c.onMaintenanceCheck == nil {
 		return errors.New("manual maintenance trigger is unavailable")
 	}
-	c.onMaintenanceCheck()
+	c.onMaintenanceCheck(envelope.MessageID)
 	return nil
 }
 

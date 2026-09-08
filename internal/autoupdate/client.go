@@ -220,7 +220,7 @@ func (c Client) sign(credentials identity.Identity, nonce, sentAt, signature *st
 	return nil
 }
 
-func (c Client) post(ctx context.Context, controlEndpoint, endpointPath, version string, input, output any) error {
+func (c Client) post(ctx context.Context, controlEndpoint, endpointPath, version string, input, output any, responseHeaders ...*http.Header) error {
 	endpoint, err := maintenanceEndpoint(controlEndpoint, endpointPath)
 	if err != nil {
 		return err
@@ -259,6 +259,9 @@ func (c Client) post(ctx context.Context, controlEndpoint, endpointPath, version
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return errors.New("response contains trailing JSON")
+	}
+	if len(responseHeaders) != 0 {
+		*responseHeaders[0] = response.Header.Clone()
 	}
 	return nil
 }

@@ -50,7 +50,7 @@ func TestClientWaitUsesIndependentSignatureAndCancels(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, err := (Client{HTTPClient: server.Client()}).Wait(ctx,
+		_, _, err := (Client{HTTPClient: server.Client()}).Wait(ctx,
 			"wss"+strings.TrimPrefix(server.URL, "https")+"/internal/agents/ws", "v1.0.7", 1, credentials)
 		done <- err
 	}()
