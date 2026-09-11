@@ -39,6 +39,8 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 典型流程是：Cloud 下发 command → Agent 持久化并触发 provider → 节点可能立即断网 → 网络恢复后 WSS 重连 → IPv4 观察器上报新地址，或确认仍为旧地址 → Cloud 收敛原 ChangeIP session。具体消息与核对契约见 [PROTOCOL.md](PROTOCOL.md)；业务等待窗口、冷却、通知和缓存规则由 AkastrCloud 的 Carpool 契约负责。
 
+WSS 连接管理层将拨号、认证及试运行提交确认的网络等待限制在同一个 30 秒建立窗口内。进入业务或维护会话后，Agent 每 30 秒主动发送标准 WebSocket Ping，10 秒内未收到对应 Pong 则关闭该连接，由现有退避重连流程恢复；发送成功不能代替往返确认。该检查只管理连接，不取消正在执行的业务操作，也不清除待确认事实。重连后按原有持久状态重放，不能因断网再次触发 ChangeIP。检测期限不包含网络恢复、重新连接和业务投影所需时间。
+
 ## 4. 包职责
 
 - `internal/config`：严格读取和验证 Cloud 生成的本地配置；未知字段直接报错。

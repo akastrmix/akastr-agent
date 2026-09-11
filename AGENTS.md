@@ -4,7 +4,7 @@
 
 ## 1. 产品与安全边界
 
-- Agent 是 systemd 管理的单 Go 进程，负责本机受控执行、观察和恢复；Cloud 负责业务与跨节点编排。保持轻量、低资源、少依赖，性能优化不增加不必要的复杂度。
+- Agent 是 systemd 管理的单 Go 进程，负责本机受控执行、观察和恢复；Cloud 负责业务与跨节点编排。保持轻量、低资源、少依赖；在不增加实现和维护复杂度的前提下，尽可能优化性能。
 - 只执行本机预配置、协议允许的 typed operation，主动建立出站控制连接；不提供 HTTP 控制面、远程 shell、任意 argv/script/URL 或开放式主机控制。
 - secret 只在 Git 外 root-only 文件中保存，不进入日志、测试 fixture、capability 或普通 wire payload；仅允许协议明确需要的受控 credential 流程。
 - 本地持久状态必须有界，无法证明安全恢复时 fail closed，不静默重置可能涉及副作用的状态。具体幂等、互斥和恢复语义见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)，wire 以 [PROTOCOL.md](docs/PROTOCOL.md) 为准。

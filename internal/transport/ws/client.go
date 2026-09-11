@@ -202,11 +202,17 @@ func (c *Client) runControlLoop(ctx context.Context) error {
 }
 
 func (c *Client) runSession(ctx context.Context) error {
+	return c.runSessionWithTimeout(ctx, connectionSetupTimeout)
+}
+
+func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Duration) error {
+	setupContext, cancelSetup := context.WithTimeout(ctx, setupTimeout)
+	defer cancelSetup()
 	endpoint, _ := url.Parse(c.endpoint)
 	query := endpoint.Query()
 	query.Set("agent_id", c.identity.AgentID)
 	endpoint.RawQuery = query.Encode()
-	connection, _, err := websocket.Dial(ctx, endpoint.String(), &websocket.DialOptions{
+	connection, _, err := websocket.Dial(setupContext, endpoint.String(), &websocket.DialOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
@@ -215,11 +221,13 @@ func (c *Client) runSession(ctx context.Context) error {
 	connection.SetReadLimit(protocol.MaxMessage)
 	session := &session{connection: connection}
 	defer connection.CloseNow()
-	mode, err := c.authenticate(ctx, session)
+	mode, err := c.authenticate(setupContext, session)
 	if err != nil {
 		return err
 	}
 	if mode == sessionMaintenance {
+		cancelSetup()
+		defer session.watchConnection(ctx, heartbeatInterval, heartbeatTimeout, c.logger)()
 		if c.onMaintenanceCheck == nil {
 			return errors.New("maintenance-only control session is unavailable")
 		}
@@ -249,10 +257,10 @@ func (c *Client) runSession(ctx context.Context) error {
 			return fatal
 		}
 		c.deploymentState = "current"
-		if err := session.write(ctx, "deployment.committed", struct{}{}); err != nil {
+		if err := session.write(setupContext, "deployment.committed", struct{}{}); err != nil {
 			return err
 		}
-		committed, err := readEnvelope(ctx, session.connection, "hello.accepted")
+		committed, err := readEnvelope(setupContext, session.connection, "hello.accepted")
 		if err != nil {
 			return err
 		}
@@ -261,6 +269,8 @@ func (c *Client) runSession(ctx context.Context) error {
 			return errors.New("deployment commit acknowledgement agent mismatch")
 		}
 	}
+	cancelSetup()
+	defer session.watchConnection(ctx, heartbeatInterval, heartbeatTimeout, c.logger)()
 	if c.onReady != nil {
 		if err := c.onReady(); err != nil {
 			fatal := fmt.Errorf("complete service readiness: %w", err)
