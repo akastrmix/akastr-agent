@@ -3,17 +3,17 @@ package autoupdate
 import (
 	"context"
 	"errors"
-	"os/exec"
 	"time"
 )
 
-// ErrCandidateRejected denotes a completed candidate validation rejecting its input.
-// Network, cancellation and local I/O errors remain retryable.
+// ErrCandidateRejected denotes a verified mismatch in an immutable target.
+// Candidate exit codes cannot distinguish input errors from local I/O failures.
 var ErrCandidateRejected = errors.New("candidate rejected the update target")
 
 // RetryState is bounded to the current target and owned by the serial coordinator.
 // Restarting the process permits a fresh pre-trial validation after local repairs.
 type RetryState struct {
+	reported *MaintenanceResult
 	manualID string
 	target   string
 	rejected bool
@@ -35,6 +35,7 @@ func (s *RetryState) blocked(target string) string {
 	}
 	if s.target != target {
 		s.target, s.rejected, s.delay, s.next = target, false, 0, time.Time{}
+		s.reported = nil
 	}
 	if s.rejected {
 		return "candidate_target_rejected"
@@ -70,10 +71,6 @@ func (s *RetryState) failed(err error) {
 func candidateCommandError(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
-	}
-	var exited *exec.ExitError
-	if errors.As(err, &exited) {
-		return errors.Join(ErrCandidateRejected, err)
 	}
 	return err
 }

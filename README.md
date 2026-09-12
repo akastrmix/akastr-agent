@@ -14,9 +14,9 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 4. 操作者把命令复制到节点执行，安装器全程非交互；
 5. Agent 通过 HTTPS 取回并在本机解密配置，随后自动完成依赖、注册、root-only 文件和 systemd service；
 6. 同一个节点可以反复执行同一条命令；安装器拒绝跨节点覆盖和版本降级，复用同节点 identity，并以 fix-forward 方式收敛残缺安装；主动轮换 token 后原命令立即失效；
-7. 唯一的 `akastr-agent.service` 在 WSS 前、独立 HTTPS 更新通知与定期检查时协调 AkastrCloud 已批准的软件与配置；binary/config 作为一个 deployment 试运行，Cloud 接受 trial 后才提交 `current`，随后完成最终 WSS readiness。
+7. 唯一的 `akastr-agent.service` 在启动时、独立 HTTPS 更新通知与定期检查时由同一后台循环协调 AkastrCloud 已批准的软件与配置；binary/config 作为一个 deployment 试运行，Cloud 接受 trial 后才提交 `current`，随后完成最终 WSS readiness。
 
-用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不用手工核对 SHA-256。后台生成的命令从固定版本 GitHub Release 完整下载 installer，核对固定 SHA-256 后才执行；不要改用仓库 raw 地址或浮动版本。
+用户不需要安装 Git 或 Go，不需要复制 JSON，不需要创建 token 文件，也不用手工核对 SHA-256。后台生成“短地址＋一个安装码”的命令，由官方 HTTPS 入口转到 Cloud 当前批准版本的 GitHub Release installer；发布流程验真 installer，安装器内部校验 binary 和 IPQuality 脚本。入口随 Cloud 批准版本前进，不使用 GitHub latest 或仓库 raw 地址。安装码沿用原有节点凭据，具体格式和信任边界见安装教程。
 
 目标节点参数包括：
 
@@ -70,7 +70,7 @@ internal/app/           应用组装与空闲检查
 internal/daemon/        启动、维护与退出协调
 internal/capability/    不含秘密的能力注册表
 internal/config/        严格 JSON 配置
-internal/operation/     有界操作日志和能力内互斥
+internal/operation/     统一执行、恢复、有界操作日志和能力内互斥
 internal/lifecycle/     command 与自动更新的进程级互斥
 internal/state/         原子状态文件
 internal/features/      节点能力实现
@@ -106,6 +106,8 @@ for version in 12 13; do
 done
 ```
 
+维护调度使用虚拟时间验证 24 小时的检查次数；Linux 回归另模拟持锁进程被强制终止后的 staging 回收。需要测量维护模块时，在隔离 Linux 环境运行 `AKASTR_RESOURCE_PROBE=1 go test -run '^TestMaintenanceIdleResourceProbe$' -v ./internal/autoupdate`；该可选测试耗时约 62 秒，CPU/RSS 包含测试框架及本机模拟 HTTPS 主控，不代表完整 Agent 或生产机器。文件回收开销可用 `go test -run '^$' -bench BenchmarkIdleMaintenanceCleanup -benchmem ./internal/autoupdate` 测量。
+
 每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查和 Debian 12/13 installer 容器回归。正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真和重跑规则见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围)，不在本仓库手工拆分发布步骤。
 
 本地排查发布构建时可以运行：
@@ -123,6 +125,6 @@ akastr-agent-linux-amd64
 install.sh
 ```
 
-`install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件只提供可重复的 `--install`、只读 `--status` 和显式确认的 `--uninstall`。
+`install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件接受安装码直接安装，也保留环境变量加 `--install` 的原入口、只读 `--status` 和显式确认的 `--uninstall`。
 
 GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的独立维护协调才会看到该版本。同协议版本走普通同步发布；业务协议的破坏性版本使用相同入口加 `-BreakingProtocol`，Cloud 短暂只读切换后恢复，节点通过独立 HTTPS 维护通道自动更新；维护契约本身保持稳定，不维护多套业务协议。

@@ -3,15 +3,12 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/app"
 	"github.com/akastrmix/akastr-agent/internal/autoupdate"
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/systemdnotify"
@@ -26,8 +23,11 @@ type Options struct {
 
 // Run owns the lifetime of business transport, maintenance and deployment trials.
 func Run(ctx context.Context, model *app.Model, options Options) error {
+	return run(ctx, model, options, "/usr/local/lib/akastr-agent")
+}
+
+func run(ctx context.Context, model *app.Model, options Options, releaseRoot string) error {
 	version := options.Version
-	const releaseRoot = "/usr/local/lib/akastr-agent"
 	credentials, err := identity.Load(model.Config.Control.CredentialFile)
 	if err != nil {
 		return err
@@ -47,22 +47,28 @@ func Run(ctx context.Context, model *app.Model, options Options) error {
 		},
 		Reexec: options.Reexec, Logger: logger,
 	}
-	startupContext, startupCancel := context.WithTimeout(ctx, 5*time.Minute)
-	_, err = autoupdate.ReconcileOnce(startupContext, maintenance)
-	startupCancel()
-	if ctx.Err() != nil {
-		return nil
-	}
-	if err != nil {
-		logger.Warn("startup maintenance reconciliation failed", "code", "maintenance_reconciliation_failed")
-	}
-	runtime, err := app.BuildRuntime(model)
-	if err != nil {
-		return err
-	}
 	trial, err := autoupdate.LoadTrial(version, model.Config.ConfigurationRevision, releaseRoot, options.ConfigPath)
 	if err != nil {
 		return err
+	}
+	maintenanceTriggers := make(chan autoupdate.Trigger, 1)
+	maintenance.Triggers = maintenanceTriggers
+	services := serviceGroup{
+		notify:      systemdnotify.Ready,
+		maintenance: func(ctx context.Context) error { return autoupdate.RunLoop(ctx, maintenance) },
+		watch: func(ctx context.Context) {
+			(autoupdate.Client{}).Watch(ctx, model.Config.Control.Endpoint, version,
+				model.Config.ConfigurationRevision, credentials, maintenanceTriggers)
+		},
+		trialTimeout: autoupdate.TrialReadinessTimeout,
+	}
+	runtime, err := app.BuildRuntime(model)
+	if err != nil {
+		if trial != nil {
+			return err
+		}
+		logger.Error("local runtime unavailable; HTTPS maintenance remains active", "code", "runtime_initialization_failed")
+		return services.run(ctx)
 	}
 	ready := make(chan struct{})
 	var readyOnce sync.Once
@@ -93,22 +99,7 @@ func Run(ctx context.Context, model *app.Model, options Options) error {
 	if monitor := runtime.IPMonitor(); monitor != nil {
 		observations = monitor
 	}
-	maintenanceTriggers := make(chan autoupdate.Trigger, 1)
-	client, err := transportws.New(struct {
-		Endpoint              string
-		Identity              identity.Identity
-		Version               string
-		ConfigurationRevision int64
-		Capabilities          []capability.Descriptor
-		DeploymentState       string
-		Executor              transportws.Executor
-		Observations          transportws.ObservationSource
-		Lifecycle             *lifecycle.Gate
-		OnReady               func() error
-		OnDeploymentTrial     func() error
-		OnMaintenanceCheck    func(string)
-		Logger                *slog.Logger
-	}{
+	client, err := transportws.New(transportws.Options{
 		Endpoint: model.Config.Control.Endpoint, Identity: credentials,
 		Version: version, ConfigurationRevision: model.Config.ConfigurationRevision,
 		Capabilities: model.Capabilities.List(), DeploymentState: deploymentState,
@@ -122,65 +113,9 @@ func Run(ctx context.Context, model *app.Model, options Options) error {
 	if err != nil {
 		return err
 	}
-	runContext, cancelRun := context.WithCancel(ctx)
-	defer cancelRun()
-	// A current deployment is a running service even when business WSS is incompatible.
-	// A trial still has to prove business readiness before systemd accepts it.
-	if trial == nil {
-		if err := systemdnotify.Ready(); err != nil {
-			return err
-		}
-	}
-	watchDone := make(chan struct{})
-	go func() {
-		defer close(watchDone)
-		(autoupdate.Client{}).Watch(runContext, model.Config.Control.Endpoint, version,
-			model.Config.ConfigurationRevision, credentials, maintenanceTriggers)
-	}()
-	defer func() { cancelRun(); <-watchDone }()
-	updateDone := make(chan error, 1)
-	controlDone := make(chan error, 1)
-	var trialExpired <-chan time.Time
+	services.control, services.ready = client.Run, ready
 	if trial != nil {
-		trialTimer := time.NewTimer(autoupdate.TrialReadinessTimeout)
-		defer trialTimer.Stop()
-		trialExpired = trialTimer.C
-		go func() {
-			select {
-			case <-ready:
-				if !trialTimer.Stop() {
-					select {
-					case <-trialTimer.C:
-					default:
-					}
-				}
-			case <-runContext.Done():
-			}
-		}()
+		services.discardTrial = trial.Discard
 	}
-	maintenance.Ready, maintenance.Triggers = ready, maintenanceTriggers
-	go func() { updateDone <- autoupdate.RunLoop(runContext, maintenance) }()
-	go func() { controlDone <- client.Run(runContext) }()
-	var firstError error
-	select {
-	case <-trialExpired:
-		cancelRun()
-		<-updateDone
-		<-controlDone
-		trialError := errors.New("automatic update trial did not reach control readiness")
-		if discardError := trial.Discard(); discardError != nil {
-			return errors.Join(trialError, fmt.Errorf("discard timed out automatic update trial: %w", discardError))
-		}
-		return trialError
-	case firstError = <-updateDone:
-		cancelRun()
-		<-controlDone
-	case firstError = <-controlDone:
-		cancelRun()
-		<-updateDone
-	}
-	if ctx.Err() != nil || errors.Is(firstError, context.Canceled) {
-		return nil
-	}
-	return firstError
+	return services.run(ctx)
 }

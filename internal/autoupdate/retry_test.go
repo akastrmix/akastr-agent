@@ -17,8 +17,8 @@ func TestCandidateFailureClassification(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=TestCandidateRejectionHelper")
 	cmd.Env = append(os.Environ(), "AKASTR_TEST_CANDIDATE_REJECTION=1")
 	err := cmd.Run()
-	if !errors.Is(candidateCommandError(t.Context(), err), ErrCandidateRejected) {
-		t.Fatal("exit rejection is retryable")
+	if err == nil || errors.Is(candidateCommandError(t.Context(), err), ErrCandidateRejected) {
+		t.Fatal("unclassified candidate failure must remain retryable")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()

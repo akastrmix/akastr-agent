@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/capability"
@@ -46,72 +45,13 @@ func (loopClient) FetchConfiguration(context.Context, string, int64, identity.Id
 func (loopClient) Report(context.Context, string, string, identity.Identity, MaintenanceResult) error {
 	return nil
 }
-func TestRunLoopWaitsForReadyBeforePeriodicMaintenance(t *testing.T) {
-	ready := make(chan struct{})
-	called := make(chan struct{}, 1)
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- RunLoop(ctx, LoopOptions{
-			ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
-			ConfigurationRevision: 1, ConfigPath: "/var/lib/akastr-agent/configurations/1/config.json",
-			ReleaseRoot: "/usr/local/lib/akastr-agent", Lifecycle: lifecycle.New(),
-			Ready: ready, Client: loopClient{called: called}, InitialDelay: func() time.Duration { return 0 },
-			Reexec: func(string, string, string, int64) error { return nil },
-		})
-	}()
-	select {
-	case <-called:
-		t.Fatal("maintenance checked before ready")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(ready)
-	select {
-	case <-called:
-	case <-time.After(time.Second):
-		t.Fatal("maintenance did not check after ready")
-	}
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("loop error=%v", err)
-	}
-}
-
-func TestRunLoopMaintenanceRequiredTriggersBeforeReady(t *testing.T) {
-	ready := make(chan struct{})
-	triggers := make(chan Trigger, 1)
-	called := make(chan struct{}, 1)
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- RunLoop(ctx, LoopOptions{
-			ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
-			ConfigurationRevision: 1, ConfigPath: "/var/lib/akastr-agent/configurations/1/config.json",
-			ReleaseRoot: "/usr/local/lib/akastr-agent", Lifecycle: lifecycle.New(),
-			Ready: ready, Triggers: triggers, Client: loopClient{called: called},
-			InitialDelay: func() time.Duration { return time.Hour },
-			Reexec:       func(string, string, string, int64) error { return nil },
-		})
-	}()
-	triggers <- Trigger{}
-	select {
-	case <-called:
-	case <-time.After(time.Second):
-		t.Fatal("maintenance-required signal did not reconcile before control readiness")
-	}
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("loop error=%v", err)
-	}
-}
-
 func TestReconcileOnceDoesNotReexecWhenTargetsAreCurrent(t *testing.T) {
 	called := make(chan struct{}, 1)
 	reexec := false
 	changed, err := ReconcileOnce(t.Context(), LoopOptions{
 		ControlEndpoint: "wss://control.example/internal/agents/ws", CurrentVersion: "v1.0.6",
 		ConfigurationRevision: 1, ConfigPath: "/var/lib/akastr-agent/configurations/1/config.json",
-		ReleaseRoot: "/usr/local/lib/akastr-agent", Lifecycle: lifecycle.New(), Client: loopClient{called: called},
+		ReleaseRoot: t.TempDir(), Lifecycle: lifecycle.New(), Client: loopClient{called: called},
 		Reexec: func(string, string, string, int64) error { reexec = true; return nil },
 	})
 	if err != nil || changed || reexec {

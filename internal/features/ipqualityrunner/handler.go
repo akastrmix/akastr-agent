@@ -2,63 +2,26 @@ package ipqualityrunner
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/operation"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/providers/ipquality/script"
 )
 
 type Handler struct {
-	engine        *operation.Engine
 	provider      *script.Provider
 	scriptVersion string
 }
 
-func New(engine *operation.Engine, provider *script.Provider, scriptVersion string) *Handler {
-	return &Handler{engine: engine, provider: provider, scriptVersion: scriptVersion}
+func New(provider *script.Provider, scriptVersion string) *Handler {
+	return &Handler{provider: provider, scriptVersion: scriptVersion}
 }
 
-func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
-	if recent, found := h.engine.Recent(offer.CommandID); found && len(recent.TerminalResult) > 0 {
-		var result protocol.ExecutionResult
-		if json.Unmarshal(recent.TerminalResult, &result) == nil {
-			return result, nil
-		}
-		return protocol.ExecutionResult{}, errors.New("decode persisted IPQuality terminal result")
-	}
-	if _, err := h.engine.Begin(offer.CommandID, "ipquality.execute", "ipquality-runner"); err != nil {
-		if _, active := h.engine.Active(offer.CommandID); active {
-			result := h.failure("interrupted_unknown", "", "", "")
-			persisted, _ := json.Marshal(result)
-			if _, finishError := h.engine.FinishWithResult(
-				offer.CommandID, operation.StatusFailed, result.Code, persisted,
-			); finishError == nil {
-				return result, nil
-			} else {
-				return protocol.ExecutionResult{}, fmt.Errorf("persist recovered IPQuality terminal result: %w", finishError)
-			}
-		}
-		return protocol.ExecutionResult{}, fmt.Errorf("begin IPQuality operation: %w", err)
-	}
-	result := h.execute(ctx, offer)
-	persisted, _ := json.Marshal(result)
-	status := operation.StatusFailed
-	if result.Outcome == "succeeded" {
-		status = operation.StatusSucceeded
-	} else if result.Outcome == "cancelled" {
-		status = operation.StatusCancelled
-	}
-	if _, err := h.engine.FinishWithResult(offer.CommandID, status, result.Code, persisted); err != nil {
-		return protocol.ExecutionResult{}, fmt.Errorf("persist IPQuality terminal result: %w", err)
-	}
-	return result, nil
+func (h *Handler) Recover(protocol.OperationOffer) protocol.ExecutionResult {
+	return h.failure("interrupted_unknown", "", "", "")
 }
 
-func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
+func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
 	payload := *offer.IPQuality
 	if payload.ScriptVersion != h.scriptVersion {
 		return h.failure("script_version_mismatch", "", "", "")

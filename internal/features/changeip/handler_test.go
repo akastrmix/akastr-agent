@@ -73,7 +73,7 @@ func TestCompletedProviderReturnsTriggeredWithoutASecondObservation(t *testing.T
 		}},
 		reconciler: &fakeReconciler{}, observeTimeout: time.Second,
 	}
-	result := handler.execute(context.Background(), offerFor("8.8.8.8"))
+	result := handler.Run(context.Background(), offerFor("8.8.8.8"))
 	oldIPv4, oldOk := result.Result["old_ipv4"].(*string)
 	if result.Outcome != "succeeded" || result.Code != "change_triggered" ||
 		!oldOk || oldIPv4 == nil || *oldIPv4 != "8.8.8.8" || len(result.Result) != 2 {
@@ -114,7 +114,7 @@ func TestProviderOutcomeControlsReconciliationWithoutRetry(t *testing.T) {
 				}},
 				reconciler: reconciler, observeTimeout: time.Second,
 			}
-			result := handler.execute(context.Background(), offerFor("8.8.8.8"))
+			result := handler.Run(context.Background(), offerFor("8.8.8.8"))
 			if result.Outcome != test.wantOutcome || result.Code != test.wantCode {
 				t.Fatalf("execute() = %#v", result)
 			}
@@ -137,8 +137,8 @@ func TestActiveJournalRecoveryNeverRunsProviderAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &countingProvider{}
-	handler := New(engine, nil, provider, nil, time.Second)
-	result, err := handler.Execute(t.Context(), offer)
+	handler := New(nil, provider, nil, time.Second)
+	result, err := operation.NewExecutor(engine).Execute(t.Context(), offer, "target-network", handler)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,8 @@ func (p *countingProvider) Run(context.Context) changeprovider.Result {
 
 func offerFor(expectedIPv4 string) protocol.OperationOffer {
 	return protocol.OperationOffer{
-		CommandID: "123e4567-e89b-42d3-a456-426614174000",
-		ChangeIP:  &protocol.ChangeIPPayload{ExpectedIPv4: expectedIPv4},
+		CommandType: "changeip.execute",
+		CommandID:   "123e4567-e89b-42d3-a456-426614174000",
+		ChangeIP:    &protocol.ChangeIPPayload{ExpectedIPv4: expectedIPv4},
 	}
 }

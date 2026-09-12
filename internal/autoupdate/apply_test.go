@@ -274,7 +274,12 @@ func TestCommitNeverDeletesTargetAfterRenameWhenDirectorySyncFails(t *testing.T)
 	result, err := Commit(CommitOptions{
 		Version: "v0.7.1", ConfigurationRevision: 1,
 		ReleaseRoot: root, ConfigurationRoot: configRoot,
-		SyncDirectory: func(string) error { return want },
+		SyncDirectory: func(path string) error {
+			if path == root {
+				return want
+			}
+			return nil
+		},
 	})
 	if !errors.Is(err, want) || !result.Committed {
 		t.Fatalf("Commit() result=%#v error=%v", result, err)

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"sort"
 	"sync"
 	"time"
 
@@ -268,13 +267,7 @@ func containsOperationID(snapshot Snapshot, operationID string) bool {
 }
 
 func findActive(snapshot Snapshot, operationID string) (string, Record, bool) {
-	groups := make([]string, 0, len(snapshot.Active))
-	for group := range snapshot.Active {
-		groups = append(groups, group)
-	}
-	sort.Strings(groups)
-	for _, group := range groups {
-		record := snapshot.Active[group]
+	for group, record := range snapshot.Active {
 		if record.OperationID == operationID {
 			return group, record, true
 		}

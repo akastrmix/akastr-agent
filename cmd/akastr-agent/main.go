@@ -16,6 +16,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/app"
 	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/capability"
+	"github.com/akastrmix/akastr-agent/internal/config"
 	"github.com/akastrmix/akastr-agent/internal/daemon"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 )
@@ -113,6 +114,17 @@ func run(arguments []string, output io.Writer) error {
 		if flags.NArg() != 0 || *configPath == "" {
 			return errors.New("configuration path is required and positional arguments are not accepted")
 		}
+		if arguments[0] == "check-idle" {
+			cfg, err := config.Load(*configPath)
+			if err != nil {
+				return err
+			}
+			if err := app.CheckIdle(cfg.StateFile, cfg.IPStateFile, cfg.RecentOperationLimit); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(output, "Agent is idle")
+			return err
+		}
 		model, err := app.Load(*configPath)
 		if err != nil {
 			return err
@@ -135,13 +147,6 @@ func run(arguments []string, output io.Writer) error {
 				return fmt.Errorf("validate runtime dependencies: %w", err)
 			}
 			_, err := fmt.Fprintln(output, "configuration valid")
-			return err
-		}
-		if arguments[0] == "check-idle" {
-			if err := app.CheckIdle(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit); err != nil {
-				return err
-			}
-			_, err = fmt.Fprintln(output, "Agent is idle")
 			return err
 		}
 		if arguments[0] == "enroll" {

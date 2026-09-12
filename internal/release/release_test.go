@@ -313,7 +313,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 		`"(pending|confirmed)"`,
 		"existing identity schema or enrollment state is invalid",
 		"install -m 0600 \"$preserved_identity\" \"$CONFIG_DIR/identity.json\"",
-		"maintenance_safe_check \"$binary_path\" \"$configuration_dir/config.json\"",
+		"maintenance_safe_check \"$binary_path\" \"$configuration_staging/config.json\"",
 		"CONFIGURATION_ROOT=$STATE_DIR/configurations",
 		"ln -s \"$configuration_dir\" \"$deployment_dir/config\"",
 		"preflight_install",
@@ -391,7 +391,7 @@ func TestInstallerUsesOnlySealedNoninteractiveBootstrap(t *testing.T) {
 	if strings.Index(freshInstall, "inspect_existing_install \"$agent_id\"") > strings.Index(freshInstall, "download_binary") {
 		t.Fatal("fresh install must check the existing runtime before downloads or package changes")
 	}
-	idleCheck := "maintenance_safe_check \"$binary_path\" \"$configuration_dir/config.json\""
+	idleCheck := "maintenance_safe_check \"$binary_path\" \"$configuration_staging/config.json\""
 	stop := "stop_agent_service"
 	if strings.Count(freshInstall, idleCheck) != 2 ||
 		strings.Index(freshInstall, idleCheck) > strings.Index(freshInstall, stop) ||

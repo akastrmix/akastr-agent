@@ -163,17 +163,27 @@ func TestMonitorReestablishesIPv4SnapshotAfterProcessRestart(t *testing.T) {
 		t.Fatal("restarted monitor was ready before its session snapshot acknowledgement")
 	}
 	var sessionSnapshot protocol.IPSnapshotBody
-	observations := 0
+	var observation protocol.IPObservationBody
+	publishSnapshot := func(value protocol.IPSnapshotBody) error { sessionSnapshot = value; return nil }
+	publish := func(value protocol.IPObservationBody) error { observation = value; return nil }
+	publishUnchanged := func(protocol.ChangeIPUnchangedBody) error { return nil }
 	if err := restarted.step(
 		context.Background(),
-		func(value protocol.IPSnapshotBody) error { sessionSnapshot = value; return nil },
-		func(protocol.IPObservationBody) error { observations++; return nil },
-		func(protocol.ChangeIPUnchangedBody) error { return nil },
+		publishSnapshot, publish, publishUnchanged,
 	); err != nil {
 		t.Fatal(err)
 	}
-	if sessionSnapshot.SnapshotID == initial.SnapshotID || sessionSnapshot.Address != "8.8.4.4" || observations != 0 {
-		t.Fatalf("session snapshot=%+v initial=%+v observations=%d", sessionSnapshot, initial, observations)
+	if sessionSnapshot.SnapshotID != "" || observation.PreviousAddress != "8.8.8.8" || observation.Address != "8.8.4.4" {
+		t.Fatalf("restart must reconcile the durable baseline first: snapshot=%+v observation=%+v", sessionSnapshot, observation)
+	}
+	if err := restarted.Ack(observation.ObservationID); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.step(t.Context(), publishSnapshot, publish, publishUnchanged); err != nil {
+		t.Fatal(err)
+	}
+	if sessionSnapshot.SnapshotID == initial.SnapshotID || sessionSnapshot.Address != "8.8.4.4" {
+		t.Fatalf("session snapshot=%+v initial=%+v", sessionSnapshot, initial)
 	}
 	if err := restarted.AckSnapshot(sessionSnapshot.SnapshotID); err != nil {
 		t.Fatal(err)

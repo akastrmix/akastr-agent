@@ -58,28 +58,30 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) co
 
 ## 3. 添加节点并执行一键命令
 
-点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际 UUID、机器 token 和版本由后台填写：
+点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际安装码由后台填写：
 
 ```text
-installer=$(mktemp) && ... curl <仅 HTTPS、固定版本 install.sh> --output "$installer" && ... sha256sum --check ... && env <节点 UUID、机器 token、bootstrap endpoint> sh "$installer" --install
+curl -fsSL https://origin.akastrmix.com/agent.sh | sh -s -- '安装码'
 ```
 
 上面只展示命令结构；实际安装必须完整复制后台生成的命令，不要手工替换占位符。
 
-不要改写、拆分或公开这行命令。Cloud 固定 installer 的版本和发布摘要；命令只允许 HTTPS 跳转，完整下载到临时文件并校验 installer SHA-256 后才执行，installer 随后仍会校验 Agent binary 的 SHA-256。机器 token 是该节点的长期安装凭据，可能进入本机 shell history；它不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
+不要改写、拆分或公开这行命令。`/agent.sh` 不接收安装码，只以不缓存的 302 跳转到 Cloud 当前批准版本的 GitHub Release installer；同一命令重跑会取得当时批准的版本，而非 GitHub latest。命令信任官方 HTTPS 入口及其固定版本 Release 跳转，发布流程验真 installer，installer 内部仍校验 Agent binary 的 SHA-256。
 
-需要修改配置时点击“修改配置”。后台读取不含 secret 的现有投影；ChangeIP 与 Runner credential 必须明确选择保留、替换或清除，只有替换时才填写新 secret，空字符串不会被解释为保留。保存前显示脱敏差异；保存会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，断开旧连接，并在新 revision 应用完成前暂停派发。在线 Agent 会自动进入维护协调；需要立即处理时点击“检查更新”，离线 Agent 则在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖不同节点、所有权不明的残留或降级已装版本；同节点安装复用 identity，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
+安装码只是 `节点UUID.机器token` 的组合，不是新增凭据或短码兑换服务；脚本拆开后使用原有 HTTPS bootstrap，默认地址为 `https://origin.akastrmix.com/internal/agents/bootstrap`。旧的三个环境变量加 `--install` 仍可使用，显式 bootstrap endpoint 仍优先。机器 token 是长期安装凭据，可能进入 shell history 和安装进程参数；它不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
+
+需要修改配置时点击“修改配置”。后台回填完整配置，包括 ChangeIP curl 原文与 Runner 凭据，密码可按需显示；在同一表单修改后保存。内容没有变化时不会更新版本或断开连接；真实修改会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，并在新配置应用完成前暂停业务派发。保存时会核对你打开表单时的配置版本；若另一页面已修改，保留当前草稿并提示读取最新配置后重新确认。具体编辑契约见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。在线 Agent 会自动进入维护协调；需要立即处理时点击“检查更新”，离线 Agent 则在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖不同节点、所有权不明的残留或降级已装版本；同节点安装复用 identity，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
 
 安装过程完全非交互。它会：
 
-1. 按 `--install` 模式检查 root、Debian 12/13、amd64、systemd 和下载校验工具；`--status` 只要求 systemd，`--uninstall` 只要求 root 与 systemd；
-2. 检查既有 identity/config 的节点 ID 与版本；拒绝跨节点覆盖和降级，已有安装还要先确认 operation journal 与待对账 IP 状态为空；
+1. 安装模式检查 root、Debian 12/13、amd64、systemd 和下载校验工具；`--status` 只要求 systemd，`--uninstall` 只要求 root 与 systemd；
+2. 检查既有 identity/config 的节点 ID 与版本；拒绝跨节点覆盖和降级，operation journal 与待对账 IP 状态在下载新程序和 bootstrap 后检查；
 3. 复用摘要正确的同版本 binary，否则下载并自动完成内部完整性校验；
 4. 使用节点 UUID 与机器 token 通过 HTTPS 取得持久密封配置；
 5. 在本机以 AES-256-GCM 验证并解密，生成 root-only 配置与 secret 文件；
 6. Runner 仅在命令缺失时安装 Debian 包；本机已有的 IPQuality 脚本摘要正确就复用，否则下载并校验固定 commit；
-7. 用新 binary 和新配置再次执行 maintenance-safe 检查；
-8. 只停止唯一的 `akastr-agent.service`，仅在 unit 确实 failed 时清除 failed 状态，再对稳定状态执行相同检查；
+7. 用新 binary 和已验证的新配置执行 maintenance-safe 检查，不要求旧 Runner 凭据等派生文件可用；
+8. 只停止唯一的 `akastr-agent.service`，仅在 unit 确实 failed 时清除 failed 状态，再对稳定状态执行相同检查，并从认证 bootstrap 安装或重建该 revision 的派生配置文件；
 9. 运行 `check-config`；首次安装生成 identity，同节点重装复用已确认 identity，并以配置 revision 完成注册，再删除本机机器 token 副本；
 10. 启用唯一的 `akastr-agent.service`；current 进程启动后向 systemd 报告 ready，业务连接须另外在后台验收。
 
@@ -89,7 +91,7 @@ installer=$(mktemp) && ... curl <仅 HTTPS、固定版本 install.sh> --output "
 Akastr Agent <release-version> installed successfully.
 ```
 
-所有下载、bootstrap、依赖和新配置检查都在停止现有 service 前完成。停止后的安装采用 fix-forward：失败不会尝试启动已经被 Cloud 判定为旧 revision 的配置，而是保留已写入的新文件并明确要求修复报错后重跑同一命令。新节点、人工重装和残缺安装使用相同安装收敛路径；普通配置变更使用第 7 节的自动维护流程。
+所有下载、bootstrap 校验、依赖准备和首次空闲检查都在停止现有 service 前完成；最终配置物化与 runtime 验证在停止后完成。缺失或损坏的派生凭据文件可以重建，已有 bootstrap 摘要冲突、身份或执行状态损坏仍拒绝自动覆盖。停止后的安装采用 fix-forward：失败不会尝试启动已经被 Cloud 判定为旧 revision 的配置，而是保留已写入的新文件并明确要求修复报错后重跑同一命令。新节点、人工重装和残缺安装使用相同安装收敛路径；普通配置变更使用第 7 节的自动维护流程。
 
 ## 4. 文件与权限
 
@@ -167,7 +169,9 @@ flowchart TD
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-Agent 不提供 `--update` 或本地回退 CLI。提交前的确定性本地启动或配置失败不会改变 `current`，试运行前的同一目标拒绝会在本次进程中暂停重试，修正 Cloud 配置后自动重新验证；如果修复的是节点本地脚本或依赖，可重启 Agent 重新验证。临时失败会延迟重试，已校验的软件文件会复用；未提交的 readiness 超时会清除 trial deployment，但保留重试次数。每个软件版本/配置版本最多自动试运行两次（首次加一次补试），强制终止或节点重启不重置次数；之后暂停并保留旧版本。修复故障后点击主控“检查更新”，可再授权一次尝试；仍会验证制品、配置与业务连接。本地重试记录损坏时需人工修复，按钮不会清除损坏证据。提交或重装成功后只保留 current、previous deployment 及其引用的 release/configuration。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。业务协议破坏性更新由独立维护通道下载主控指定版本后恢复连接。只有维护身份、本地部署等需要人工修复时，才重新取得并运行后台当前的一键命令；不要从 VPS 本地猜测目标版本或绕过 installer 校验。
+Agent 不提供 `--update` 或本地回退 CLI。提交前的确定性本地启动或配置失败不会改变 `current`，试运行前的同一目标拒绝会在本次进程中暂停重试，修正 Cloud 配置后自动重新验证；如果修复的是节点本地脚本或依赖，可重启 Agent 重新验证。临时失败会延迟重试，已校验的软件文件会复用；未提交的 readiness 超时会清除 trial deployment，但保留重试次数。每个软件版本/配置版本最多自动试运行两次（首次加一次补试），强制终止或节点重启不重置次数；之后暂停并保留旧版本。修复故障后点击主控“检查更新”，可再授权一次尝试；仍会验证制品、配置与业务连接。本地重试记录损坏时需人工修复，按钮不会清除损坏证据。提交或重装成功后只保留 current、previous deployment 及其引用的 release/configuration；当前 deployment 的 `previous` 链接记录上一套部署。启动和每次维护会先清理已经中断的临时文件，取得 Cloud 目标后保留一个期望候选并回收废弃候选。安装与自动维护共用文件锁；已有维护占用时安装命令提示稍后重试。缺少旧版 predecessor 记录时不猜测历史，下一次成功提交或安装建立记录后再回收历史。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。业务协议破坏性更新由独立维护通道下载主控指定版本后恢复连接。只有维护身份、本地部署等需要人工修复时，才重新取得并运行后台当前的一键命令；不要从 VPS 本地猜测目标版本或绕过 installer 校验。
+
+自动维护的范围是 Agent 程序与配置，不会重新运行安装器，也不会自动改写 systemd unit、安装 Debian 依赖包或替换固定 IPQuality 脚本。涉及这些安装内容的版本，由维护者在发布说明中明确已有节点的处理方式；需要收敛时，先在后台取得当前的一键命令，在节点执行同一条安装命令。安装器会检查空闲状态、保留同节点身份，并收敛受管安装。节点上由操作者自行提供的 ChangeIP 程序仍由操作者维护。
 
 日常状态直接从 systemd 读取，不需要再次下载安装器或使用机器 token：
 

@@ -257,15 +257,16 @@ func (m *Monitor) runLoop(ctx context.Context, wake <-chan struct{}, step func()
 }
 
 func (m *Monitor) NotifyControlReady() {
-	select {
-	case m.wake <- struct{}{}:
-	default:
-	}
+	wakeMonitor(m.wake)
 	if m.observeIPv6 {
-		select {
-		case m.wakeIPv6 <- struct{}{}:
-		default:
-		}
+		wakeMonitor(m.wakeIPv6)
+	}
+}
+
+func wakeMonitor(wake chan struct{}) {
+	select {
+	case wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -342,17 +343,20 @@ func (m *Monitor) Ack(observationID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	next := m.snapshot
+	wake := m.wake
 	if next.Pending != nil && next.Pending.ObservationID == observationID {
 		next.Pending = nil
 	} else if next.PendingIPv6 != nil && next.PendingIPv6.ObservationID == observationID {
 		next.PendingIPv6 = nil
+		wake = m.wakeIPv6
 	} else {
-		return errors.New("IP observation acknowledgment does not match pending state")
+		return nil // A replay can produce an acknowledgement after its event was cleared.
 	}
 	if err := m.file.Save(next); err != nil {
 		return err
 	}
 	m.snapshot = next
+	wakeMonitor(wake)
 	return nil
 }
 
@@ -361,13 +365,15 @@ func (m *Monitor) AckSnapshot(snapshotID string) error {
 	defer m.mu.Unlock()
 	next := m.snapshot
 	acknowledgedIPv4 := false
+	wake := m.wake
 	if next.PendingSnapshot != nil && next.PendingSnapshot.SnapshotID == snapshotID {
 		next.PendingSnapshot = nil
 		acknowledgedIPv4 = true
 	} else if next.PendingIPv6Snapshot != nil && next.PendingIPv6Snapshot.SnapshotID == snapshotID {
 		next.PendingIPv6Snapshot = nil
+		wake = m.wakeIPv6
 	} else {
-		return errors.New("IP snapshot acknowledgment does not match pending state")
+		return nil
 	}
 	if err := m.file.Save(next); err != nil {
 		return err
@@ -376,6 +382,7 @@ func (m *Monitor) AckSnapshot(snapshotID string) error {
 	if acknowledgedIPv4 {
 		m.snapshotRequired = false
 	}
+	wakeMonitor(wake)
 	return nil
 }
 
@@ -383,7 +390,7 @@ func (m *Monitor) AckUnchanged(commandID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.snapshot.PendingUnchanged == nil || m.snapshot.PendingUnchanged.CommandID != commandID {
-		return errors.New("ChangeIP unchanged acknowledgment does not match pending state")
+		return nil
 	}
 	next := m.snapshot
 	next.PendingUnchanged = nil
@@ -391,6 +398,7 @@ func (m *Monitor) AckUnchanged(commandID string) error {
 		return err
 	}
 	m.snapshot = next
+	wakeMonitor(m.wake)
 	return nil
 }
 
@@ -427,7 +435,9 @@ func (m *Monitor) step(ctx context.Context, publishSnapshot func(protocol.IPSnap
 	}
 	current := observation.Address.String()
 	m.mu.Lock()
-	if m.snapshot.LastIPv4 == "" || (m.snapshotRequired && m.snapshot.ChangeAttempt == nil) {
+	// Preserve the durable baseline across restart. A changed address must first
+	// be delivered as an observation, which can also reconcile an accepted command.
+	if m.snapshot.LastIPv4 == "" || (m.snapshotRequired && m.snapshot.ChangeAttempt == nil && m.snapshot.LastIPv4 == current) {
 		pending := &protocol.IPSnapshotBody{
 			SnapshotID: protocol.NewUUID(), Family: "ipv4", Address: current,
 			ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),

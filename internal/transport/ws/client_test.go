@@ -25,6 +25,25 @@ type recordingExecutor struct {
 	executed chan string
 }
 
+func TestReconnectBackoffResetsOnlyAfterStableSession(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		name    string
+		readyAt time.Time
+		want    time.Duration
+	}{
+		{"never authenticated", time.Time{}, 30 * time.Second},
+		{"flapping", now.Add(-time.Second), 30 * time.Second},
+		{"healthy then disconnected", now.Add(-heartbeatInterval), time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := sessionBackoff(30*time.Second, test.readyAt, now); got != test.want {
+				t.Fatalf("backoff=%v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 type blockingExecutor struct {
 	started chan struct{}
 	release chan struct{}
@@ -54,8 +73,6 @@ func (failingObservationSource) AckSnapshot(string) error  { return nil }
 func (failingObservationSource) Ack(string) error          { return nil }
 func (failingObservationSource) AckUnchanged(string) error { return nil }
 
-type nilObservationSource struct{}
-
 type readinessObservationSource struct{ ready bool }
 
 func (source readinessObservationSource) Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
@@ -66,10 +83,6 @@ func (source readinessObservationSource) SnapshotReady() bool { return source.re
 func (readinessObservationSource) AckSnapshot(string) error   { return nil }
 func (readinessObservationSource) Ack(string) error           { return nil }
 func (readinessObservationSource) AckUnchanged(string) error  { return nil }
-
-func (*nilObservationSource) Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
-	return nil
-}
 
 func TestOperationLeaseBlocksUpdateUntilExecutionFinishes(t *testing.T) {
 	gate := lifecycle.New()
@@ -141,39 +154,6 @@ func TestFatalObservationErrorStopsClient(t *testing.T) {
 	err := client.Run(ctx)
 	if err == nil || !strings.Contains(err.Error(), "IP observation monitor failed") {
 		t.Fatalf("Run error = %v, want fatal monitor failure", err)
-	}
-}
-
-func (*nilObservationSource) AckSnapshot(string) error  { return nil }
-func (*nilObservationSource) Ack(string) error          { return nil }
-func (*nilObservationSource) AckUnchanged(string) error { return nil }
-func (*nilObservationSource) NotifyControlReady()       {}
-func (*nilObservationSource) SnapshotReady() bool       { return false }
-
-func TestNewRejectsTypedNilObservationSource(t *testing.T) {
-	var observations *nilObservationSource
-	_, err := New(struct {
-		Endpoint              string
-		Identity              identity.Identity
-		Version               string
-		ConfigurationRevision int64
-		Capabilities          []capability.Descriptor
-		DeploymentState       string
-		Executor              Executor
-		Observations          ObservationSource
-		Lifecycle             *lifecycle.Gate
-		OnReady               func() error
-		OnDeploymentTrial     func() error
-		OnMaintenanceCheck    func(string)
-		Logger                *slog.Logger
-	}{
-		Endpoint: "wss://control.example/internal/agents/ws", ConfigurationRevision: 1,
-		DeploymentState: "current",
-		Executor:        &recordingExecutor{},
-		Observations:    observations, Lifecycle: lifecycle.New(),
-	})
-	if err == nil || !strings.Contains(err.Error(), "nil implementation") {
-		t.Fatalf("New() error = %v, want typed nil rejection", err)
 	}
 }
 
@@ -350,21 +330,7 @@ func TestDeploymentTrialCommitsBeforeReady(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	trialCalls := 0
-	client, err := New(struct {
-		Endpoint              string
-		Identity              identity.Identity
-		Version               string
-		ConfigurationRevision int64
-		Capabilities          []capability.Descriptor
-		DeploymentState       string
-		Executor              Executor
-		Observations          ObservationSource
-		Lifecycle             *lifecycle.Gate
-		OnReady               func() error
-		OnDeploymentTrial     func() error
-		OnMaintenanceCheck    func(string)
-		Logger                *slog.Logger
-	}{
+	client, err := New(Options{
 		Endpoint: strings.Replace(server.URL, "https://", "wss://", 1) + "/internal/agents/ws",
 		Identity: credentials, Version: "v1.4.0", ConfigurationRevision: 2,
 		Capabilities: []capability.Descriptor{}, DeploymentState: "trial",

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net/url"
-	"reflect"
 	"sync"
 	"time"
 
@@ -53,6 +52,7 @@ type Client struct {
 	running  map[string]*lifecycle.Lease
 	pending  map[string]pendingOperation
 	fatalErr error
+	readyAt  time.Time // Owned by the serial control loop, independent of operation execution.
 }
 
 type pendingOperation struct {
@@ -73,7 +73,7 @@ const (
 	sessionTrial
 )
 
-func New(options struct {
+type Options struct {
 	Endpoint              string
 	Identity              identity.Identity
 	Version               string
@@ -87,12 +87,11 @@ func New(options struct {
 	OnDeploymentTrial     func() error
 	OnMaintenanceCheck    func(string)
 	Logger                *slog.Logger
-}) (*Client, error) {
+}
+
+func New(options Options) (*Client, error) {
 	if options.Executor == nil {
 		return nil, errors.New("WSS executor is required")
-	}
-	if options.Observations != nil && isNilObservationSource(options.Observations) {
-		return nil, errors.New("WSS observation source contains a nil implementation")
 	}
 	if options.Lifecycle == nil {
 		return nil, errors.New("Agent lifecycle gate is required")
@@ -131,16 +130,6 @@ func New(options struct {
 	}, nil
 }
 
-func isNilObservationSource(source ObservationSource) bool {
-	value := reflect.ValueOf(source)
-	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
-	default:
-		return false
-	}
-}
-
 func (c *Client) Run(ctx context.Context) error {
 	if c.observations == nil {
 		return c.runControlLoop(ctx)
@@ -175,6 +164,7 @@ func (c *Client) Run(ctx context.Context) error {
 func (c *Client) runControlLoop(ctx context.Context) error {
 	backoff := time.Second
 	for ctx.Err() == nil {
+		c.readyAt = time.Time{}
 		err := c.runSession(ctx)
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -182,6 +172,7 @@ func (c *Client) runControlLoop(ctx context.Context) error {
 		if fatalError := c.executionFailure(); fatalError != nil {
 			return fatalError
 		}
+		backoff = sessionBackoff(backoff, c.readyAt, time.Now())
 		delay := backoff + time.Duration(rand.Int64N(max(1, int64(backoff/4))))
 		c.logger.Warn("control connection ended", "code", safeConnectionCode(err), "retry_in", delay.String())
 		timer := time.NewTimer(delay)
@@ -199,6 +190,13 @@ func (c *Client) runControlLoop(ctx context.Context) error {
 		}
 	}
 	return ctx.Err()
+}
+
+func sessionBackoff(backoff time.Duration, readyAt, now time.Time) time.Duration {
+	if !readyAt.IsZero() && now.Sub(readyAt) >= heartbeatInterval {
+		return time.Second
+	}
+	return backoff
 }
 
 func (c *Client) runSession(ctx context.Context) error {
@@ -226,6 +224,7 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 		return err
 	}
 	if mode == sessionMaintenance {
+		c.readyAt = time.Now()
 		cancelSetup()
 		defer session.watchConnection(ctx, heartbeatInterval, heartbeatTimeout, c.logger)()
 		if c.onMaintenanceCheck == nil {
@@ -279,6 +278,7 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 		}
 	}
 	c.setActive(session)
+	c.readyAt = time.Now()
 	if c.observations != nil {
 		c.observations.NotifyControlReady()
 	}

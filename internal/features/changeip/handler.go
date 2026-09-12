@@ -2,19 +2,14 @@ package changeip
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
-	"github.com/akastrmix/akastr-agent/internal/operation"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
 )
 
 type Handler struct {
-	engine         *operation.Engine
 	observer       ipwatch.AddressObserver
 	provider       changeprovider.Provider
 	reconciler     changeReconciler
@@ -27,56 +22,24 @@ type changeReconciler interface {
 	ChangeAddress(commandID string) (string, bool)
 }
 
-func New(engine *operation.Engine, observer ipwatch.AddressObserver, provider changeprovider.Provider, reconciler changeReconciler, observeTimeout time.Duration) *Handler {
+func New(observer ipwatch.AddressObserver, provider changeprovider.Provider, reconciler changeReconciler, observeTimeout time.Duration) *Handler {
 	return &Handler{
-		engine: engine, observer: observer, provider: provider, reconciler: reconciler,
+		observer: observer, provider: provider, reconciler: reconciler,
 		observeTimeout: observeTimeout,
 	}
 }
 
-func (h *Handler) Execute(ctx context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
-	if recent, found := h.engine.Recent(offer.CommandID); found && len(recent.TerminalResult) > 0 {
-		var result protocol.ExecutionResult
-		if json.Unmarshal(recent.TerminalResult, &result) == nil {
-			return result, nil
+func (h *Handler) Recover(offer protocol.OperationOffer) protocol.ExecutionResult {
+	address := offer.ChangeIP.ExpectedIPv4
+	if h.reconciler != nil {
+		if persisted, found := h.reconciler.ChangeAddress(offer.CommandID); found {
+			address = persisted
 		}
-		return protocol.ExecutionResult{}, errors.New("decode persisted ChangeIP terminal result")
 	}
-	if _, err := h.engine.Begin(offer.CommandID, "changeip.execute", "target-network"); err != nil {
-		if _, active := h.engine.Active(offer.CommandID); active {
-			address := offer.ChangeIP.ExpectedIPv4
-			if h.reconciler != nil {
-				if persistedAddress, found := h.reconciler.ChangeAddress(offer.CommandID); found {
-					address = persistedAddress
-				}
-			}
-			result := reconciliationPending(&address, time.Now().UTC())
-			persisted, _ := json.Marshal(result)
-			if _, finishError := h.engine.FinishWithResult(
-				offer.CommandID, operation.StatusSucceeded, result.Code, persisted,
-			); finishError == nil {
-				return result, nil
-			} else {
-				return protocol.ExecutionResult{}, fmt.Errorf("persist recovered ChangeIP terminal result: %w", finishError)
-			}
-		}
-		return protocol.ExecutionResult{}, fmt.Errorf("begin ChangeIP operation: %w", err)
-	}
-	result := h.execute(ctx, offer)
-	persisted, _ := json.Marshal(result)
-	status := operation.StatusFailed
-	if result.Outcome == "succeeded" {
-		status = operation.StatusSucceeded
-	} else if result.Outcome == "cancelled" {
-		status = operation.StatusCancelled
-	}
-	if _, err := h.engine.FinishWithResult(offer.CommandID, status, result.Code, persisted); err != nil {
-		return protocol.ExecutionResult{}, fmt.Errorf("persist ChangeIP terminal result: %w", err)
-	}
-	return result, nil
+	return reconciliationPending(&address, time.Now().UTC())
 }
 
-func (h *Handler) execute(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
+func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
 	payload := *offer.ChangeIP
 	observeContext, cancelObserve := context.WithTimeout(ctx, h.observeTimeout)
 	beforeObservation, err := h.observer.Observe(observeContext, ipwatch.IPv4)

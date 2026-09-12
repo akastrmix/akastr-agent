@@ -14,11 +14,11 @@ type Descriptor struct {
 }
 
 type Registry struct {
-	byName map[string]Descriptor
+	descriptors []Descriptor
 }
 
 func New(descriptors ...Descriptor) (*Registry, error) {
-	registry := &Registry{byName: make(map[string]Descriptor, len(descriptors))}
+	registry := &Registry{descriptors: make([]Descriptor, 0, len(descriptors))}
 	for _, descriptor := range descriptors {
 		if descriptor.Name == "" {
 			return nil, errors.New("capability name is required")
@@ -26,22 +26,22 @@ func New(descriptors ...Descriptor) (*Registry, error) {
 		if descriptor.Version < 1 {
 			return nil, fmt.Errorf("capability %s version must be positive", descriptor.Name)
 		}
-		if _, exists := registry.byName[descriptor.Name]; exists {
-			return nil, fmt.Errorf("duplicate capability %s", descriptor.Name)
+		registry.descriptors = append(registry.descriptors, cloneDescriptor(descriptor))
+	}
+	sort.Slice(registry.descriptors, func(i, j int) bool { return registry.descriptors[i].Name < registry.descriptors[j].Name })
+	for index := 1; index < len(registry.descriptors); index++ {
+		if registry.descriptors[index].Name == registry.descriptors[index-1].Name {
+			return nil, fmt.Errorf("duplicate capability %s", registry.descriptors[index].Name)
 		}
-		registry.byName[descriptor.Name] = cloneDescriptor(descriptor)
 	}
 	return registry, nil
 }
 
 func (r *Registry) List() []Descriptor {
-	result := make([]Descriptor, 0, len(r.byName))
-	for _, descriptor := range r.byName {
+	result := make([]Descriptor, 0, len(r.descriptors))
+	for _, descriptor := range r.descriptors {
 		result = append(result, cloneDescriptor(descriptor))
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
-	})
 	return result
 }
 

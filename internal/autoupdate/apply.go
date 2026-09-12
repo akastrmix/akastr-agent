@@ -1,6 +1,7 @@
 package autoupdate
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -86,6 +87,10 @@ func Stage(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
 		}
 		existingBinary := filepath.Join(targetRelease, "akastr-agent")
 		if err := verifyFileChecksum(existingBinary, options.Manifest.Software.BinarySHA256); err != nil {
+			var pathError *os.PathError
+			if errors.As(err, &pathError) {
+				return StagedRelease{}, err
+			}
 			return StagedRelease{}, fmt.Errorf("%w: existing target Agent release is not immutable", ErrCandidateRejected)
 		}
 		if err := verifyBinary(ctx, runner, existingBinary, options.Manifest.Software.Version); err != nil {
@@ -139,6 +144,11 @@ func Stage(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
 }
 
 func Commit(options CommitOptions) (CommitResult, error) {
+	lock, err := lockMaintenance(options.ReleaseRoot)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	defer lock.Close()
 	if runtime.GOOS != "linux" {
 		return CommitResult{}, errors.New("automatic updates are supported only on Linux")
 	}
@@ -171,6 +181,11 @@ func Commit(options CommitOptions) (CommitResult, error) {
 	syncFn := options.SyncDirectory
 	if syncFn == nil {
 		syncFn = syncDirectory
+	}
+	// Store the predecessor in the candidate before switching current. The single
+	// current rename then publishes both pointers atomically, including after a crash.
+	if _, err := replaceSymlink(filepath.Join(target, "previous"), previous, syncFn); err != nil {
+		return CommitResult{}, err
 	}
 	committed, err := replaceSymlink(currentLink, target, syncFn)
 	result := CommitResult{Committed: committed}
@@ -320,7 +335,10 @@ func verifyFileChecksum(path, expected string) error {
 		return errors.New("Agent update checksum is invalid")
 	}
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || info.Mode().Perm()&0o100 == 0 {
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 || info.Mode().Perm()&0o100 == 0 {
 		return errors.New("Agent update binary is not a non-writable executable regular file")
 	}
 	file, err := os.Open(path)
@@ -332,7 +350,7 @@ func verifyFileChecksum(path, expected string) error {
 	if _, err := io.Copy(hash, file); err != nil {
 		return err
 	}
-	if !bytesEqual(hash.Sum(nil), expectedBytes) {
+	if !bytes.Equal(hash.Sum(nil), expectedBytes) {
 		return errors.New("Agent update binary checksum mismatch")
 	}
 	return nil
@@ -524,17 +542,6 @@ func pruneManagedDirectories(root string, pattern *regexp.Regexp, protected map[
 		}
 	}
 	return failed
-}
-
-func bytesEqual(left, right []byte) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	var different byte
-	for index := range left {
-		different |= left[index] ^ right[index]
-	}
-	return different == 0
 }
 
 type systemRunner struct{}

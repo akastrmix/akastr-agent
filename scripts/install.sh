@@ -103,6 +103,7 @@ preflight_install() {
   require_systemd
   command -v curl >/dev/null 2>&1 || fail 'curl is required'
   command -v sha256sum >/dev/null 2>&1 || fail 'sha256sum is required'
+  command -v flock >/dev/null 2>&1 || fail 'flock is required'
 }
 
 preflight_status() {
@@ -114,8 +115,44 @@ preflight_uninstall() {
   require_systemd
 }
 
+# Shared with the Go updater; the kernel releases the lock after interruption.
+acquire_maintenance_lock() {
+  if [ -e "$RELEASE_ROOT" ] || [ -L "$RELEASE_ROOT" ]; then
+    [ -d "$RELEASE_ROOT" ] && [ ! -L "$RELEASE_ROOT" ] || fail 'managed release root is unsafe'
+  else
+    install -d -m 0755 "$RELEASE_ROOT"
+  fi
+  lock_file="$RELEASE_ROOT/.maintenance.lock"
+  if [ -e "$lock_file" ] || [ -L "$lock_file" ]; then
+    [ -f "$lock_file" ] && [ ! -L "$lock_file" ] || fail 'maintenance lock is unsafe'
+  fi
+  exec 9>"$lock_file"
+  chmod 0600 "$lock_file"
+  flock --nonblock 9 || fail 'Agent installation or maintenance is already running; retry shortly'
+}
+
+cleanup_staging() {
+  for staging_root in "$RELEASE_ROOT" "$RELEASE_ROOT/releases" "$RELEASE_ROOT/deployments" "$CONFIGURATION_ROOT"; do
+    [ -e "$staging_root" ] || [ -L "$staging_root" ] || continue
+    [ -d "$staging_root" ] && [ ! -L "$staging_root" ] || fail 'managed staging root is unsafe'
+    for staging_path in "$staging_root"/.*; do
+      [ -d "$staging_path" ] && [ ! -L "$staging_path" ] || continue
+      [ "$staging_path" = "$temporary" ] && continue
+      [ "$staging_path" = "$configuration_staging" ] && continue
+      staging_name=$(basename "$staging_path")
+      # Older Agents do not hold our lock. Until stopped, clean installer work only.
+      if [ "$service_stopped" != true ]; then
+        [ "$staging_root" = "$RELEASE_ROOT" ] || continue
+        printf '%s\n' "$staging_name" | grep -Eq '^\.install-[A-Za-z0-9]+$' || continue
+      fi
+      printf '%s\n' "$staging_name" | grep -Eq '^(\.update-[0-9]+|\.deployment-[0-9]+|\.configuration[-.][0-9]+|\.install-[A-Za-z0-9]+)$' || continue
+      rm -rf -- "$staging_path"
+    done
+  done
+}
+
 make_temporary() {
-  temporary=$(mktemp -d)
+  temporary=$(mktemp -d "$RELEASE_ROOT/.install-XXXXXXXXXX")
   chmod 0700 "$temporary"
 }
 
@@ -221,10 +258,36 @@ inspect_existing_install() {
     fail 'the install command belongs to a different Agent node'
   fi
   if [ -z "$existing_id" ]; then
-    for residue in "$CONFIG_DIR" "$STATE_DIR" "$RELEASE_ROOT" "$SERVICE_FILE"; do
+    for residue in "$CONFIG_DIR" "$SERVICE_FILE"; do
       if [ -e "$residue" ] || [ -L "$residue" ]; then
         fail 'existing Agent artifacts do not prove node ownership; uninstall before installing'
       fi
+    done
+    # An interrupted first install can leave only private configuration staging.
+    # No identity, journal, published revision or other state may be overlooked.
+    for state_root in "$STATE_DIR" "$CONFIGURATION_ROOT"; do
+      [ -e "$state_root" ] || [ -L "$state_root" ] || continue
+      [ -d "$state_root" ] && [ ! -L "$state_root" ] \
+        || fail 'existing Agent artifacts do not prove node ownership; uninstall before installing'
+      for residue in "$state_root"/* "$state_root"/.[!.]* "$state_root"/..?*; do
+        [ -e "$residue" ] || [ -L "$residue" ] || continue
+        if [ -d "$residue" ] && [ ! -L "$residue" ]; then
+          [ "$residue" = "$CONFIGURATION_ROOT" ] && continue
+          if [ "$state_root" = "$CONFIGURATION_ROOT" ]; then
+            printf '%s\n' "$(basename "$residue")" | grep -Eq '^\.configuration\.[0-9]+$' && continue
+          fi
+        fi
+        fail 'existing Agent artifacts do not prove node ownership; uninstall before installing'
+      done
+    done
+    # A lock and private staging alone do not represent an installed node.
+    for residue in "$RELEASE_ROOT"/* "$RELEASE_ROOT"/.[!.]* "$RELEASE_ROOT"/..?*; do
+      [ -e "$residue" ] || [ -L "$residue" ] || continue
+      [ "$residue" = "$RELEASE_ROOT/.maintenance.lock" ] && continue
+      if [ -d "$residue" ] && [ ! -L "$residue" ]; then
+        printf '%s\n' "$(basename "$residue")" | grep -Eq '^\.install-[A-Za-z0-9]+$' && continue
+      fi
+      fail 'existing Agent artifacts do not prove node ownership; uninstall before installing'
     done
   fi
 
@@ -239,10 +302,7 @@ inspect_existing_install() {
     fi
   fi
 
-  if [ -x "$existing_binary" ] && [ -f "$existing_config" ]; then
-    maintenance_safe_check "$existing_binary" "$existing_config"
-  fi
-  if [ -f "$existing_identity" ]; then
+  if [ -f "$existing_identity" ] && [ -z "$preserved_identity" ]; then
     preserved_identity=$existing_identity
   fi
 
@@ -467,51 +527,54 @@ prepare_revision_configuration() {
   install -d -m 0700 "$configuration_staging"
   install -m 0600 "$source_dir/config.json" "$configuration_staging/config.json"
   install -m 0600 "$source_dir/.bootstrap-sha256" "$configuration_staging/.bootstrap-sha256"
-  expected_files=2
   if [ -f "$source_dir/changeip-curl.conf" ]; then
     install -m 0600 "$source_dir/changeip-curl.conf" "$configuration_staging/changeip-curl.conf"
-    expected_files=$((expected_files + 1))
   fi
   if [ "$install_mode" = runner ]; then
     install -m 0600 "$source_dir/proxy-profiles.json" "$configuration_staging/proxy-profiles.json"
-    expected_files=$((expected_files + 1))
   fi
 
   if [ -e "$configuration_dir" ] || [ -L "$configuration_dir" ]; then
     [ -d "$configuration_dir" ] && [ ! -L "$configuration_dir" ] \
       || fail 'existing managed configuration revision is unsafe'
-    actual_files=$(find "$configuration_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')
-    [ "$actual_files" -eq "$expected_files" ] \
-      || fail 'existing managed configuration revision has unexpected files'
-    for name in config.json .bootstrap-sha256 changeip-curl.conf proxy-profiles.json; do
-      if [ -f "$configuration_staging/$name" ]; then
-        [ -f "$configuration_dir/$name" ] && [ ! -L "$configuration_dir/$name" ] \
-          && cmp -s "$configuration_staging/$name" "$configuration_dir/$name" \
-          || fail 'existing managed configuration revision differs from the desired bootstrap'
-      fi
-    done
-    rm -rf -- "$configuration_staging"
-  else
-    sync
-    mv -- "$configuration_staging" "$configuration_dir"
-    sync
+    if [ -e "$configuration_dir/.bootstrap-sha256" ] || [ -L "$configuration_dir/.bootstrap-sha256" ]; then
+      [ -f "$configuration_dir/.bootstrap-sha256" ] && [ ! -L "$configuration_dir/.bootstrap-sha256" ] \
+        && cmp -s "$configuration_staging/.bootstrap-sha256" "$configuration_dir/.bootstrap-sha256" \
+        || fail 'existing managed configuration revision differs from the desired bootstrap'
+    fi
   fi
+}
+
+install_revision_configuration() {
+  [ "$service_stopped" = true ] || fail 'configuration repair requires a stopped service'
+  [ "$configuration_dir" = "$CONFIGURATION_ROOT/$configuration_revision" ] \
+    && printf '%s\n' "$configuration_revision" | grep -Eq '^[1-9][0-9]*$' \
+    || fail 'configuration repair target is invalid'
+  [ ! -L "$configuration_dir" ] || fail 'configuration repair target is unsafe'
+  # Only reproducible configuration is replaced; identity and execution state stay intact.
+  # A crash in this stopped-service window is repaired by the same install command.
+  rm -rf -- "$configuration_dir"
+  sync
+  mv -- "$configuration_staging" "$configuration_dir"
+  sync
   configuration_staging=''
 }
 
 fresh_install() {
   agent_id=${AKASTR_AGENT_ID:-}
   machine_token=${AKASTR_AGENT_MACHINE_TOKEN:-}
-  bootstrap_endpoint=${AKASTR_AGENT_BOOTSTRAP_ENDPOINT:-}
+  bootstrap_endpoint=${AKASTR_AGENT_BOOTSTRAP_ENDPOINT:-https://origin.akastrmix.com/internal/agents/bootstrap}
   [ -n "$agent_id" ] || fail 'AKASTR_AGENT_ID is missing'
   [ -n "$machine_token" ] || fail 'AKASTR_AGENT_MACHINE_TOKEN is missing'
-  [ -n "$bootstrap_endpoint" ] || fail 'AKASTR_AGENT_BOOTSTRAP_ENDPOINT is missing'
   require_uuid "$agent_id"
   printf '%s\n' "$machine_token" | grep -Eq '^[A-Za-z0-9_-]{43}$' \
     || fail 'invalid machine token'
 
-  make_temporary
+  acquire_maintenance_lock
   inspect_existing_install "$agent_id"
+  existing_node=$existing_id
+  cleanup_staging
+  make_temporary
   if [ -n "$preserved_identity" ]; then
     install -m 0600 "$preserved_identity" "$temporary/identity.json"
     preserved_identity="$temporary/identity.json"
@@ -542,15 +605,18 @@ fresh_install() {
   prepare_ipquality
   prepare_revision_configuration "$bootstrap_dir" "$install_mode"
 
-  maintenance_safe_check "$binary_path" "$configuration_dir/config.json"
+  maintenance_safe_check "$binary_path" "$configuration_staging/config.json"
   stop_agent_service
-  maintenance_safe_check "$binary_path" "$configuration_dir/config.json"
+  maintenance_safe_check "$binary_path" "$configuration_staging/config.json"
+  if [ -n "$existing_node" ]; then inspect_existing_install "$agent_id"; fi
+  cleanup_staging
+  install_revision_configuration
 
   release_dir="$RELEASE_ROOT/releases/$AGENT_RELEASE_VERSION"
   install -d -m 0700 "$CONFIG_DIR" "$STATE_DIR"
   install -d -m 0755 "$release_dir"
-  install -m 0755 "$binary_path" "$release_dir/.akastr-agent.$$"
-  mv -f -- "$release_dir/.akastr-agent.$$" "$release_dir/akastr-agent"
+  install -m 0755 "$binary_path" "$temporary/akastr-agent.ready"
+  mv -f -- "$temporary/akastr-agent.ready" "$release_dir/akastr-agent"
   install -m 0600 "$bootstrap_dir/machine-token" "$CONFIG_DIR/machine-token"
   machine_token_installed=true
   if [ -n "$preserved_identity" ]; then
@@ -568,6 +634,18 @@ fresh_install() {
   rm -f -- "$deployment_dir/akastr-agent" "$deployment_dir/config"
   ln -s "$release_dir/akastr-agent" "$deployment_dir/akastr-agent"
   ln -s "$configuration_dir" "$deployment_dir/config"
+  # The predecessor belongs to the deployment, so switching current also
+  # publishes its exact retention set in one rename.
+  if [ "$previous_deployment" = "$deployment_dir" ] && [ -L "$deployment_dir/previous" ]; then
+    previous_deployment=$(readlink -f "$deployment_dir/previous") || fail 'previous deployment is invalid'
+    managed_release_for_deployment "$previous_deployment" >/dev/null || fail 'previous deployment is invalid'
+    managed_configuration_for_deployment "$previous_deployment" >/dev/null || fail 'previous configuration is invalid'
+  fi
+  previous_deployment=${previous_deployment:-$deployment_dir}
+  previous_temporary="$temporary/previous"
+  ln -s "$previous_deployment" "$previous_temporary"
+  mv -Tf -- "$previous_temporary" "$deployment_dir/previous"
+  sync
   current_temporary="$RELEASE_ROOT/.current.$$"
   rm -f -- "$current_temporary"
   ln -s "$deployment_dir" "$current_temporary"
@@ -616,6 +694,7 @@ uninstall_existing() {
     || fail 'uninstall requires --confirm-destroy-local-agent'
   [ "$#" -eq 1 ] || fail 'invalid uninstall arguments'
 
+  acquire_maintenance_lock
   maintenance_binary="$RELEASE_ROOT/current/akastr-agent"
   maintenance_config="$RELEASE_ROOT/current/config/config.json"
   complete_runtime=false
@@ -652,7 +731,16 @@ case "$operation" in
     preflight_uninstall
     uninstall_existing "$@"
     ;;
+  *.*)
+    [ "$#" -eq 1 ] || fail 'pass exactly one install code'
+    AKASTR_AGENT_ID=${operation%%.*}
+    AKASTR_AGENT_MACHINE_TOKEN=${operation#*.}
+    unset operation
+    set --
+    preflight_install
+    fresh_install
+    ;;
   *)
-    fail 'usage: install.sh --install | --status | --uninstall --confirm-destroy-local-agent'
+    fail 'usage: install.sh <node-id.machine-token> | --install | --status | --uninstall --confirm-destroy-local-agent'
     ;;
 esac

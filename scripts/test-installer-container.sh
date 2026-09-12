@@ -53,19 +53,28 @@ case "${1:-}" in
   bootstrap)
     shift
     output=''
+    agent_id=''
+    endpoint=''
+    token_file=''
     while [ "$#" -gt 0 ]; do
       case "$1" in
         --output-dir) output=$2; shift 2 ;;
-        --agent-id|--endpoint|--token-file|--configuration-root) shift 2 ;;
+        --agent-id) agent_id=$2; shift 2 ;;
+        --endpoint) endpoint=$2; shift 2 ;;
+        --token-file) token_file=$2; shift 2 ;;
+        --configuration-root) shift 2 ;;
         *) echo "unexpected bootstrap argument: $1" >&2; exit 2 ;;
       esac
     done
     [ -n "$output" ] || exit 2
+    [ "$agent_id" = "$AKASTR_TEST_AGENT_ID" ] || exit 2
+    [ "$endpoint" = "$AKASTR_TEST_BOOTSTRAP_ENDPOINT" ] || exit 2
+    [ "$(cat "$token_file")" = "$AKASTR_TEST_MACHINE_TOKEN" ] || exit 2
     revision=2
     [ "${AKASTR_TEST_MODE:-target}" != runner ] || revision=3
     mkdir -p "$output"
     cat > "$output/config.json" <<EOF
-{"schema_version":3,"configuration_revision":$revision,"node":{"id":"$AKASTR_AGENT_ID","name":"fixture"},"control":{}}
+{"schema_version":3,"configuration_revision":$revision,"node":{"id":"$agent_id","name":"fixture"},"control":{}}
 EOF
     printf '%s\n' 'fixture-machine-token' > "$output/machine-token"
     printf '%064d\n' 0 > "$output/.bootstrap-sha256"
@@ -77,6 +86,15 @@ EOF
     fi
     ;;
   check-idle|check-config)
+    if [ "$1" = check-idle ] && [ -e "$AKASTR_TEST_ROOT/idle-fail-once" ]; then
+      rm -- "$AKASTR_TEST_ROOT/idle-fail-once"
+      exit 20
+    fi
+    if [ "$1" = check-idle ] && [ -e "$AKASTR_TEST_ROOT/idle-kill-once" ]; then
+      rm -- "$AKASTR_TEST_ROOT/idle-kill-once"
+      kill -KILL "$PPID"
+      exit 20
+    fi
     ;;
   enroll)
     if [ -e "$AKASTR_TEST_ROOT/enroll-fail-once" ]; then
@@ -87,7 +105,7 @@ EOF
 {
   "schema_version": 2,
   "enrollment_state": "confirmed",
-  "agent_id": "$AKASTR_AGENT_ID",
+  "agent_id": "$AKASTR_TEST_AGENT_ID",
   "public_key": "fixture-public",
   "private_key": "fixture-private"
 }
@@ -205,12 +223,21 @@ chmod 0755 "$installer"
 agent_id='123e4567-e89b-42d3-a456-426614174000'
 machine_token='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 [ "${#machine_token}" -eq 43 ] || exit 2
-export AKASTR_AGENT_ID=$agent_id
-export AKASTR_AGENT_MACHINE_TOKEN=$machine_token
-export AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://control.invalid/bootstrap'
+export AKASTR_TEST_AGENT_ID=$agent_id
+export AKASTR_TEST_MACHINE_TOKEN=$machine_token
+unset AKASTR_AGENT_ID AKASTR_AGENT_MACHINE_TOKEN AKASTR_AGENT_BOOTSTRAP_ENDPOINT
 
 run_install() {
-  AKASTR_TEST_MODE=$1 sh "$installer" --install
+  if [ "${2:-code}" = legacy ]; then
+    cat "$installer" | AKASTR_TEST_MODE=$1 \
+      AKASTR_AGENT_ID=$agent_id AKASTR_AGENT_MACHINE_TOKEN=$machine_token \
+      AKASTR_AGENT_BOOTSTRAP_ENDPOINT='https://control.invalid/bootstrap' \
+      AKASTR_TEST_BOOTSTRAP_ENDPOINT='https://control.invalid/bootstrap' sh -s -- --install
+  else
+    cat "$installer" | AKASTR_TEST_MODE=$1 \
+      AKASTR_TEST_BOOTSTRAP_ENDPOINT='https://origin.akastrmix.com/internal/agents/bootstrap' \
+      sh -s -- "$agent_id.$machine_token"
+  fi
 }
 
 assert_count() {
@@ -227,16 +254,61 @@ assert_count() {
   }
 }
 
+for invalid_code in '' "$agent_id" ".$machine_token" "$agent_id." "$agent_id.short" "$agent_id.$machine_token.extra"; do
+  if invalid_output=$(cat "$installer" | sh -s -- "$invalid_code" 2>&1); then
+    echo 'invalid install code unexpectedly succeeded' >&2
+    exit 1
+  fi
+  if printf '%s\n' "$invalid_output" | grep -Fq "$machine_token"; then
+    echo 'installer error exposed the machine token' >&2
+    exit 1
+  fi
+done
+if cat "$installer" | sh -s -- "$agent_id.$machine_token" extra >/dev/null 2>&1; then
+  echo 'extra install argument unexpectedly succeeded' >&2
+  exit 1
+fi
+[ ! -e /usr/local/lib/akastr-agent ]
+[ ! -e "$test_root/curl.log" ]
+
+: > "$test_root/idle-fail-once"
+if run_install target >/dev/null 2>&1; then
+  echo 'injected first-install failure unexpectedly succeeded' >&2
+  exit 1
+fi
+[ -d /var/lib/akastr-agent/configurations ]
+[ ! -e /etc/akastr-agent/identity.json ]
+: > "$test_root/idle-kill-once"
+if run_install target >/dev/null 2>&1; then
+  echo 'interrupted first install unexpectedly succeeded' >&2
+  exit 1
+fi
+# Empty roots and interrupted staging are retryable; execution state is not.
+printf '%s\n' 'unowned-operation-state' > /var/lib/akastr-agent/state.json
+if unowned_output=$(run_install target 2>&1); then
+  echo 'installation with unowned execution state unexpectedly succeeded' >&2
+  exit 1
+fi
+printf '%s\n' "$unowned_output" | grep -Fq 'do not prove node ownership'
+grep -Fxq 'unowned-operation-state' /var/lib/akastr-agent/state.json
+rm -- /var/lib/akastr-agent/state.json
+
 run_install target >/dev/null
 [ "$(cat "$test_root/systemd-state")" = active ]
 [ -f /etc/akastr-agent/identity.json ]
 [ -f /var/lib/akastr-agent/configurations/2/config.json ]
 [ -L /usr/local/lib/akastr-agent/current ]
 [ "$(readlink /usr/local/lib/akastr-agent/current/config)" = /var/lib/akastr-agent/configurations/2 ]
-assert_count 1 'akastr-agent-linux-amd64' "$test_root/curl.log"
+assert_count 3 'akastr-agent-linux-amd64' "$test_root/curl.log"
 
-run_install target >/dev/null
-assert_count 1 'akastr-agent-linux-amd64' "$test_root/curl.log"
+mkdir -p /usr/local/lib/akastr-agent/.install-abandoned /usr/local/lib/akastr-agent/releases/.update-123 /var/lib/akastr-agent/configurations/.configuration.456
+cp /etc/akastr-agent/identity.json "$test_root/identity.before-legacy"
+run_install target legacy >/dev/null
+cmp -s "$test_root/identity.before-legacy" /etc/akastr-agent/identity.json
+[ ! -e /usr/local/lib/akastr-agent/.install-abandoned ]
+[ ! -e /usr/local/lib/akastr-agent/releases/.update-123 ]
+[ ! -e /var/lib/akastr-agent/configurations/.configuration.456 ]
+assert_count 3 'akastr-agent-linux-amd64' "$test_root/curl.log"
 [ -f /var/lib/akastr-agent/configurations/2/config.json ]
 
 mkdir -p \
@@ -255,12 +327,15 @@ ln -s /var/lib/akastr-agent/configurations/1 \
 
 cp /var/lib/akastr-agent/configurations/2/config.json "$test_root/config.json.clean"
 printf ' ' >> /var/lib/akastr-agent/configurations/2/config.json
+run_install target >/dev/null
+cmp -s "$test_root/config.json.clean" /var/lib/akastr-agent/configurations/2/config.json
+printf '%064d\n' 1 > /var/lib/akastr-agent/configurations/2/.bootstrap-sha256
 if mismatch_output=$(run_install target 2>&1); then
   echo 'mismatched immutable configuration revision unexpectedly succeeded' >&2
   exit 1
 fi
 printf '%s\n' "$mismatch_output" | grep -Fq 'differs from the desired bootstrap'
-cp "$test_root/config.json.clean" /var/lib/akastr-agent/configurations/2/config.json
+printf '%064d\n' 0 > /var/lib/akastr-agent/configurations/2/.bootstrap-sha256
 [ "$(cat "$test_root/systemd-state")" = active ]
 
 echo failed > "$test_root/systemd-state"
@@ -297,9 +372,20 @@ assert_count 1 '/ip.sh$' "$test_root/curl.log"
 [ -d /usr/local/lib/akastr-agent/releases/manual ]
 
 run_install runner >/dev/null
+[ "$(readlink /usr/local/lib/akastr-agent/current/previous)" = /usr/local/lib/akastr-agent/deployments/v9.9.9-r2 ]
+[ -f /var/lib/akastr-agent/configurations/2/config.json ]
 assert_count 1 '^update$' "$test_root/apt.log"
 assert_count 1 '^install ' "$test_root/apt.log"
 assert_count 1 '/ip.sh$' "$test_root/curl.log"
+
+cp /etc/akastr-agent/identity.json "$test_root/identity.clean"
+printf '%s\n' '{"schema_version":1,"active":{},"recent":[]}' > /var/lib/akastr-agent/state.json
+rm -- /var/lib/akastr-agent/configurations/3/proxy-profiles.json
+run_install runner >/dev/null
+[ -f /var/lib/akastr-agent/configurations/3/proxy-profiles.json ]
+cmp -s "$test_root/identity.clean" /etc/akastr-agent/identity.json
+grep -Fxq '{"schema_version":1,"active":{},"recent":[]}' /var/lib/akastr-agent/state.json
+rm -- /var/lib/akastr-agent/state.json
 
 sh "$installer" --uninstall --confirm-destroy-local-agent >/dev/null
 [ ! -e /etc/akastr-agent ]

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,8 +22,6 @@ import (
 
 const (
 	CheckInterval     = 6 * time.Hour
-	InitialDelayMin   = time.Minute
-	InitialDelayRange = 4 * time.Minute
 	DefaultConfigRoot = "/var/lib/akastr-agent/configurations"
 )
 
@@ -43,15 +40,12 @@ type LoopOptions struct {
 	ConfigurationRoot     string
 	ReleaseRoot           string
 	Lifecycle             *lifecycle.Gate
-	Ready                 <-chan struct{}
 	Client                MaintenanceClient
-	Ticks                 <-chan time.Time
 	Triggers              <-chan Trigger
 	Stage                 func(context.Context, ApplyOptions) (StagedRelease, error)
 	Runner                CommandRunner
 	CheckIdle             func() error
 	Reexec                func(string, string, string, int64) error
-	InitialDelay          func() time.Duration
 	Logger                *slog.Logger
 	Retry                 *RetryState
 }
@@ -64,6 +58,30 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 	if options.Retry == nil {
 		options.Retry = &RetryState{}
 	}
+	defer func() {
+		if resultErr != nil {
+			options.Retry.failed(resultErr)
+		}
+	}()
+	lock, err := lockMaintenance(options.ReleaseRoot)
+	if err != nil {
+		return false, err
+	}
+	defer lock.Close()
+	configRoot := options.ConfigurationRoot
+	if configRoot == "" {
+		configRoot = DefaultConfigRoot
+	}
+	cleanupWarning := func(err error) {
+		if err != nil {
+			logger := options.Logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Warn("managed Agent artifact cleanup incomplete", "code", "update_cleanup_failed")
+		}
+	}
+	cleanupWarning(cleanupStaging(options.ReleaseRoot, configRoot))
 	client := options.Client
 	if client == nil {
 		client = Client{}
@@ -72,25 +90,32 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 	if err != nil {
 		return false, err
 	}
+	if manifest.Status == "current" {
+		cleanupWarning(cleanupCandidates(options.ReleaseRoot, configRoot, "", 0))
+	}
 	if manifest.Status != "update_available" {
 		if manifest.Status == "current" {
-			options.Retry.manualID = ""
+			*options.Retry = RetryState{now: options.Retry.now}
+		} else {
+			options.Retry.next = options.Retry.clock().Add(30 * time.Second)
 		}
 		return false, nil
 	}
 	targetVersion := manifest.Software.Version
 	reportedTargetRevision := manifest.Configuration.Revision
 	report := func(status, code string) {
-		_ = client.Report(ctx, options.ControlEndpoint, options.CurrentVersion, options.Credentials, MaintenanceResult{
+		result := MaintenanceResult{
 			TargetVersion: targetVersion, TargetConfigurationRevision: reportedTargetRevision,
 			Status: status, ErrorCode: code,
-		})
-	}
-	defer func() {
-		if resultErr != nil {
-			options.Retry.failed(resultErr)
 		}
-	}()
+		if options.Retry.reported != nil && *options.Retry.reported == result {
+			return
+		}
+		if client.Report(ctx, options.ControlEndpoint, options.CurrentVersion, options.Credentials, result) == nil {
+			options.Retry.reported = &result
+		}
+	}
+	cleanupWarning(cleanupCandidates(options.ReleaseRoot, configRoot, targetVersion, reportedTargetRevision))
 	ledger, manual, err := loadAttempts(options.ReleaseRoot, targetVersion, reportedTargetRevision, options.Retry.manualID)
 	if err != nil {
 		report("failed", "maintenance_state_invalid")
@@ -111,19 +136,6 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 		}
 		report(status, code)
 		return false, nil
-	}
-
-	lease, acquired := options.Lifecycle.TryUpdate()
-	if !acquired {
-		report("busy", "maintenance_local_busy")
-		return false, nil
-	}
-	defer lease.Release()
-	if options.CheckIdle != nil {
-		if err := options.CheckIdle(); err != nil {
-			report("busy", "maintenance_local_busy")
-			return false, nil
-		}
 	}
 
 	binary, err := os.Executable()
@@ -170,6 +182,30 @@ func ReconcileOnce(ctx context.Context, options LoopOptions) (changed bool, resu
 			return false, err
 		}
 		targetRevision = configuration.ConfigurationRevision
+	}
+	// Candidate preparation is immutable and does not own the running service.
+	// Reserve execution only for the final target check and process replacement.
+	lease, acquired := options.Lifecycle.TryUpdate()
+	if !acquired {
+		report("busy", "maintenance_local_busy")
+		options.Retry.next = options.Retry.clock().Add(30 * time.Second)
+		return false, nil
+	}
+	defer lease.Release()
+	if options.CheckIdle != nil {
+		if err := options.CheckIdle(); err != nil {
+			report("busy", "maintenance_local_busy")
+			options.Retry.next = options.Retry.clock().Add(30 * time.Second)
+			return false, nil
+		}
+	}
+	latest, err := client.Check(ctx, options.ControlEndpoint, options.CurrentVersion, options.ConfigurationRevision, options.Credentials)
+	if err != nil {
+		return false, err
+	}
+	if latest.Status != "update_available" || latest.Software != manifest.Software || latest.Configuration != manifest.Configuration {
+		options.Retry.next = options.Retry.clock().Add(30 * time.Second)
+		return false, nil
 	}
 	if err := ledger.begin(); err != nil {
 		report("failed", "maintenance_state_invalid")
@@ -223,7 +259,10 @@ func materializeCandidate(ctx context.Context, runner CommandRunner, binary, con
 		}
 		digest := sha256.Sum256(configuration.Bootstrap)
 		storedDigest, readErr := os.ReadFile(filepath.Join(target, bootstrap.ConfigurationBootstrapDigestFile))
-		if readErr != nil || strings.TrimSpace(string(storedDigest)) != fmt.Sprintf("%x", digest) {
+		if readErr != nil {
+			return "", readErr
+		}
+		if strings.TrimSpace(string(storedDigest)) != fmt.Sprintf("%x", digest) {
 			return "", fmt.Errorf("%w: target configuration does not match desired bootstrap", ErrCandidateRejected)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -291,6 +330,9 @@ func materializeCandidate(ctx context.Context, runner CommandRunner, binary, con
 	return configPath, nil
 }
 
+// RunLoop has one deadline for periodic work, retry and coalesced notifications.
+// A one-second window combines startup/connection bursts; explicit manual grants
+// run immediately. Network failures retry even if the notification channel is down.
 func RunLoop(ctx context.Context, options LoopOptions) error {
 	if options.Retry == nil {
 		options.Retry = &RetryState{}
@@ -299,75 +341,53 @@ func RunLoop(ctx context.Context, options LoopOptions) error {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	initialRetryID := ""
-	ticks := options.Ticks
-	var ticker *time.Ticker
-	if ticks == nil {
-		if options.Ready == nil {
-			return errors.New("automatic maintenance readiness signal is required")
-		}
-		triggeredBeforeReady := false
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-options.Ready:
-		case trigger := <-options.Triggers:
-			initialRetryID = trigger.RetryID
-			triggeredBeforeReady = true
-		}
-		if !triggeredBeforeReady {
-			delay := InitialDelayMin + time.Duration(rand.Int64N(int64(InitialDelayRange)+1))
-			if options.InitialDelay != nil {
-				delay = options.InitialDelay()
-			}
-			if delay < 0 {
-				return errors.New("automatic maintenance initial delay is invalid")
-			}
-			initial := time.NewTimer(delay)
-			select {
-			case <-ctx.Done():
-				initial.Stop()
-				return ctx.Err()
-			case <-initial.C:
-			case trigger := <-options.Triggers:
-				initialRetryID = trigger.RetryID
-				if !initial.Stop() {
-					select {
-					case <-initial.C:
-					default:
-					}
-				}
-			}
-		}
-		initialTick := make(chan time.Time, 1)
-		initialTick <- time.Now()
-		ticker = time.NewTicker(CheckInterval)
-		defer ticker.Stop()
-		ticks = mergeTicks(ctx, initialTick, ticker.C)
-	}
-	events := mergeTriggers(ctx, ticks, options.Triggers)
+	triggers := options.Triggers
+	nextPeriodic := time.Now().Add(time.Second)
+	var pending time.Time
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
 	for {
+		next := nextPeriodic
+		for _, deadline := range []time.Time{pending, options.Retry.next} {
+			if !deadline.IsZero() && deadline.Before(next) {
+				next = deadline
+			}
+		}
+		timer.Reset(time.Until(next))
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case trigger, ok := <-events:
+		case trigger, ok := <-triggers:
 			if !ok {
-				return ctx.Err()
+				triggers = nil
+				continue
 			}
 			if trigger.RetryID != "" {
 				options.Retry.manualID = trigger.RetryID
+				pending = time.Now()
+			} else if pending.IsZero() {
+				pending = time.Now().Add(time.Second)
 			}
-			if initialRetryID != "" {
-				options.Retry.manualID = initialRetryID
-				initialRetryID = ""
-			}
-			checkContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			_, err := ReconcileOnce(checkContext, options)
-			cancel()
-			if err != nil {
-				logger.Warn("automatic maintenance reconciliation failed", "code", "maintenance_reconciliation_failed")
-				continue
-			}
+			continue
+		case <-timer.C:
+		}
+		now := time.Now()
+		if !now.Before(nextPeriodic) {
+			nextPeriodic = now.Add(CheckInterval)
+		}
+		// Work due within the coalescing window is covered by this check. Notifications
+		// arriving during the check remain queued so a concurrent target change is seen.
+		if !pending.After(now.Add(time.Second)) {
+			pending = time.Time{}
+		}
+		checkContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		_, err := ReconcileOnce(checkContext, options)
+		cancel()
+		if !options.Retry.next.After(time.Now()) {
+			options.Retry.next = time.Time{}
+		}
+		if err != nil {
+			logger.Warn("automatic maintenance reconciliation failed", "code", "maintenance_reconciliation_failed")
 		}
 	}
 }
@@ -393,69 +413,4 @@ func Notify(triggers chan Trigger, trigger Trigger) {
 		default:
 		}
 	}
-}
-
-func mergeTriggers(ctx context.Context, ticks <-chan time.Time, triggers <-chan Trigger) <-chan Trigger {
-	merged := make(chan Trigger)
-	go func() {
-		defer close(merged)
-		for ticks != nil || triggers != nil {
-			var trigger Trigger
-			var ok bool
-			select {
-			case <-ctx.Done():
-				return
-			case _, ok = <-ticks:
-				if !ok {
-					ticks = nil
-					continue
-				}
-			case trigger, ok = <-triggers:
-				if !ok {
-					triggers = nil
-					continue
-				}
-			}
-			select {
-			case merged <- trigger:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-	return merged
-}
-
-func mergeTicks(ctx context.Context, first <-chan time.Time, later <-chan time.Time) <-chan time.Time {
-	merged := make(chan time.Time)
-	go func() {
-		defer close(merged)
-		for first != nil || later != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case tick, ok := <-first:
-				if !ok {
-					first = nil
-					continue
-				}
-				select {
-				case merged <- tick:
-				case <-ctx.Done():
-					return
-				}
-			case tick, ok := <-later:
-				if !ok {
-					later = nil
-					continue
-				}
-				select {
-				case merged <- tick:
-				case <-ctx.Done():
-					return
-				}
-			}
-		}
-	}()
-	return merged
 }

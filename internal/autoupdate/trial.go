@@ -92,6 +92,11 @@ func (trial *Trial) Discard() error {
 	if trial.committed {
 		return nil
 	}
+	lock, err := lockMaintenance(trial.releaseRoot)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
 	deploymentsRoot := filepath.Join(trial.releaseRoot, "deployments")
 	target := filepath.Join(deploymentsRoot, deploymentName(trial.version, trial.revision))
 	current, err := safeCurrentTarget(filepath.Join(trial.releaseRoot, "current"), deploymentsRoot)

@@ -17,7 +17,7 @@ import (
 )
 
 type Runtime struct {
-	operations *operation.Engine
+	operations *operation.Executor
 	changeIP   *changefeature.Handler
 	ipQuality  *ipqualityrunner.Handler
 	ipMonitor  *ipwatch.Monitor
@@ -30,7 +30,7 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	runtime := &Runtime{operations: engine}
+	runtime := &Runtime{operations: operation.NewExecutor(engine)}
 	var observer *ipwatch.Observer
 	if model.Config.Capabilities.ChangeIP.Provider != "disabled" || model.Config.Capabilities.IPWatch.Enabled {
 		observer, err = ipwatch.New(10*time.Second, "Akastr-Agent")
@@ -69,7 +69,7 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 			return nil, err
 		}
 		runtime.changeIP = changefeature.New(
-			engine, observer, provider, runtime.ipMonitor,
+			observer, provider, runtime.ipMonitor,
 			time.Duration(cfg.ObserveTimeoutSeconds)*time.Second,
 		)
 	}
@@ -83,7 +83,7 @@ func BuildRuntime(model *Model) (*Runtime, error) {
 		if err != nil {
 			return nil, err
 		}
-		runtime.ipQuality = ipqualityrunner.New(engine, provider, cfg.ScriptVersion)
+		runtime.ipQuality = ipqualityrunner.New(provider, cfg.ScriptVersion)
 	}
 	return runtime, nil
 }
@@ -98,12 +98,12 @@ func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 		if r.changeIP == nil {
 			return protocol.ExecutionResult{}, errors.New("accepted ChangeIP command has no local capability")
 		}
-		return r.changeIP.Execute(ctx, offer)
+		return r.operations.Execute(ctx, offer, "target-network", r.changeIP)
 	case "ipquality.execute":
 		if r.ipQuality == nil {
 			return protocol.ExecutionResult{}, errors.New("accepted IPQuality command has no local capability")
 		}
-		return r.ipQuality.Execute(ctx, offer)
+		return r.operations.Execute(ctx, offer, "ipquality-runner", r.ipQuality)
 	default:
 		return protocol.ExecutionResult{}, errors.New("accepted command type is unsupported")
 	}

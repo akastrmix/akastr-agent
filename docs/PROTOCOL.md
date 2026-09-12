@@ -51,9 +51,9 @@ akastr-agent-maintenance-check-v1
 
 配置目标可用时，Agent 对 `akastr-agent-configuration-fetch-v1`、`agent_id`、desired revision、nonce 和时间逐行签名，请求 `POST /internal/agents/configuration`。主控以内存解封既有密封 bootstrap，返回严格的 `akastr-agent-configuration.v1`，不建立第二份明文配置持久化。仅更新软件时，目标二进制必须接受 current 配置；软件与配置同时更新时，不要求目标二进制接受旧配置，但必须严格解析并物化 desired bootstrap，再以 candidate 二进制完整验证 candidate 配置并生成 capability。旧更新器只验证正整数 schema 标识与稳定外层，不解析未来 bootstrap 内容；candidate 的 `validate-configuration` 输出保留 `agent_id`、`configuration_revision`、`capabilities` 外层，旧更新器只核对身份/revision，capability 内容由 candidate 和当前 Cloud 校验。配置格式变化必须发布新 revision，不在同一 revision 目录重新解释不同内容。
 
-试运行前的 candidate 命令明确拒绝或稳定验证外层不一致时，在当前进程内抑制同一 version/revision，报告 `suppressed/candidate_target_rejected`；临时网络或本地 I/O 失败按 1、2、4、5 分钟延迟重试（上限 5 分钟），等待期间报告 `busy/maintenance_retry_wait`，取消不计失败。目标变化清除进程内抑制，本地依赖修复后重启也可重新验证；不新增持久失败记录。已验证 binary 先复用，配置验证失败不会删除该制品。
+试运行前已验证的制品摘要、版本、bootstrap 摘要或稳定验证外层不一致时，在当前进程内抑制同一 version/revision，报告 `suppressed/candidate_target_rejected`；candidate 普通非零退出无法证明输入被确定拒绝，与网络或本地 I/O 失败一样按 1、2、4、5 分钟延迟重试（上限 5 分钟），等待期间报告 `busy/maintenance_retry_wait`，取消不计失败。目标变化清除进程内抑制，本地依赖修复后重启也可重新验证；不新增持久失败记录。已验证 binary 先复用，配置验证失败不会删除该制品。
 
-确定性维护失败或同一目标已被抑制时，Agent 向 `POST /internal/agents/maintenance-result` 发送严格的目标版本、目标 revision、`busy|failed|suppressed`、稳定错误码、nonce、时间和 Ed25519 签名。签名文本以 `akastr-agent-maintenance-result-v1` 开头并按请求字段顺序逐行连接。主控只接受当前批准版本与当前 desired revision，持久化有界投影；请求不得包含错误文本、URL、bootstrap 或 secret。结果投影失败不改变 deployment 或重试语义。
+确定性维护失败或同一目标已被抑制时，Agent 向 `POST /internal/agents/maintenance-result` 发送严格的目标版本、目标 revision、`busy|failed|suppressed`、稳定错误码、nonce、时间和 Ed25519 签名。签名文本以 `akastr-agent-maintenance-result-v1` 开头并按请求字段顺序逐行连接。主控只接受当前批准版本与当前 desired revision，持久化有界投影；请求不得包含错误文本、URL、bootstrap 或 secret。结果投影失败不改变 deployment 或重试语义。同一进程内，完全相同且已成功上报的目标/状态/错误码不重复发送；失败上报继续允许重试，目标或状态变化重新发送。Cloud 发现 `update_available` 只返回目标，不据此把维护投影改成 `applying`，也不覆盖已有失败/暂停结果；实际应用完成由 current hello 收敛。
 
 物化成功后，candidate 以 `deployment_state=trial` 建立 WSS。Cloud 重新校验当前 desired revision、批准 release、密封 bootstrap 的最低版本、角色 capability、配置参数与空闲状态；通过后仅返回 `deployment.trial_accepted`，不推进 applied、不注册 ready，也不派发 operation。Agent 随即原子替换并 fsync 本地 `current`，再发送 body 为空对象的 `deployment.committed`。Cloud 以同一 hello 内容按 `current` 规则重新校验并原子推进 applied、版本、capability 与 hello 时间，随后返回 `hello.accepted` 并进入 ready。若本地提交后连接在确认前中断，新进程以 `deployment_state=current` 重连即可完成同一收敛。每个 version/revision 在替换进程前持久计数，最多首次试运行加一次自动补试；突然退出、断电或重启不会重置次数。达到上限后报告 trial_suppressed_after_failure，保留旧 current；管理员显式检查更新可重新授权一次试运行，仍须通过全部校验。trial 在 readiness 超时前仍未提交时删除临时 deployment，但不删除尝试次数；主控新目标获得新预算，损坏的本地记录拒绝自动重置。maintenance/fetch 只使用 active Ed25519 identity，不接收机器 token。
 
@@ -98,13 +98,13 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 Target 首次成功 IPv6 观察发送 `family=ipv6` 的 `ip.snapshot`，之后地址改变发送 `family=ipv6` 的 `ip.observed`。IPv6 snapshot 只建立主控 baseline，不设置 IPv4 readiness；无 IPv6、探测失败或暂时不可达不发送消失事件，也不影响 IPv4、ChangeIP、IPQuality 或 SOCKS5。
 
-每次 Agent 进程启动后的首次成功 IPv4 观察必须先持久化并发送 `ip.snapshot`，body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；当前 identity 的 snapshot readiness 与该提交原子持久化，普通 WSS 重连保留，重新 enrollment 时清除。进程重启后的 snapshot 若与既有 baseline 不同且节点没有未终结 command，Cloud 以既有地址作为 previous address 原子记录一次自然变化。存在未终结 command 时地址冲突安全失败。Agent 在确认前不得接受新的 ChangeIP，并跨重连、重启重发尚未确认的 snapshot。
+Agent 没有本地 IPv4 baseline 时，首次成功观察必须先持久化并发送 `ip.snapshot`；重启后已有 baseline 时先重放待确认事实，并把与该 baseline 不同的地址以 `ip.observed` 持久上报，确认后再发送当前 `ip.snapshot`。snapshot body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；当前 identity 的 snapshot readiness 与该提交原子持久化，普通 WSS 重连保留，重新 enrollment 时清除。进程重启后的 snapshot 若与既有 baseline 不同且节点没有未终结 command，Cloud 以既有地址作为 previous address 原子记录一次自然变化。存在未终结 command 时地址冲突安全失败。Agent 在确认前不得接受新的 ChangeIP，并跨重连、重启重发尚未确认的 snapshot。
 
 `ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。事件时间必须晚于 Cloud 当前 baseline 且不得超前主控超过五分钟。只有 command 已 accepted、观测不早于 session 开始且仍在 session 窗口内，变化才归因于 ChangeIP；消息可以先于 `operation.result` 到达。尚未接受 command 时发生的变化仍是自然变化，不会被错误归因。
 
 若五分钟宽限后连续三次成功观察仍是触发前 IP，Agent 发送 `changeip.unchanged`，body 必须且只能包含 `command_id`、`address` 和 `observed_at`。网络失败不计确认次数。AkastrCloud 持久接纳后返回 `changeip.unchanged_ack`，body 为相同 `command_id` 和 `persisted=true`；45 分钟兜底只属于 Cloud 业务 session。
 
-Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`ip.snapshot`、`ip.observed` 和 `changeip.unchanged` 分别由相同 snapshot ID、observation ID 或 command ID 的 ack 清除；连接不可用时跨重连和进程重启重发。AkastrCloud 对已成功或未变化的 session 只投影一次终态；没有 Agent 快速结果时，业务 session 仍在 45 分钟到期时收敛，并同步终结尚未 accepted 的 command。
+Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`ip.snapshot`、`ip.observed` 和 `changeip.unchanged` 分别由相同 snapshot ID、observation ID 或 command ID 的 ack 清除，清除成功后立即继续对应 family 的观察；重复或过期 ack 是无副作用的确认，不清除其他待确认事件，也不导致断线。连接不可用时跨重连和进程重启重发。AkastrCloud 对已成功或未变化的 session 只投影一次终态；没有 Agent 快速结果时，业务 session 仍在 45 分钟到期时收敛，并同步终结尚未 accepted 的 command。
 
 ## 自然 IPv4 变化
 
