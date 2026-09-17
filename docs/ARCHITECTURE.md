@@ -22,9 +22,9 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 1. 目标节点上没有冲突的 ChangeIP 操作；
 2. 对应 Runner 有一个空闲执行槽。
 
-相同目标、香港日历日及 IPv4 代际的请求合并为一次真实执行，之后返回缓存报告。香港时间跨日或观测到 IPv4 改变时，主控创建新的缓存代际。
+请求合并、次数限制及缓存失效由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#4-changeip-与-ipquality)定义，Agent 不维护第二套业务缓存。
 
-当前协议使用有效期 15 秒的服务端 nonce，以及绑定上下文、以换行分隔的 Ed25519 签名文本。机器 token 只用于 HTTPS bootstrap 和注册；WSS hello 同时绑定本地 configuration revision、deployment 状态与 capability，Cloud 只在 current deployment 通过当前密封配置校验后推进 applied 并进入 ready；只读更新检查使用有效公钥身份。offer、accept、终态结果、结果确认、初始 IPv4 snapshot 和自然 IPv4 变化均使用稳定 UUID。消息按至少一次投递，本地日志和数据库唯一约束共同保证执行与结果幂等。
+机器 token 只用于 HTTPS bootstrap 和注册；日常 WSS 与维护通过 Ed25519 身份认证。Cloud 核对当前部署、配置和能力后才允许业务执行。消息按至少一次投递，本地日志和数据库唯一约束共同保证执行与结果幂等；认证格式、消息字段及握手顺序以 [PROTOCOL.md](PROTOCOL.md) 为准。
 
 ## 3. 目标节点网络模型
 
@@ -79,7 +79,7 @@ ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对�
 
 目标节点的 capability metadata 只公布端口，不包含地址来源、主机名、用户名或密码。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 上的凭据位于独立 root-only profile 文件，以 AkastrCloud 的稳定 server key 索引。
 
-bootstrap 固定官方 xykt/IPQuality commit `0ee5f192fed70c04615852efba0e4b8bd43546c7` 的 GitHub Raw 原始字节及其 SHA-256；Release workflow 会在发布前实际下载并验证该固定输入与 Debian 依赖声明。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为该代际的有效报告。
+bootstrap 只接受固定版本、固定摘要的官方 IPQuality 脚本；版本入口见[安装教程](INSTALLATION.md#ipquality-runner)。Release workflow 会在发布前实际下载并验证固定输入与 Debian 依赖声明。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为该代际的有效报告。
 
 官方脚本在仅 IPv4 模式下可能生成有效报告 URL，却返回非零 Bash 状态。因此，“输出中包含有界、有效的 `https://report.check.place/...` URL，且代理 postflight 成功”视为完成；非零退出且没有报告 URL 是 `script_failed`。
 

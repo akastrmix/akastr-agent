@@ -52,9 +52,9 @@ apt-get install --yes ca-certificates curl
 
 Runner 不绑定单一服务器。勾选需要检测的目标服务器，逐项填写 SOCKS5 用户名和密码。后台以稳定 server key 生成 1–128 个本地 profile；密码不会进入安装命令、列表、capability、Agent 日志或 command payload。
 
-Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality) commit `0ee5f192fed70c04615852efba0e4b8bd43546c7`，并发严格为 1。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。多个检测由 AkastrCloud 持久排队，不能同时运行。
+Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，具体 commit 与 SHA-256 见[安装器](../scripts/install.sh)的 `IPQUALITY_COMMIT` / `IPQUALITY_SHA256`。并发严格为 1，多个检测由 AkastrCloud 持久排队。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。
 
-“每个服务节点每天一次真实 IPQuality”由主控执行：香港时间同一天的后续请求读取缓存；到 `00:00` 或目标 IPv4 变化后开启新代际。重装 Runner 或新增 profile 不能绕过此限制。
+检测次数与缓存由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#4-changeip-与-ipquality)管理；重装 Runner 或新增 profile 不能绕过限制。
 
 ## 3. 添加节点并执行一键命令
 
@@ -72,18 +72,7 @@ curl -fsSL https://origin.akastrmix.com/agent.sh | sh -s -- '安装码'
 
 需要修改配置时点击“修改配置”。后台回填完整配置，包括 ChangeIP curl 原文与 Runner 凭据，密码可按需显示；在同一表单修改后保存。内容没有变化时不会更新版本或断开连接；真实修改会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，并在新配置应用完成前暂停业务派发。保存时会核对你打开表单时的配置版本；若另一页面已修改，保留当前草稿并提示读取最新配置后重新确认。具体编辑契约见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。在线 Agent 会自动进入维护协调；需要立即处理时点击“检查更新”，离线 Agent 则在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖不同节点、所有权不明的残留或降级已装版本；同节点安装复用 identity，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
 
-安装过程完全非交互。它会：
-
-1. 安装模式检查 root、Debian 12/13、amd64、systemd 和下载校验工具；`--status` 只要求 systemd，`--uninstall` 只要求 root 与 systemd；
-2. 检查既有 identity/config 的节点 ID 与版本；拒绝跨节点覆盖和降级，operation journal 与待对账 IP 状态在下载新程序和 bootstrap 后检查；
-3. 复用摘要正确的同版本 binary，否则下载并自动完成内部完整性校验；
-4. 使用节点 UUID 与机器 token 通过 HTTPS 取得持久密封配置；
-5. 在本机以 AES-256-GCM 验证并解密，生成 root-only 配置与 secret 文件；
-6. Runner 仅在命令缺失时安装 Debian 包；本机已有的 IPQuality 脚本摘要正确就复用，否则下载并校验固定 commit；
-7. 用新 binary 和已验证的新配置执行 maintenance-safe 检查，不要求旧 Runner 凭据等派生文件可用；
-8. 只停止唯一的 `akastr-agent.service`，仅在 unit 确实 failed 时清除 failed 状态，再对稳定状态执行相同检查，并从认证 bootstrap 安装或重建该 revision 的派生配置文件；
-9. 运行 `check-config`；首次安装生成 identity，同节点重装复用已确认 identity，并以配置 revision 完成注册，再删除本机机器 token 副本；
-10. 启用唯一的 `akastr-agent.service`；current 进程启动后向 systemd 报告 ready，业务连接须另外在后台验收。
+安装过程完全非交互，自动校验程序与脚本、取得密封配置并注册节点；摘要正确的已有制品会复用。它只管理唯一的 `akastr-agent.service`，完成后仍须按第 5 节验收业务连接。内部安装与状态恢复流程见[架构说明](ARCHITECTURE.md#8-fix-forward-安装与自动更新)。
 
 成功时最后显示：
 
@@ -148,28 +137,32 @@ systemctl restart akastr-agent.service
 ```mermaid
 flowchart TD
     A{变更类型}
-    A -->|只修改节点配置| B[主控递增配置 revision]
+    A -->|只修改节点配置| B[在后台保存配置]
     A -->|新增 Agent 功能| C[发布脚本验证并发布新版 Agent]
     B --> D[主控保存期望软件与配置]
     C --> D
-    D --> E[Agent 检查更新]
+    D --> E[自动检查或点击检查更新]
     E -->|节点忙碌| F[保持当前版本，稍后重试]
     F --> E
-    E -->|发现变化| G[取得新版 Agent（如需要）与完整配置]
-    G --> H[候选 Agent 验证配置和 capability]
-    H -->|失败| I[保持当前 deployment]
-    H -->|通过| J[trial WSS 通过主控校验]
-    J --> K[切换 current 并提交]
-    K --> L[主控推进 applied 并进入 ready]
+    E -->|发现变化| G[下载并验证软件与配置]
+    G --> H[试运行并验证业务连接]
+    H -->|提交前失败| I[保留当前部署，按错误处理]
+    H -->|通过| J[提交新部署并恢复业务]
 ```
 
-“检查更新”优先通过独立 HTTPS 维护连接唤醒协调，业务协议不兼容时仍可使用；两次正常请求之间保留重连宽限期，点击的通知会在重连后取走；超过宽限期仍未重连则显示离线。Agent 也会在启动、维护重连、目标落后以及定期维护时检查。执行中的 command 会阻止协调；candidate binary 先验证并物化 revision 配置，再把 binary/config 组成一个 deployment 试运行。trial WSS 通过当前 desired revision、批准版本、最低版本与 capability 校验后，Agent 才提交并 fsync `current`；随后主控重验、推进 applied 并返回 ready。提交前 45 秒内未完成时删除 trial deployment，systemd 从旧 deployment 重启并允许后续重试；本地已提交但确认中断时则从新 current 重连收敛。
+“检查更新”通过独立维护连接唤醒 Agent，已具备稳定维护能力的节点在业务协议不兼容时仍可更新；离线节点需先恢复连接，正在执行任务时等待空闲。点击按钮不代表更新已完成，须核对后台版本、配置应用状态和业务连接。试运行提交前失败时保留旧部署；已提交但确认中断时，由新部署重连完成确认。具体提交顺序见[架构说明](ARCHITECTURE.md#8-fix-forward-安装与自动更新)，消息契约见 [PROTOCOL.md](PROTOCOL.md#自动维护与配置协调)。
 
 ```bash
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-Agent 不提供 `--update` 或本地回退 CLI。提交前的确定性本地启动或配置失败不会改变 `current`，试运行前的同一目标拒绝会在本次进程中暂停重试，修正 Cloud 配置后自动重新验证；如果修复的是节点本地脚本或依赖，可重启 Agent 重新验证。临时失败会延迟重试，已校验的软件文件会复用；未提交的 readiness 超时会清除 trial deployment，但保留重试次数。每个软件版本/配置版本最多自动试运行两次（首次加一次补试），强制终止或节点重启不重置次数；之后暂停并保留旧版本。修复故障后点击主控“检查更新”，可再授权一次尝试；仍会验证制品、配置与业务连接。本地重试记录损坏时需人工修复，按钮不会清除损坏证据。提交或重装成功后只保留 current、previous deployment 及其引用的 release/configuration；当前 deployment 的 `previous` 链接记录上一套部署。启动和每次维护会先清理已经中断的临时文件，取得 Cloud 目标后保留一个期望候选并回收废弃候选。安装与自动维护共用文件锁；已有维护占用时安装命令提示稍后重试。缺少旧版 predecessor 记录时不猜测历史，下一次成功提交或安装建立记录后再回收历史。新增配置字段必须随能够严格解析它的最低 Agent 版本一起发布；主控只会把完整的软件/配置目标交给节点。业务协议破坏性更新由独立维护通道下载主控指定版本后恢复连接。只有维护身份、本地部署等需要人工修复时，才重新取得并运行后台当前的一键命令；不要从 VPS 本地猜测目标版本或绕过 installer 校验。
+Agent 不提供 `--update` 或本地回退 CLI。失败处理取决于阶段：
+
+- 试运行前的确定性目标拒绝会暂停当前进程对同一目标的重试；修正 Cloud 配置后重新验证。若修复的是节点本地脚本或依赖，可重启 Agent 重新验证；临时失败会延迟重试。
+- 每个软件版本/配置版本最多自动试运行两次（首次加一次补试），试运行超时、强制终止或节点重启不重置次数；达到上限后保留旧版本。修复故障后点击“检查更新”可再授权一次尝试，仍须通过完整校验。
+- 本地重试记录损坏时需人工修复，按钮不会清除损坏证据。维护身份或本地部署损坏时，重新获取后台当前的一键命令修复；不要猜测目标版本或绕过校验。
+
+制品回收保留当前和上一套部署，不清理身份、业务执行状态或重试证据。安装命令提示维护占用时，等待后重试；具体锁与回收边界见[架构说明](ARCHITECTURE.md#8-fix-forward-安装与自动更新)。
 
 自动维护的范围是 Agent 程序与配置，不会重新运行安装器，也不会自动改写 systemd unit、安装 Debian 依赖包或替换固定 IPQuality 脚本。涉及这些安装内容的版本，由维护者在发布说明中明确已有节点的处理方式；需要收敛时，先在后台取得当前的一键命令，在节点执行同一条安装命令。安装器会检查空闲状态、保留同节点身份，并收敛受管安装。节点上由操作者自行提供的 ChangeIP 程序仍由操作者维护。
 
@@ -214,6 +207,6 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 
 ## 9. 维护者发布版本
 
-正式发布的命令、前置条件、CI 验真与重跑流程统一见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围)。同协议版本由自动维护协调；破坏性协议维护窗口中，操作者按本文安装流程逐节点执行后台当前的一键命令，再回到 Cloud 发布入口完成验收。不要绕过同步发布器手工打标签或修改 Cloud pin。
+正式发布的命令、前置条件、CI 验真与重跑流程统一见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围)。已具备稳定维护能力的节点在同协议或破坏性业务协议发布后，通过独立维护通道自动更新，也可在后台点击“检查更新”，不要求逐节点重装。若稳定维护认证、下载目标或 candidate CLI 本身不兼容，须另行批准重新接入方案。不要绕过同步发布器手工打标签或修改 Cloud pin。
 
 每个版本使用独立的 `releases/download/vX.Y.Z/...` 地址。只有同步流程中的 Cloud backend 激活成功，主进程的六小时循环才会收到 `update_available`；系统不跟随 GitHub `latest`。发布动作不会创建节点或触发 ChangeIP/IPQuality。
