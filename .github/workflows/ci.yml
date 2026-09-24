@@ -33,7 +33,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pwsh -NoProfile -File scripts/verify-go.ps1
+          sh scripts/verify-go.sh
+          sh -n scripts/verify-go.sh
           bash -n scripts/install.sh
           bash -n scripts/build-release.sh
           bash -n scripts/verify-ipquality-source.sh

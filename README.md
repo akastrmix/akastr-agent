@@ -71,15 +71,19 @@ scripts/                release 构建与非交互安装模板
 
 ## 本地开发
 
-状态转换、冲突规则、解析/校验和恢复语义的变化须有相应测试覆盖。代码变更交付前运行下面的 Go Gate；Linux CI 使用 `pwsh` 执行同一脚本。纯文档变更检查内容、链接和差异。
+状态转换、冲突规则、解析/校验和恢复语义的变化须有相应测试覆盖。代码变更交付前运行下面的 Go Gate；Debian 本机与 Linux CI 执行同一个原生 Shell 脚本。纯文档变更检查内容、链接和差异。
 
-需要 Go 1.25 或 `go.mod` 指定的兼容版本：
+开发环境使用 Debian 13、Git、Go、Bash；容器回归还需要可运行的 Docker Engine。需要 Go 1.25 或 `go.mod` 指定的兼容版本。Debian 自带 Go 低于该版本时，由 Go 的默认工具链选择按 `go.mod` 获取所需版本；首次执行需要网络。脚本可以从其他目录调用，输出目录按调用者提供的路径解析。
+
+2 核 2 GB 开发机上，验证默认单并发，并将 Go 的软内存目标设为 256 MiB；这不是进程内存硬上限。运行前检查可用内存，同一时间只运行一组验证，结束后核对测试进程和容器已退出。不要同时运行 Cloud 浏览器、数据库和 Agent 压力测试。需要调整时显式设置 `GOMAXPROCS`、`GOMEMLIMIT`。
+
+运行完整验证：
 
 ```bash
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\verify-go.ps1
+./scripts/verify-go.sh
 ```
 
-修改 installer 或安装状态转换时，在本机 Docker/WSL 运行 Debian 12/13 回归，覆盖首次安装、同节点覆盖、残缺/failed 状态、失败重跑、Target/Runner 与卸载收敛；容器不连接 Cloud，也不使用真实 token：
+修改 installer 或安装状态转换时，在本机 Docker 运行 Debian 12/13 回归，覆盖首次安装、同节点覆盖、残缺/failed 状态、失败重跑、Target/Runner 与卸载收敛；容器不连接 Cloud，也不使用真实 token：
 
 ```bash
 for version in 12 13; do
@@ -100,8 +104,6 @@ done
 
 ```bash
 scripts/build-release.sh vX.Y.Z /path/to/new-output-directory
-# Windows PowerShell：
-scripts/build-release.ps1 vX.Y.Z C:\path\to\new-output-directory
 ```
 
 输出目录必须尚不存在。脚本只生成：
@@ -113,4 +115,4 @@ install.sh
 
 `install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件接受安装码直接安装，也保留环境变量加 `--install` 的原入口、只读 `--status` 和显式确认的 `--uninstall`。
 
-GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的独立维护协调才会看到该版本。同协议版本走普通同步发布；业务协议的破坏性版本使用相同入口加 `-BreakingProtocol`，Cloud 短暂只读切换后恢复，节点通过独立 HTTPS 维护通道自动更新；维护契约本身保持稳定，不维护多套业务协议。
+GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的独立维护协调才会看到该版本。同协议版本走普通同步发布；业务协议的破坏性版本使用相同入口加 `--breaking-protocol`，Cloud 短暂只读切换后恢复，节点通过独立 HTTPS 维护通道自动更新；维护契约本身保持稳定，不维护多套业务协议。

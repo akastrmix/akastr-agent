@@ -1,12 +1,17 @@
 #!/bin/sh
 set -eu
+: "${GOMAXPROCS:=1}"
+: "${GOMEMLIMIT:=256MiB}"
+export GOMAXPROCS GOMEMLIMIT
 
 [ "$#" -eq 2 ] || {
   echo "usage: build-release.sh VERSION OUTPUT_DIRECTORY" >&2
   exit 2
 }
 version=$1
-output=$2
+output=$(realpath -m -- "$2")
+repository=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$repository"
 go_command=${GO_COMMAND:-go}
 printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
   echo "invalid release version" >&2
@@ -17,7 +22,7 @@ mkdir -m 0755 "$output"
 
 asset="akastr-agent-linux-amd64"
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-  "$go_command" build -trimpath -ldflags "-s -w -X main.version=$version" \
+  "$go_command" build -p "$GOMAXPROCS" -trimpath -ldflags "-s -w -X main.version=$version" \
   -o "$output/$asset" ./cmd/akastr-agent
 [ -s "$output/$asset" ] || {
   echo "amd64 release binary was not created" >&2

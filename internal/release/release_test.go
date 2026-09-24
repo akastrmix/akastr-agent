@@ -82,7 +82,7 @@ func installerTestShell(t *testing.T) (string, []string, func(string) string) {
 	if runtime.GOOS != "windows" {
 		bash, err := exec.LookPath("bash")
 		if err != nil {
-			t.Skip("bash is unavailable")
+			t.Fatal("bash is required for installer tests")
 		}
 		return bash, nil, func(path string) string { return path }
 	}
@@ -161,10 +161,9 @@ stop_agent_service
 
 func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	build := repositoryFile(t, "scripts", "build-release.sh")
-	powerShellBuild := repositoryFile(t, "scripts", "build-release.ps1")
 	ci := repositoryFile(t, ".github", "workflows", "ci.yml")
 	releaseWorkflow := repositoryFile(t, ".github", "workflows", "release.yml")
-	goVerification := repositoryFile(t, "scripts", "verify-go.ps1")
+	goVerification := repositoryFile(t, "scripts", "verify-go.sh")
 	containerIntegration := repositoryFile(t, "scripts", "test-installer-container.sh")
 	if !strings.Contains(build, "GOARCH=amd64") {
 		t.Fatal("release builder must target amd64")
@@ -179,24 +178,6 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 	}
 	if !strings.Contains(build, "[ -s \"$output/$asset\" ]") {
 		t.Fatal("release builder must fail when the cross-compiler does not create the asset")
-	}
-	for _, required := range []string{"GOOS = 'linux'", "GOARCH = 'amd64'", "akastr-agent-linux-amd64"} {
-		if !strings.Contains(powerShellBuild, required) {
-			t.Fatalf("PowerShell release builder missing contract %q", required)
-		}
-	}
-	for _, required := range []string{"go -C $repository build", "Join-Path $repository 'scripts\\install.sh'"} {
-		if !strings.Contains(powerShellBuild, required) {
-			t.Fatalf("PowerShell release builder must be independent of the caller directory: %q", required)
-		}
-	}
-	for _, forbidden := range []string{"arm64", ".sha256"} {
-		if strings.Contains(powerShellBuild, forbidden) {
-			t.Fatalf("PowerShell release builder contains obsolete contract %q", forbidden)
-		}
-	}
-	if strings.Contains(powerShellBuild, "Get-FileHash") {
-		t.Fatal("PowerShell release builder must not depend on optional hashing cmdlets")
 	}
 	for _, required := range []string{
 		"scripts/build-release.sh v0.0.0",
@@ -247,20 +228,18 @@ func TestReleaseContractIsAmd64OnlyWithoutManualChecksumAssets(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
-		"Join-Path $PSScriptRoot '..'",
-		"& go -C $repository @Arguments",
-		"'test', '-count=100', '-timeout=2m', './internal/autoupdate'",
-		"'test', '-count=20', '-timeout=2m', './internal/features/ipwatch'",
-		"'test', '-count=1', '-timeout=2m', './...'",
-		"'vet', './...'",
-		"'build', './cmd/akastr-agent'",
+		`go -C "$repository" test -p "$GOMAXPROCS" -count=100 -timeout=2m ./internal/autoupdate`,
+		`go -C "$repository" test -p "$GOMAXPROCS" -count=20 -timeout=2m ./internal/features/ipwatch`,
+		`go -C "$repository" test -p "$GOMAXPROCS" -count=1 -timeout=2m ./...`,
+		`go -C "$repository" vet -p "$GOMAXPROCS" ./...`,
+		`go -C "$repository" build -p "$GOMAXPROCS" ./cmd/akastr-agent`,
 	} {
 		if !strings.Contains(goVerification, required) {
 			t.Fatalf("Go verification gate missing %q", required)
 		}
 	}
-	if !strings.Contains(ci, "pwsh -NoProfile -File scripts/verify-go.ps1") {
-		t.Fatal("CI must execute the shared cross-platform Go verification gate")
+	if !strings.Contains(ci, "sh scripts/verify-go.sh") {
+		t.Fatal("CI must execute the shared native Go verification gate")
 	}
 	for _, required := range []string{
 		`[ "${AKASTR_INSTALLER_CONTAINER_TEST:-}" = '1' ] && [ -e /.dockerenv ]`,
