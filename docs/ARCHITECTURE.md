@@ -11,7 +11,7 @@
 
 运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。后台只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
 
-项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。AkastrCloud 后台先创建持久节点，再生成节点 UUID 与长期机器 token。机器 token 的 hash 用于认证，可恢复副本由主控 wrapping key 认证加密；provider secret 只存在于以机器 token 加密的持久 bootstrap 中，不以明文进入 PostgreSQL。配置有单调递增的 desired/applied revision；两者不相等时 Cloud 不派发操作。配置更新保持节点角色、服务器绑定、token 与 identity，由主进程自动取回密封 bootstrap 并收敛，不要求重跑安装命令。后台短命令以一个 HTTPS curl 从固定 release 取得 installer；安装器拒绝跨节点覆盖、所有权不明的残留和版本降级，同节点复用 identity，残缺状态通过重跑原命令 fix-forward。Runner 依赖齐全时不运行 apt，固定脚本摘要正确时不重复下载。
+项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。节点由后台先创建，得到节点 UUID 与长期机器 token；provider secret 只在以机器 token 加密的持久 bootstrap 里，不以明文进入 PostgreSQL。配置有单调的 desired/applied revision，两者不等时 Cloud 不派发操作；配置更新由主进程自动取回密封 bootstrap 收敛，不需要重跑安装命令。
 
 ## 2. 主控边界
 
@@ -39,7 +39,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 
 典型流程是：Cloud 下发 command → Agent 持久化并触发 provider → 节点可能立即断网 → 网络恢复后 WSS 重连 → IPv4 观察器上报新地址，或确认仍为旧地址 → Cloud 收敛原 ChangeIP session。具体消息与核对契约见 [PROTOCOL.md](PROTOCOL.md)；业务等待窗口、冷却、通知和缓存规则由 AkastrCloud 的 Carpool 契约负责。
 
-WSS 连接管理层将拨号、认证及试运行提交确认的网络等待限制在同一个 30 秒建立窗口内。进入业务或维护会话后，Agent 每 30 秒主动发送标准 WebSocket Ping，10 秒内未收到对应 Pong 则关闭该连接，由现有退避重连流程恢复；稳定就绪至少 30 秒的连接结束后，下次重连从一秒退避重新开始。发送成功不能代替往返确认。该检查只管理连接，不取消正在执行的业务操作，也不清除待确认事实。重连后按原有持久状态重放，不能因断网再次触发 ChangeIP。检测期限不包含网络恢复、重新连接和业务投影所需时间。
+WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每 30 秒发送 Ping，10 秒无 Pong 即断开并按退避重连（稳定 30 秒以上的连接断开后从 1 秒退避重来）。这只管理连接：不取消正在执行的操作，不清除待确认事实，重连后按持久状态重放，**不会因断网再次触发 ChangeIP**。
 
 ## 4. 包职责
 
@@ -53,7 +53,7 @@ WSS 连接管理层将拨号、认证及试运行提交确认的网络等待限�
 - `internal/providers/ipquality/script`：通过秘密 SOCKS5 profile 执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/bootstrap`：下载持久密封配置，以节点 UUID 作为 AAD 完成认证解密，并生成 root-only 运行文件。
-- `internal/autoupdate`：主进程内六小时循环，签名请求 Cloud 批准清单，独立 HTTPS 长轮询接收更新通知，接受包括跨业务协议的批准前向语义版本，并完成有界下载、内部 digest 校验和不可变 release 切换。
+- `internal/autoupdate`：进程内维护循环（见第 8 节）。
 - `internal/app`：组合配置与 executor，提供本地空闲检查。
 - `internal/daemon`：组织启动检查、WSS、维护循环、trial 和退出；CLI 只负责参数和进程信号。
 
@@ -69,7 +69,9 @@ WSS 连接管理层将拨号、认证及试运行提交确认的网络等待限�
 
 观察器通过固定 HTTPS 来源 `api.ipify.org` 和 Cloudflare trace 获取公网地址，明确按 IPv4 或 IPv6 建立连接，拒绝重定向、非公网地址和过大响应。IPv4 的非公网范围包括 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 
-Target 的 IPv4 watch 始终启用：首次成功观察先把 baseline 与待确认 `ip.snapshot` 一起写入 `ip_state_file`，Cloud 持久确认前跨重连、重启重发；后续变化同样先持久化，再发送 `ip.observed`。进程重启后保留已持久化 baseline；若公网 IPv4 已变化，先可靠上报变化，再发送当前 snapshot，避免未结束 command 与 snapshot 地址冲突。有效 ACK 立即唤醒对应观察循环，重复或过期 ACK 不删除新事件，也不关闭连接。未确认 IPv4 snapshot 时不接受 ChangeIP。`observe_ipv6=true` 时，IPv6 使用同一间隔但独立循环、baseline 与待确认事实；无公网 IPv6 或探测失败只重试，不影响 IPv4 readiness、ChangeIP 或维护空闲判断。观察器发生不可恢复的状态错误时，整个 Agent 退出并由 systemd 重启，不会留下 WSS 在线但停止观察的半失效进程。
+- Target 的 IPv4 watch 始终启用。首次观察把 baseline 与待确认 `ip.snapshot` 一起持久化，后续变化也先持久化再发 `ip.observed`；未获 Cloud 确认前跨重连、重启重发，重复或过期 ACK 不删除新事件。**未确认 IPv4 snapshot 时不接受 ChangeIP。** 重启后若 IPv4 已变，先上报变化再发当前 snapshot，避免与未结束 command 冲突。
+- `observe_ipv6=true` 时 IPv6 独立循环；无公网 IPv6 或探测失败只重试，不影响 IPv4 readiness、ChangeIP 或维护空闲判断。
+- 观察器出现不可恢复的状态错误时整个 Agent 退出、由 systemd 重启，避免出现“WSS 在线但已停止观察”的半失效进程。
 
 ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对起点写入同一个 IP 状态文件。HTTP provider 只有收到 `200` 才返回 `change_triggered`；固定程序退出 `0` 也返回该结果。请求可能已经送达但响应、进程或 WSS 被换 IP 断开的情况返回 `change_trigger_unknown`，不会重发 provider。明确的非 `200`、非零退出或启动失败会取消核对并失败。
 
@@ -87,15 +89,25 @@ bootstrap 只接受固定版本、固定摘要的官方 IPQuality 脚本；版�
 
 ## 8. Fix-forward 安装与自动更新
 
-后台的一键命令通过官方 HTTPS 短入口取得 Cloud 批准版本的 installer，以安装码传入现有节点凭据，不在命令外层重复临时下载器或脚本摘要校验；发布流程验真 installer，安装器校验 binary 和 IPQuality。它描述节点的期望安装状态，可用于空白主机、同节点覆盖安装和残缺安装修复。覆盖安装先核对已有 identity/config 的节点 ID 和已装版本；不同节点或降级直接拒绝。installer 复用摘要正确的同版本 binary 和 Runner 脚本，在停止唯一 `akastr-agent.service` 前完成其余下载、bootstrap、依赖与 maintenance-safe 检查，停止后再对稳定状态检查并写入新配置。空闲检查只依赖配置中的状态路径与操作/IP 日志，不加载 Runner 凭据或 provider。已证明归属的 revision 可在停止服务后由认证 bootstrap 重建缺失或损坏的派生文件；已有 bootstrap 摘要不同仍拒绝覆盖，identity 和执行日志不参与重建。配置 revision 已前进时旧配置不能重新 ready，因此本机不维护目录或 unit 回滚事务；后续失败保留可重跑状态，由同一命令 fix-forward。同节点 identity 会复制到新配置并用新 configuration revision 重新 enrollment，不重新生成 private key。主控在未完成 command、active ChangeIP session 或目标 IPQuality run 存在时拒绝配置更新和注册。
+**安装器描述期望状态，失败靠重跑同一命令修复（fix-forward），不做本机回滚。**
 
-自动维护不由 GitHub `latest` 驱动。主进程在本地初始化后通过同一后台协调器使用 Ed25519 identity 检查 Cloud 批准的软件与配置目标；启动检查、六小时定时、失败重试和维护通知由一个定时器串行协调：自动通知在一秒内合并，手动重试立即唤醒；首次检查不等待业务 ready，网络故障即使没有通知也按退避时间再次检查。网络等待不阻塞进程 ready 或 WSS。独立 HTTPS 等待不依赖 WSS ready，重连和落后目标持续触发协调。先复用摘要/版本已验证的 binary，仅缺失时下载写入不可变 release；desired bootstrap 由 candidate 严格解析到 root-only revision 目录并生成 capability。准备期间允许现有 runtime 接单；准备完成后才取得 exclusive update lease，检查本地空闲并再次确认 Cloud 目标未变且不忙，然后进入试运行；复查发现忙碌或目标变化时，30 秒后重新检查，不消耗试运行次数。`deployments/<version>-r<revision>` 同时引用该 binary 与配置，trial 原位执行这一对目标；Cloud 校验 trial hello 后不推进 applied，Agent 先原子替换并 fsync `current`，再提交 WSS commit，由 Cloud 重验并进入 ready。试运行前的确定性目标拒绝由串行协调器在进程内抑制，临时失败有界延迟重试；完整策略由 PROTOCOL 维护。已形成 deployment 后的中断保留旧 current，单目标 maintenance-attempt.json 在 exec 前原子持久计数，首次加一次自动补试后暂停；未提交的 readiness 超时删除 deployment 但保留次数。管理员显式检查更新通过一次性标识再授权一次；新目标获得新预算，记录损坏拒绝重置；本地已提交但确认中断时由新 current 重连收敛。成功提交或重装收敛后只保留 current、previous deployment 及其引用的 release/configuration；清理失败只告警，不回滚 active deployment。
+- 一键命令经官方 HTTPS 短入口取得 Cloud 批准版本的 installer，并以安装码传入节点凭据；发布流程验真 installer，installer 校验 binary 与 IPQuality 摘要。
+- 可用于空白主机、同节点覆盖与残缺修复。覆盖前核对已有 identity/config 的节点 ID 与版本：**不同节点或降级直接拒绝**，所有权不明的残留也拒绝。同节点复用 identity（不重新生成私钥），以新 configuration revision 重新 enrollment。
+- 停止服务前完成下载、bootstrap、依赖与 maintenance-safe 检查；停止后再核对稳定状态才写入新配置。已证明归属的 revision 可由认证 bootstrap 重建缺失的派生文件，但 bootstrap 摘要不同仍拒绝覆盖；identity 与执行日志不参与重建。
+- 主控在有未完成 command、active ChangeIP session 或目标 IPQuality run 时拒绝配置更新和注册。
 
-installer、维护准备、trial 提交和丢弃共享 release root 下 `.maintenance.lock` 的内核文件锁；下载期间不占任务执行锁，进程退出或 exec 自动释放文件锁。安装临时文件位于 root-only `.install-*` 子目录。每次维护取得锁后清理已中断的受管 staging，绝不跟随目录符号链接。安装器停止服务前只清理自身废弃工作目录；停止并再次核对身份、版本和空闲状态后，才清理旧版 Agent 可能未加锁使用的维护 staging。旧 installer 的 `/tmp` 匿名目录不扫描。Cloud 目标确定后清理未引用候选，只额外保留当前期望的一组软件与配置；busy 或网络失败不猜目标。每个 deployment 的 `previous` 在切换 current 前写入并 fsync，单次 current rename 同时发布部署及其精确保留集合；只读取 current 的 previous，不追溯链条。旧版缺少此记录时保留未知历史，下一次提交或安装自然建立记录。身份、操作/IP 日志和重试证据不参与制品回收。
+**自动维护**（不由 GitHub `latest` 驱动，协议细节见 [PROTOCOL.md](PROTOCOL.md#自动维护与配置协调)）：
 
-正式版本由 AkastrCloud 仓库的同步发布入口生成，先验真并发布不可变 Agent 资产，再激活 Cloud 的唯一更新目标。业务只保留当前协议，破坏性变化在激活时短暂只读，随后恢复 Cloud；节点通过稳定维护通道自动更新，不等待整个 fleet 人工重装。维护外层、身份签名和 candidate CLI 自身保持稳定；其破坏性变化需要单独设计接入方案。
+- 一个串行协调器负责启动检查、六小时定时、失败退避、维护通知与手动重试；网络等待不阻塞进程 ready 或 WSS。
+- 先准备（复用或下载不可变 release、严格解析 desired bootstrap），准备期间现有 runtime 仍可接单；准备完成后才取 exclusive update lease，确认本地空闲、Cloud 目标未变且不忙，再进入试运行。复查忙碌或目标变化时 30 秒后重试，不消耗试运行次数。
+- `deployments/<version>-r<revision>` 同时引用 binary 与配置。trial 通过 Cloud 校验后，Agent **先原子替换并 fsync `current`，再提交 WSS commit**，Cloud 重验后才推进 applied。
+- 试运行次数在 exec 前原子持久计数：首次失败后自动补试一次，然后暂停；管理员“检查更新”授权再试一次，新目标获得新预算，记录损坏拒绝重置。
+- 成功后只保留 current、previous 及其引用的 release/configuration；清理失败只告警，不回滚。身份、操作/IP 日志与重试证据不参与回收。
+- installer、维护准备、trial 提交与丢弃共用 release root 下 `.maintenance.lock` 内核文件锁（下载期间不占任务执行锁，退出或 exec 自动释放）；清理绝不跟随目录符号链接。
 
-唯一主 service 使用 `Type=notify`。current deployment 完成本地初始化尝试后启动独立维护并报告进程 ready，业务是否可用由 WSS 单独表示；配置与身份已加载、但运行时构建阶段的依赖损坏时记录 `runtime_initialization_failed`，只保持 HTTPS 维护，仍可接收并验证修复配置或软件目标；trial 仍只在 WSS 提交并收到 `hello.accepted` 后报告 ready；在此之前不启动下一次维护协调，45 秒试运行期限直接覆盖业务验收。service 使用 `ProtectSystem=strict`，只允许写状态目录与 Agent release root；固定 ChangeIP 程序由操作者准备，运行时不经 shell 且系统目录只读。Agent 不提供手工 `--update` 或本地回退 CLI；维护身份或本地部署损坏时使用后台的一键安装命令修复。
+**进程与 service**：唯一主 service 为 `Type=notify`、`ProtectSystem=strict`，只可写状态目录与 release root。依赖损坏导致运行时构建失败时记录 `runtime_initialization_failed`，只保留 HTTPS 维护以便接收修复目标。trial 只在 WSS 提交并收到 `hello.accepted` 后报告 ready，45 秒期限覆盖业务验收。不提供手工 `--update` 或本地回退 CLI；维护身份或部署损坏时用后台一键命令修复。
+
+正式版本由 AkastrCloud 的同步发布入口生成：先验真并发布不可变 Agent 资产，再激活 Cloud 的唯一更新目标。维护外层、身份签名和 candidate CLI 保持稳定，其破坏性变化须单独设计接入方案。
 
 ## 9. 节点接入边界
 
