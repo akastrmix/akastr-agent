@@ -54,7 +54,7 @@ Runner 不绑定单一服务器。勾选需要检测的目标服务器，逐项�
 
 Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，具体 commit 与 SHA-256 见[安装器](../scripts/install.sh)的 `IPQUALITY_COMMIT` / `IPQUALITY_SHA256`。并发严格为 1，多个检测由 AkastrCloud 持久排队。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。
 
-检测次数与缓存由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#4-changeip-与-ipquality)管理；重装 Runner 或新增 profile 不能绕过限制。
+检测次数与缓存由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)管理；重装 Runner 或新增 profile 不能绕过限制。
 
 ## 3. 添加节点并执行一键命令
 
@@ -207,6 +207,6 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 
 ## 9. 维护者发布版本
 
-正式发布的命令、前置条件、CI 验真与重跑流程统一见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围)。已具备稳定维护能力的节点在同协议或破坏性业务协议发布后，通过独立维护通道自动更新，也可在后台点击“检查更新”，不要求逐节点重装。若稳定维护认证、下载目标或 candidate CLI 本身不兼容，须另行批准重新接入方案。不要绕过同步发布器手工打标签或修改 Cloud pin。
+正式发布的命令、前置条件、CI 验真与重跑流程统一见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围与操作者配置)。已具备稳定维护能力的节点在同协议或破坏性业务协议发布后，通过独立维护通道自动更新，也可在后台点击“检查更新”，不要求逐节点重装。若稳定维护认证、下载目标或 candidate CLI 本身不兼容，须另行批准重新接入方案。不要绕过同步发布器手工打标签或修改 Cloud pin。
 
 每个版本使用独立的 `releases/download/vX.Y.Z/...` 地址。只有同步流程中的 Cloud backend 激活成功，主进程的六小时循环才会收到 `update_available`；系统不跟随 GitHub `latest`。发布动作不会创建节点或触发 ChangeIP/IPQuality。

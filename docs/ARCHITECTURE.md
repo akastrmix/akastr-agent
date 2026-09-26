@@ -22,7 +22,7 @@ AkastrCloud 持有所有持久业务决策。Agent 不知道 Telegram 用户、�
 1. 目标节点上没有冲突的 ChangeIP 操作；
 2. 对应 Runner 有一个空闲执行槽。
 
-请求合并、次数限制及缓存失效由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#4-changeip-与-ipquality)定义，Agent 不维护第二套业务缓存。
+请求合并、次数限制及缓存失效由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)定义，Agent 不维护第二套业务缓存。
 
 机器 token 只用于 HTTPS bootstrap 和注册；日常 WSS 与维护通过 Ed25519 身份认证。Cloud 核对当前部署、配置和能力后才允许业务执行。消息按至少一次投递，本地日志和数据库唯一约束共同保证执行与结果幂等；认证格式、消息字段及握手顺序以 [PROTOCOL.md](PROTOCOL.md) 为准。
 

@@ -40,7 +40,7 @@ AkastrCloud 负责业务编排：
 - 目标节点与 Runner 的冲突检查和排队；
 - IPQuality 每个服务节点每天一次真实执行及缓存复用。
 
-IPQuality 的次数与缓存由 Cloud 管理，重装 Agent 不能绕过；具体规则见 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#4-changeip-与-ipquality)。
+IPQuality 的次数与缓存由 Cloud 管理，重装 Agent 不能绕过；具体规则见 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)。
 
 目标节点按动态公网 IPv4、触发 ChangeIP 后可能立即断网、恢复后可能换 IP 也可能保持原 IP 的网络模型运行；provider 结果只描述触发，不直接代表地址已经改变。完整假设与收敛流程见 [目标节点网络模型](docs/ARCHITECTURE.md#3-目标节点网络模型)，消息契约见 [WSS 协议](docs/PROTOCOL.md#ip-观察changeip-与-ipv4-核对)。ChangeIP 与同一目标的 IPQuality 逻辑互斥；专用 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令或浏览器 HTTP-flow ChangeIP。
 
@@ -56,7 +56,6 @@ IPQuality 的次数与缓存由 Cloud 管理，重装 Agent 不能绕过；具�
 - 现行文档只描述当前有效行为，不保留迁移流水和已取代实现；长期跨仓库决定进入 Cloud ADR，历史变化通过 Git 查询。
 - 同一事实只维护一份权威说明；职责由上方文档入口确定，其他位置只保留必要概览和链接，不复制完整字段、状态机、命令或流程。README 负责项目入口、产品边界、目录和验证入口。
 - 文档可拆分、合并、重命名或删除，路径不是兼容接口；结构调整不改变未批准的产品或架构语义。只有新的稳定职责无法由现有文档自然承载时才新建权威文档，并明确 authority、更新入口和链接、移除重复内容。
-- 文档维护以语义一致性为目标；若存在文档 Gate，体量阈值仅作为异常膨胀信号，不为控制文件数量或字符数删除必要行为、决策理由与恢复说明。
 
 ## 仓库结构
 
@@ -98,7 +97,7 @@ done
 
 需要测量维护模块时，在隔离 Linux 环境运行 `AKASTR_RESOURCE_PROBE=1 go test -run '^TestMaintenanceIdleResourceProbe$' -v ./internal/autoupdate`；该可选测试耗时约 62 秒，CPU/RSS 包含测试框架及本机模拟 HTTPS 主控，不代表完整 Agent 或生产机器。文件回收开销可用 `go test -run '^$' -bench BenchmarkIdleMaintenanceCleanup -benchmem ./internal/autoupdate` 测量。
 
-每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查和 Debian 12/13 installer 容器回归。正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真和重跑规则见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围)，不在本仓库手工拆分发布步骤。
+每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查和 Debian 12/13 installer 容器回归。正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真和重跑规则见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围与操作者配置)，不在本仓库手工拆分发布步骤。
 
 本地排查发布构建时可以运行：
 
