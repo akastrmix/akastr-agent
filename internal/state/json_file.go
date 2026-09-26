@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 )
 
@@ -106,9 +105,6 @@ func (f *JSONFile) Remove() error {
 }
 
 func syncDirectory(directory string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
 	directoryHandle, err := os.Open(directory)
 	if err != nil {
 		return fmt.Errorf("open state directory for sync: %w", err)

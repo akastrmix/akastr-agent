@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/akastrmix/akastr-agent/internal/config"
@@ -80,7 +79,7 @@ func prepareEmptyRootOnlyDirectory(directory string) error {
 	if err != nil {
 		return fmt.Errorf("stat bootstrap output directory: %w", err)
 	}
-	if !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
+	if !info.IsDir() || (info.Mode().Perm()&0o077 != 0) {
 		return errors.New("bootstrap output directory must be root-only")
 	}
 	entries, err := os.ReadDir(directory)
@@ -147,9 +146,6 @@ func writeFileSynced(filePath string, contents []byte, mode os.FileMode) error {
 }
 
 func syncDirectory(path string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
 	directory, err := os.Open(path)
 	if err != nil {
 		return err

@@ -28,7 +28,7 @@ func repositoryFile(t *testing.T, parts ...string) string {
 }
 
 func TestInstallerReadsPersistedIdentityAndBootstrapConfiguration(t *testing.T) {
-	bash, commandPrefix, shellPath := installerTestShell(t)
+	bash := installerTestShell(t)
 	installer := repositoryFile(t, "scripts", "install.sh")
 	start := strings.Index(installer, "read_identity_agent_id() {")
 	end := strings.Index(installer, "\nversion_is_newer() {")
@@ -67,7 +67,7 @@ printf '%s|%s\n' "$identity_id" "$config_id"
 	if err := os.WriteFile(helperPath, []byte(helper), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	arguments := append(commandPrefix, shellPath(helperPath), shellPath(identityPath), shellPath(configPath))
+	arguments := []string{helperPath, identityPath, configPath}
 	output, err := exec.Command(bash, arguments...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("execute installer readers: %v: %s", err, output)
@@ -77,34 +77,17 @@ printf '%s|%s\n' "$identity_id" "$config_id"
 	}
 }
 
-func installerTestShell(t *testing.T) (string, []string, func(string) string) {
+func installerTestShell(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS != "windows" {
-		bash, err := exec.LookPath("bash")
-		if err != nil {
-			t.Fatal("bash is required for installer tests")
-		}
-		return bash, nil, func(path string) string { return path }
-	}
-
-	wsl, err := exec.LookPath("wsl.exe")
+	bash, err := exec.LookPath("bash")
 	if err != nil {
-		t.Skip("WSL is unavailable")
+		t.Fatal("bash is required for installer tests")
 	}
-	translate := func(path string) string {
-		t.Helper()
-		volume := filepath.VolumeName(path)
-		if len(volume) != 2 || volume[1] != ':' {
-			t.Fatalf("test path is not on a Windows drive: %q", path)
-		}
-		remainder := strings.TrimPrefix(path, volume)
-		return "/mnt/" + strings.ToLower(volume[:1]) + filepath.ToSlash(remainder)
-	}
-	return wsl, []string{"bash"}, translate
+	return bash
 }
 
 func TestInstallerStopsUnloadedAndFailedServiceIdempotently(t *testing.T) {
-	bash, commandPrefix, shellPath := installerTestShell(t)
+	bash := installerTestShell(t)
 	installer := repositoryFile(t, "scripts", "install.sh")
 	start := strings.Index(installer, "stop_agent_service() {")
 	end := strings.Index(installer, "\nrequire_uuid() {")
@@ -143,7 +126,7 @@ stop_agent_service
 		logPath := filepath.Join(root, mode+".log")
 		markerPath := filepath.Join(root, mode+".marker")
 		servicePath := filepath.Join(root, mode+".service")
-		arguments := append(commandPrefix, shellPath(helperPath), mode, shellPath(logPath), shellPath(markerPath), shellPath(servicePath))
+		arguments := []string{helperPath, mode, logPath, markerPath, servicePath}
 		output, err := exec.Command(bash, arguments...).CombinedOutput()
 		if err != nil {
 			t.Fatalf("stop %s service: %v: %s", mode, err, output)

@@ -1,5 +1,4 @@
 /akastr-agent
-/akastr-agent.exe
 /dist/
 /coverage.out
 *.local.json

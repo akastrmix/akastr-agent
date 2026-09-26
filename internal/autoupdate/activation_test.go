@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -34,9 +33,6 @@ func (c *activationClient) Check(ctx context.Context, endpoint, version string, 
 }
 
 func TestCandidatePreparationAllowsWorkAndActivationRechecksTarget(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("release activation requires Linux")
-	}
 	for _, scenario := range []struct {
 		name          string
 		targetChanged bool

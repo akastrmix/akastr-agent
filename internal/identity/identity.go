@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -95,7 +94,7 @@ func loadStored(filePath string) (Identity, error) {
 	if !info.Mode().IsRegular() {
 		return Identity{}, errors.New("identity must be a regular file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+	if info.Mode().Perm()&0o077 != 0 {
 		return Identity{}, errors.New("identity permissions must not grant group or other access")
 	}
 	var identity Identity
@@ -166,7 +165,7 @@ func Enroll(ctx context.Context, options struct {
 		return Identity{}, fmt.Errorf("stat machine token: %w", err)
 	}
 	if !tokenInfo.Mode().IsRegular() ||
-		(runtime.GOOS != "windows" && tokenInfo.Mode().Perm()&0o077 != 0) {
+		(tokenInfo.Mode().Perm()&0o077 != 0) {
 		return Identity{}, errors.New("machine token must be a root-only regular file")
 	}
 	tokenBytes, err := os.ReadFile(options.TokenFile)

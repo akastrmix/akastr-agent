@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -30,9 +29,6 @@ func (transport *countingTransport) RoundTrip(request *http.Request) (*http.Resp
 }
 
 func TestStageReusesVerifiedBinaryAcrossConfigurationFailure(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("release activation is Linux-only")
-	}
 	root, configRoot, _ := releaseFixture(t)
 	transport := &countingTransport{body: "future-agent-binary"}
 	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(transport.body)))
@@ -98,9 +94,6 @@ func (runner *currentConfigRejectingRunner) Output(_ context.Context, name strin
 }
 
 func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("symlink release activation is Linux-only")
-	}
 	root, configRoot, previous := releaseFixture(t)
 	binary := "future-agent-binary"
 	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
@@ -163,9 +156,6 @@ func TestStageLeavesCurrentUntouchedAndCommitRetainsPrevious(t *testing.T) {
 }
 
 func TestStageRequiresCurrentConfigurationForSoftwareOnlyUpdate(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("automatic update staging is Linux-only")
-	}
 	root, configRoot, _ := releaseFixture(t)
 	binary := "future-agent-binary"
 	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
@@ -182,9 +172,6 @@ func TestStageRequiresCurrentConfigurationForSoftwareOnlyUpdate(t *testing.T) {
 }
 
 func TestStageDefersConfigurationValidationForJointUpdate(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("automatic update staging is Linux-only")
-	}
 	root, configRoot, _ := releaseFixture(t)
 	binary := "future-agent-binary"
 	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
@@ -207,9 +194,6 @@ func TestStageDefersConfigurationValidationForJointUpdate(t *testing.T) {
 }
 
 func TestDiscardRemovesOnlyAnUncommittedTrialDeployment(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("symlink release activation is Linux-only")
-	}
 	root := t.TempDir()
 	deployments := filepath.Join(root, "deployments")
 	current := filepath.Join(deployments, "v1.0.0-r1")
@@ -233,9 +217,6 @@ func TestDiscardRemovesOnlyAnUncommittedTrialDeployment(t *testing.T) {
 }
 
 func TestDiscardPreservesACommittedTrialDeployment(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("symlink release activation is Linux-only")
-	}
 	root := t.TempDir()
 	deployments := filepath.Join(root, "deployments")
 	target := filepath.Join(deployments, "v1.0.1-r2")
@@ -255,9 +236,6 @@ func TestDiscardPreservesACommittedTrialDeployment(t *testing.T) {
 }
 
 func TestCommitNeverDeletesTargetAfterRenameWhenDirectorySyncFails(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("symlink release activation is Linux-only")
-	}
 	root, configRoot, previous := releaseFixture(t)
 	targetRelease := filepath.Join(root, "releases", "v0.7.1")
 	if err := os.Mkdir(targetRelease, 0o755); err != nil {
@@ -297,9 +275,6 @@ func TestCommitNeverDeletesTargetAfterRenameWhenDirectorySyncFails(t *testing.T)
 }
 
 func TestCommitCleanupFailureDoesNotUndoActivation(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("symlink release activation is Linux-only")
-	}
 	root, configRoot, previous := releaseFixture(t)
 	targetRelease := filepath.Join(root, "releases", "v0.7.1")
 	if err := os.Mkdir(targetRelease, 0o755); err != nil {
@@ -339,9 +314,6 @@ func TestCommitCleanupFailureDoesNotUndoActivation(t *testing.T) {
 }
 
 func TestStageSyncsBinaryDirectoryBeforePublishingRelease(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("symlink release activation is Linux-only")
-	}
 	root, configRoot, _ := releaseFixture(t)
 	binary := "future-agent-binary"
 	checksum := fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))

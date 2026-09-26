@@ -3,14 +3,10 @@ package autoupdate
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 )
 
 func TestAttemptsSurviveRestartAndManualGrantIsSingleUse(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("managed deployments require Unix symlinks")
-	}
 	root, _, _ := releaseFixture(t)
 	load := func(id string) (*attemptLedger, bool) {
 		t.Helper()
@@ -61,9 +57,6 @@ func loadAttemptsForTest(root, version string, revision int64) (*attemptLedger, 
 }
 
 func TestLegacyPendingTrialGetsOneRecoveryAttempt(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("managed deployments require Unix symlinks")
-	}
 	root, _, _ := releaseFixture(t)
 	if err := os.Mkdir(filepath.Join(root, "deployments", "v0.7.1-r1"), 0o700); err != nil {
 		t.Fatal(err)

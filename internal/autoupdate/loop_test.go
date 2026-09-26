@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -199,9 +198,6 @@ func (runner *jointUpdateRunner) Output(ctx context.Context, binary string, argu
 }
 
 func TestReconcileOnceMaterializesAndReexecsOneConfigurationTarget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deployment activation requires Unix symlinks")
-	}
 	root := t.TempDir()
 	agentID := "123e4567-e89b-42d3-a456-426614174000"
 	observeIPv6 := true
@@ -258,9 +254,6 @@ func TestReconcileOnceMaterializesAndReexecsOneConfigurationTarget(t *testing.T)
 }
 
 func TestReconcileOnceJointUpdateValidatesOnlyCandidateConfiguration(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deployment activation requires Unix symlinks")
-	}
 	root := t.TempDir()
 	agentID := "123e4567-e89b-42d3-a456-426614174000"
 	observeIPv6 := true
@@ -336,9 +329,6 @@ func TestReconcileOnceJointUpdateValidatesOnlyCandidateConfiguration(t *testing.
 }
 
 func TestReconcileOnceDoesNotRetryUncommittedImmutableTarget(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("deployment activation requires Unix symlinks")
-	}
 	root := t.TempDir()
 	current := filepath.Join(root, "deployments", "v1.0.6-r1")
 	failed := filepath.Join(root, "deployments", "v1.0.6-r2")
@@ -375,9 +365,6 @@ func TestReconcileOnceDoesNotRetryUncommittedImmutableTarget(t *testing.T) {
 }
 
 func TestManualRetrySurvivesCheckFailureBusyAndRestart(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("release activation requires Linux")
-	}
 	root, configRoot, _ := releaseFixture(t)
 	if err := os.WriteFile(filepath.Join(root, "maintenance-attempt.json"), []byte(`{"schema":1,"target":"v0.7.1-r1","attempts":2,"retry_id":""}`), 0o600); err != nil {
 		t.Fatal(err)

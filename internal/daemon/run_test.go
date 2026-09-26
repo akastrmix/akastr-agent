@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -137,9 +136,6 @@ func TestInvalidTrialDoesNotFallBackToMaintenance(t *testing.T) {
 }
 
 func TestTrialMissingDependencyStopsBeforeMaintenance(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("managed trial executable paths require Linux")
-	}
 	if root := os.Getenv("AKASTR_TEST_TRIAL_ROOT"); root != "" {
 		model := missingDependencyModel(t)
 		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)

@@ -7,7 +7,6 @@ import (
 	agentconfig "github.com/akastrmix/akastr-agent/internal/config"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -15,9 +14,6 @@ import (
 )
 
 func TestIdleInspectionDoesNotRequireRunnerCredentials(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("managed configuration uses Linux paths")
-	}
 	root := t.TempDir()
 	cfg := agentconfig.Config{
 		SchemaVersion: agentconfig.SchemaVersion, ConfigurationRevision: 1,

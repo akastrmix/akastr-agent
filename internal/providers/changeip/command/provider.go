@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"time"
 
 	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
@@ -46,7 +45,7 @@ func New(config Config) (*Provider, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("ChangeIP program must be a regular file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+	if info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("ChangeIP program must be executable")
 	}
 	if config.Timeout <= 0 || config.Timeout > 5*time.Minute {

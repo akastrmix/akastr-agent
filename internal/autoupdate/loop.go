@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -249,7 +248,7 @@ func materializeCandidate(ctx context.Context, runner CommandRunner, binary, con
 	if err := os.MkdirAll(configRoot, 0o700); err != nil {
 		return "", err
 	}
-	if info, err := os.Lstat(configRoot); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
+	if info, err := os.Lstat(configRoot); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || (info.Mode().Perm()&0o077 != 0) {
 		return "", errors.New("configuration root is unsafe")
 	}
 	target := filepath.Join(configRoot, strconv.FormatInt(configuration.ConfigurationRevision, 10))

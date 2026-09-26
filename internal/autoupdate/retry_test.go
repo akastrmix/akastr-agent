@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -62,9 +61,6 @@ func TestRetryBackoffAndTargetChange(t *testing.T) {
 }
 
 func TestCoordinatorSuppressesRepeatedRejectedTargetBeforeDeployment(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("requires Unix symlinks")
-	}
 	root := t.TempDir()
 	current := filepath.Join(root, "deployments", "v1.0.6-r1")
 	if err := os.MkdirAll(current, 0o700); err != nil {

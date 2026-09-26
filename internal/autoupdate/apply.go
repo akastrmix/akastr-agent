@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -53,9 +52,6 @@ type CommitResult struct {
 }
 
 func Stage(ctx context.Context, options ApplyOptions) (StagedRelease, error) {
-	if runtime.GOOS != "linux" {
-		return StagedRelease{}, errors.New("automatic updates are supported only on Linux")
-	}
 	if options.Manifest.Software.Status != "update_available" {
 		return StagedRelease{}, errors.New("automatic update stage requires an available update")
 	}
@@ -149,9 +145,6 @@ func Commit(options CommitOptions) (CommitResult, error) {
 		return CommitResult{}, err
 	}
 	defer lock.Close()
-	if runtime.GOOS != "linux" {
-		return CommitResult{}, errors.New("automatic updates are supported only on Linux")
-	}
 	if !semanticVersion.MatchString(options.Version) || options.ConfigurationRevision < 1 ||
 		options.ReleaseRoot == "" || !filepath.IsAbs(options.ReleaseRoot) ||
 		options.ConfigurationRoot == "" || !filepath.IsAbs(options.ConfigurationRoot) {
@@ -415,9 +408,6 @@ func replaceSymlink(path, target string, syncFn func(string) error) (bool, error
 }
 
 func syncDirectory(path string) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
 	directory, err := os.Open(path)
 	if err != nil {
 		return err

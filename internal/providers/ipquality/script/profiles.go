@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"runtime"
 	"sort"
 )
 
@@ -31,7 +30,7 @@ func loadProfiles(filePath string) (map[string]Profile, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("proxy profiles must be a regular file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+	if info.Mode().Perm()&0o077 != 0 {
 		return nil, errors.New("proxy profile permissions must not grant group or other access")
 	}
 	file, err := os.Open(filePath)

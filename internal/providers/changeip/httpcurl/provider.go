@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"runtime"
 	"strings"
 	"time"
 
@@ -49,7 +48,7 @@ func New(config Config) (*Provider, error) {
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("%s must be a regular file", label)
 		}
-		if label == "curl" && runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+		if label == "curl" && info.Mode().Perm()&0o111 == 0 {
 			return nil, errors.New("curl must be executable")
 		}
 	}

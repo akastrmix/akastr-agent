@@ -17,7 +17,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -150,7 +149,7 @@ func readToken(filePath string) (string, []byte, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("stat bootstrap token: %w", err)
 	}
-	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) {
+	if !info.Mode().IsRegular() || (info.Mode().Perm()&0o077 != 0) {
 		return "", nil, errors.New("bootstrap token must be a root-only regular file")
 	}
 	raw, err := os.ReadFile(filePath)

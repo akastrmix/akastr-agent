@@ -4,15 +4,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
 
 func TestReadySendsSystemdNotification(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix datagram sockets are not available on Windows")
-	}
 	socketPath := filepath.Join(t.TempDir(), "notify.sock")
 	listener, err := net.ListenUnixgram("unixgram", &net.UnixAddr{Name: socketPath, Net: "unixgram"})
 	if err != nil {
