@@ -54,7 +54,13 @@ uninstall_agent() {
     || fail 'uninstall requires --confirm-destroy-local-agent'
   require_root
   if [ -e "$SERVICE_FILE" ]; then
-    systemctl disable --now akastr-agent.service >/dev/null 2>&1 || true
+    systemctl disable --now akastr-agent.service >/dev/null \
+      || fail 'could not stop akastr-agent.service; nothing was removed'
+  fi
+  # A running Agent must never lose its identity and execution records.
+  ! systemctl is-active --quiet akastr-agent.service \
+    || fail 'akastr-agent.service is still running; nothing was removed'
+  if [ -e "$SERVICE_FILE" ]; then
     rm -f -- "$SERVICE_FILE"
     systemctl daemon-reload
   fi
