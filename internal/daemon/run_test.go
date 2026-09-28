@@ -141,9 +141,9 @@ func TestCandidateActivatesItsSlotWhenCloudAcceptsIt(t *testing.T) {
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = server.Client().Transport
 	defer func() { http.DefaultTransport = originalTransport }()
-	configuration := fmt.Sprintf(`{"schema_version":4,"configuration_revision":4,"mode":"target",
+	configuration := fmt.Sprintf(`{"schema_version":5,"configuration_revision":4,
 "agent_id":%q,"name":"HKT","control_endpoint":"wss://%s/internal/agents/ws",
-"target":{"ip_watch_interval_seconds":60,"observe_ipv6":false,"change_ip":{"provider":"disabled"},"socks5":{"enabled":false}}}`,
+"modules":{"ip_watch":{"interval_seconds":60,"ipv6":false}}}`,
 		credentials.AgentID, strings.TrimPrefix(server.URL, "https://"))
 	configPath := layout.SlotConfig(paths.Slot("b"))
 	if err := os.WriteFile(configPath, []byte(configuration), 0o600); err != nil {

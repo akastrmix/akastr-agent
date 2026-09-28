@@ -22,19 +22,19 @@ func TestAcknowledgementReplayPreservesNextEventAndWakesOnlyOnce(t *testing.T) {
 			switch kind {
 			case "snapshot4":
 				ack = m.AckSnapshot
-				setPending = func(id string) { m.snapshot.PendingSnapshot = &protocol.IPSnapshotBody{SnapshotID: id} }
+				setPending = func(id string) { m.snapshot.PendingSnapshot = &SnapshotBody{SnapshotID: id} }
 			case "snapshot6":
 				ack, wake = m.AckSnapshot, m.wakeIPv6
-				setPending = func(id string) { m.snapshot.PendingIPv6Snapshot = &protocol.IPSnapshotBody{SnapshotID: id} }
+				setPending = func(id string) { m.snapshot.PendingIPv6Snapshot = &SnapshotBody{SnapshotID: id} }
 			case "observation4":
 				ack = m.Ack
-				setPending = func(id string) { m.snapshot.Pending = &protocol.IPObservationBody{ObservationID: id} }
+				setPending = func(id string) { m.snapshot.Pending = &ObservationBody{ObservationID: id} }
 			case "observation6":
 				ack, wake = m.Ack, m.wakeIPv6
-				setPending = func(id string) { m.snapshot.PendingIPv6 = &protocol.IPObservationBody{ObservationID: id} }
+				setPending = func(id string) { m.snapshot.PendingIPv6 = &ObservationBody{ObservationID: id} }
 			case "unchanged":
 				ack = m.AckUnchanged
-				setPending = func(id string) { m.snapshot.PendingUnchanged = &protocol.ChangeIPUnchangedBody{CommandID: id} }
+				setPending = func(id string) { m.snapshot.PendingUnchanged = &UnchangedBody{CommandID: id} }
 			}
 			setPending(id)
 			if err := ack(id); err != nil {

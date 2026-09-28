@@ -71,8 +71,7 @@ func Run(ctx context.Context, options Options) error {
 		ControlEndpoint: cfg.ControlEndpoint, Identity: credentials,
 		Version: options.Version, Revision: cfg.ConfigurationRevision,
 		ConfigPath: options.ConfigPath, Layout: paths, Lifecycle: gate,
-		CheckSafe: func() error { return app.CheckUpdateSafe(paths) },
-		Exec:      options.Exec, Logger: logger,
+		Exec: options.Exec, Logger: logger,
 	}
 	runtime, err := app.BuildRuntime(model, paths)
 	if err != nil {
@@ -80,13 +79,15 @@ func Run(ctx context.Context, options Options) error {
 			failCandidate("candidate_runtime_invalid")
 			return err
 		}
-		// Keep updating so a release or configuration change can repair the node.
+		// Keep updating so a release or configuration change can repair the node;
+		// with no module running there is no work to protect.
 		logger.Error("local runtime unavailable; updates remain active", "code", "runtime_initialization_failed", "error", err.Error())
 		if err := systemdnotify.Ready(); err != nil {
 			return err
 		}
 		return updater.Loop(ctx, nudges)
 	}
+	updater.CheckSafe = runtime.UpdateSafe
 	committed := make(chan struct{})
 	if !candidate {
 		close(committed)
@@ -107,14 +108,10 @@ func Run(ctx context.Context, options Options) error {
 		nudge()
 		return nil
 	}
-	var observations transportws.ObservationSource
-	if monitor := runtime.IPMonitor(); monitor != nil {
-		observations = monitor
-	}
 	client, err := transportws.New(transportws.Options{
 		Endpoint: cfg.ControlEndpoint, Identity: credentials,
 		Version: options.Version, ConfigurationRevision: cfg.ConfigurationRevision,
-		Capabilities: model.Capabilities.List(), Executor: runtime, Observations: observations,
+		Capabilities: model.Capabilities.List(), Runtime: runtime,
 		Lifecycle: gate, OnReady: onReady, OnSessionEnd: nudge, Logger: logger,
 	})
 	if err != nil {

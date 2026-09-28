@@ -12,7 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/config"
+	"github.com/akastrmix/akastr-agent/internal/app"
 	"github.com/akastrmix/akastr-agent/internal/daemon"
 	"github.com/akastrmix/akastr-agent/internal/install"
 	"github.com/akastrmix/akastr-agent/internal/layout"
@@ -56,17 +56,17 @@ func run(arguments []string, output io.Writer) error {
 		if *configPath == "" {
 			return errors.New("prepare requires --config")
 		}
-		cfg, err := config.Load(*configPath)
+		model, err := app.Load(*configPath)
 		if err != nil {
 			return err
 		}
-		if (*agentID != "" && cfg.AgentID != *agentID) || (*revision != 0 && cfg.ConfigurationRevision != *revision) {
+		if (*agentID != "" && model.Config.AgentID != *agentID) ||
+			(*revision != 0 && model.Config.ConfigurationRevision != *revision) {
 			return errors.New("configuration does not match the expected node or revision")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		model, err := install.Prepare(ctx, cfg, layout.Default(), nil)
-		if err != nil {
+		if err := app.Prepare(ctx, model, layout.Default(), nil); err != nil {
 			return err
 		}
 		encoder := json.NewEncoder(output)

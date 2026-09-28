@@ -49,14 +49,14 @@ type AgentIDBody struct {
 	AgentID string `json:"agent_id"`
 }
 
+// OperationOffer carries a payload that the module owning CommandType validates.
 type OperationOffer struct {
 	CommandID      string
 	CommandType    string
 	PayloadVersion int
+	Payload        json.RawMessage
 	NotBefore      time.Time
 	ExpiresAt      time.Time
-	ChangeIP       *ChangeIPPayload
-	IPQuality      *IPQualityPayload
 }
 
 type operationOfferBody struct {
@@ -72,53 +72,6 @@ type ExecutionResult struct {
 	Outcome string         `json:"outcome"`
 	Code    string         `json:"code"`
 	Result  map[string]any `json:"result"`
-}
-
-type ChangeIPPayload struct {
-	ExpectedIPv4 string `json:"expected_ipv4"`
-}
-
-type IPQualityPayload struct {
-	ExpectedIPv4   string `json:"expected_ipv4"`
-	ProxyPort      int    `json:"proxy_port"`
-	ProxyProfileID string `json:"proxy_profile_id"`
-	ScriptVersion  string `json:"script_version"`
-}
-
-type IPSnapshotBody struct {
-	SnapshotID string `json:"snapshot_id"`
-	Family     string `json:"family"`
-	Address    string `json:"address"`
-	ObservedAt string `json:"observed_at"`
-}
-
-type IPSnapshotAckBody struct {
-	SnapshotID string `json:"snapshot_id"`
-	Persisted  bool   `json:"persisted"`
-}
-
-type IPObservationBody struct {
-	ObservationID   string `json:"observation_id"`
-	Family          string `json:"family"`
-	PreviousAddress string `json:"previous_address"`
-	Address         string `json:"address"`
-	ObservedAt      string `json:"observed_at"`
-}
-
-type IPObservationAckBody struct {
-	ObservationID string `json:"observation_id"`
-	Persisted     bool   `json:"persisted"`
-}
-
-type ChangeIPUnchangedBody struct {
-	CommandID  string `json:"command_id"`
-	Address    string `json:"address"`
-	ObservedAt string `json:"observed_at"`
-}
-
-type ChangeIPUnchangedAckBody struct {
-	CommandID string `json:"command_id"`
-	Persisted bool   `json:"persisted"`
 }
 
 func Encode(messageType string, body any) ([]byte, error) {
@@ -169,27 +122,23 @@ func DecodeOperationOffer(envelope Envelope) (OperationOffer, error) {
 		!body.ExpiresAt.After(body.NotBefore) || len(body.Payload) == 0 {
 		return OperationOffer{}, errors.New("operation offer is invalid")
 	}
-	offer := OperationOffer{
+	if !stableToken.MatchString(body.CommandType) {
+		return OperationOffer{}, errors.New("operation type is invalid")
+	}
+	return OperationOffer{
 		CommandID: body.CommandID, CommandType: body.CommandType, PayloadVersion: body.PayloadVersion,
-		NotBefore: body.NotBefore, ExpiresAt: body.ExpiresAt,
-	}
-	switch body.CommandType {
-	case "changeip.execute":
-		payload, err := decodeChangeIPPayload(body.Payload)
-		if err != nil {
-			return OperationOffer{}, err
-		}
-		offer.ChangeIP = &payload
-	case "ipquality.execute":
-		payload, err := decodeIPQualityPayload(body.Payload)
-		if err != nil {
-			return OperationOffer{}, err
-		}
-		offer.IPQuality = &payload
-	default:
-		return OperationOffer{}, errors.New("operation type is unsupported")
-	}
-	return offer, nil
+		Payload: body.Payload, NotBefore: body.NotBefore, ExpiresAt: body.ExpiresAt,
+	}, nil
+}
+
+// DecodeKnown decodes a JSON object that may omit fields but not add unknown ones.
+func DecodeKnown[T any](data []byte, description string) (T, error) {
+	return decodeJSONBody[T](data, description)
+}
+
+// DecodeStrict decodes a JSON object that must contain exactly fields.
+func DecodeStrict[T any](data []byte, description string, fields ...string) (T, error) {
+	return decodeRequiredJSON[T](data, description, fields...)
 }
 
 func decodeRequiredJSON[T any](data []byte, description string, fields ...string) (T, error) {
@@ -219,35 +168,10 @@ func decodeJSONBody[T any](data []byte, description string) (T, error) {
 	return result, nil
 }
 
-func decodeChangeIPPayload(data []byte) (ChangeIPPayload, error) {
-	payload, err := decodeRequiredJSON[ChangeIPPayload](data, "changeip.execute payload", "expected_ipv4")
-	if err != nil {
-		return ChangeIPPayload{}, err
-	}
-	if !publicIPv4(payload.ExpectedIPv4) {
-		return ChangeIPPayload{}, errors.New("changeip.execute expected IPv4 is invalid")
-	}
-	return payload, nil
-}
-
-func decodeIPQualityPayload(data []byte) (IPQualityPayload, error) {
-	payload, err := decodeRequiredJSON[IPQualityPayload](
-		data, "ipquality.execute payload",
-		"expected_ipv4", "proxy_port", "proxy_profile_id", "script_version",
-	)
-	if err != nil {
-		return IPQualityPayload{}, err
-	}
-	if !publicIPv4(payload.ExpectedIPv4) || payload.ProxyPort < 1 || payload.ProxyPort > 65535 ||
-		!stableToken.MatchString(payload.ProxyProfileID) || !stableToken.MatchString(payload.ScriptVersion) {
-		return IPQualityPayload{}, errors.New("ipquality.execute payload is invalid")
-	}
-	return payload, nil
-}
-
-func publicIPv4(value string) bool {
+// PublicIPv4 reports whether value is a canonical public IPv4 address.
+func PublicIPv4(value string) bool {
 	address, err := netip.ParseAddr(value)
-	return err == nil && netpolicy.IsPublicIPv4(address)
+	return err == nil && address.String() == value && netpolicy.IsPublicIPv4(address)
 }
 
 func ValidUUID(value string) bool {

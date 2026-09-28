@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/state"
 )
 
@@ -79,17 +78,17 @@ func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	published := []protocol.IPObservationBody{}
-	snapshots := []protocol.IPSnapshotBody{}
-	publishSnapshot := func(event protocol.IPSnapshotBody) error {
+	published := []ObservationBody{}
+	snapshots := []SnapshotBody{}
+	publishSnapshot := func(event SnapshotBody) error {
 		snapshots = append(snapshots, event)
 		return nil
 	}
-	publish := func(event protocol.IPObservationBody) error {
+	publish := func(event ObservationBody) error {
 		published = append(published, event)
 		return nil
 	}
-	publishUnchanged := func(protocol.ChangeIPUnchangedBody) error { return nil }
+	publishUnchanged := func(UnchangedBody) error { return nil }
 	if err := monitor.step(context.Background(), publishSnapshot, publish, publishUnchanged); err != nil {
 		t.Fatal(err)
 	}
@@ -144,12 +143,12 @@ func TestMonitorReestablishesIPv4SnapshotAfterProcessRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var initial protocol.IPSnapshotBody
+	var initial SnapshotBody
 	if err := first.step(
 		context.Background(),
-		func(value protocol.IPSnapshotBody) error { initial = value; return nil },
-		func(protocol.IPObservationBody) error { return nil },
-		func(protocol.ChangeIPUnchangedBody) error { return nil },
+		func(value SnapshotBody) error { initial = value; return nil },
+		func(ObservationBody) error { return nil },
+		func(UnchangedBody) error { return nil },
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -163,11 +162,11 @@ func TestMonitorReestablishesIPv4SnapshotAfterProcessRestart(t *testing.T) {
 	if restarted.SnapshotReady() {
 		t.Fatal("restarted monitor was ready before its session snapshot acknowledgement")
 	}
-	var sessionSnapshot protocol.IPSnapshotBody
-	var observation protocol.IPObservationBody
-	publishSnapshot := func(value protocol.IPSnapshotBody) error { sessionSnapshot = value; return nil }
-	publish := func(value protocol.IPObservationBody) error { observation = value; return nil }
-	publishUnchanged := func(protocol.ChangeIPUnchangedBody) error { return nil }
+	var sessionSnapshot SnapshotBody
+	var observation ObservationBody
+	publishSnapshot := func(value SnapshotBody) error { sessionSnapshot = value; return nil }
+	publish := func(value ObservationBody) error { observation = value; return nil }
+	publishUnchanged := func(UnchangedBody) error { return nil }
 	if err := restarted.step(
 		context.Background(),
 		publishSnapshot, publish, publishUnchanged,
@@ -210,7 +209,7 @@ func TestControlReadinessWakesPendingSnapshotImmediately(t *testing.T) {
 	go func() {
 		done <- monitor.Run(
 			ctx,
-			func(protocol.IPSnapshotBody) error {
+			func(SnapshotBody) error {
 				attempts++
 				if attempts == 1 {
 					close(firstAttempt)
@@ -219,8 +218,8 @@ func TestControlReadinessWakesPendingSnapshotImmediately(t *testing.T) {
 				close(retried)
 				return nil
 			},
-			func(protocol.IPObservationBody) error { return nil },
-			func(protocol.ChangeIPUnchangedBody) error { return nil },
+			func(ObservationBody) error { return nil },
+			func(UnchangedBody) error { return nil },
 		)
 	}()
 	select {
@@ -247,14 +246,14 @@ func TestMonitorPersistsFastUnchangedReconciliation(t *testing.T) {
 	}
 	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 	monitor.now = func() time.Time { return now }
-	noObservation := func(protocol.IPObservationBody) error { return nil }
-	snapshots := []protocol.IPSnapshotBody{}
-	publishSnapshot := func(event protocol.IPSnapshotBody) error {
+	noObservation := func(ObservationBody) error { return nil }
+	snapshots := []SnapshotBody{}
+	publishSnapshot := func(event SnapshotBody) error {
 		snapshots = append(snapshots, event)
 		return nil
 	}
-	unchanged := []protocol.ChangeIPUnchangedBody{}
-	publishUnchanged := func(event protocol.ChangeIPUnchangedBody) error {
+	unchanged := []UnchangedBody{}
+	publishUnchanged := func(event UnchangedBody) error {
 		unchanged = append(unchanged, event)
 		return nil
 	}
@@ -304,16 +303,16 @@ func TestMonitorArmsBeforeInitialCycleAndObservesChangedAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = now.Add(46 * time.Minute)
-	observed := []protocol.IPObservationBody{}
-	unchanged := []protocol.ChangeIPUnchangedBody{}
+	observed := []ObservationBody{}
+	unchanged := []UnchangedBody{}
 	if err := monitor.step(
 		context.Background(),
-		func(protocol.IPSnapshotBody) error { return nil },
-		func(event protocol.IPObservationBody) error {
+		func(SnapshotBody) error { return nil },
+		func(event ObservationBody) error {
 			observed = append(observed, event)
 			return nil
 		},
-		func(event protocol.ChangeIPUnchangedBody) error {
+		func(event UnchangedBody) error {
 			unchanged = append(unchanged, event)
 			return nil
 		},
@@ -360,16 +359,16 @@ func TestCheckMaintenanceSafeAllowsReplayableIPFacts(t *testing.T) {
 	var snapshotID string
 	if err := monitor.step(
 		context.Background(),
-		func(snapshot protocol.IPSnapshotBody) error {
+		func(snapshot SnapshotBody) error {
 			snapshotID = snapshot.SnapshotID
 			return errors.New("ack lost")
 		},
-		func(protocol.IPObservationBody) error { return nil },
-		func(protocol.ChangeIPUnchangedBody) error { return nil },
+		func(ObservationBody) error { return nil },
+		func(UnchangedBody) error { return nil },
 	); err == nil {
 		t.Fatal("snapshot publication unexpectedly succeeded")
 	}
-	if err := CheckMaintenanceSafe(filePath); err != nil {
+	if err := (Reporter{monitor}).UpdateSafe(); err != nil {
 		t.Fatalf("replayable pending snapshot blocked configuration maintenance: %v", err)
 	}
 	if err := checkIdle(filePath); err == nil {
@@ -380,13 +379,13 @@ func TestCheckMaintenanceSafeAllowsReplayableIPFacts(t *testing.T) {
 	}
 	if err := monitor.step(
 		context.Background(),
-		func(protocol.IPSnapshotBody) error { return nil },
-		func(protocol.IPObservationBody) error { return errors.New("ack lost") },
-		func(protocol.ChangeIPUnchangedBody) error { return nil },
+		func(SnapshotBody) error { return nil },
+		func(ObservationBody) error { return errors.New("ack lost") },
+		func(UnchangedBody) error { return nil },
 	); err == nil {
 		t.Fatal("observation publication unexpectedly succeeded")
 	}
-	if err := CheckMaintenanceSafe(filePath); err != nil {
+	if err := (Reporter{monitor}).UpdateSafe(); err != nil {
 		t.Fatalf("replayable pending observation blocked configuration maintenance: %v", err)
 	}
 }
@@ -404,7 +403,7 @@ func TestCheckMaintenanceSafeRejectsChangeIPReconciliation(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckMaintenanceSafe(filePath); err == nil {
+	if err := (Reporter{monitor}).UpdateSafe(); err == nil {
 		t.Fatal("maintenance safety check accepted pending ChangeIP reconciliation")
 	}
 }
@@ -429,17 +428,17 @@ func TestMonitorPersistsIPv6IndependentlyFromIPv4Readiness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var snapshots []protocol.IPSnapshotBody
-	var observations []protocol.IPObservationBody
-	publishSnapshot := func(value protocol.IPSnapshotBody) error {
+	var snapshots []SnapshotBody
+	var observations []ObservationBody
+	publishSnapshot := func(value SnapshotBody) error {
 		snapshots = append(snapshots, value)
 		return nil
 	}
-	publish := func(value protocol.IPObservationBody) error {
+	publish := func(value ObservationBody) error {
 		observations = append(observations, value)
 		return nil
 	}
-	if err := monitor.step(context.Background(), publishSnapshot, publish, func(protocol.ChangeIPUnchangedBody) error { return nil }); err != nil {
+	if err := monitor.step(context.Background(), publishSnapshot, publish, func(UnchangedBody) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if err := monitor.stepIPv6(context.Background(), publishSnapshot, publish); err != nil {
@@ -488,8 +487,8 @@ func TestIPv6ProbeFailureIsTransient(t *testing.T) {
 	}
 	err = monitor.stepIPv6(
 		context.Background(),
-		func(protocol.IPSnapshotBody) error { return nil },
-		func(protocol.IPObservationBody) error { return nil },
+		func(SnapshotBody) error { return nil },
+		func(ObservationBody) error { return nil },
 	)
 	if !errors.Is(err, errTransientMonitor) {
 		t.Fatalf("IPv6 probe error = %v", err)

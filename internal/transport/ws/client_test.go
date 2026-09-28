@@ -15,13 +15,26 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
+	"github.com/akastrmix/akastr-agent/internal/feature"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/coder/websocket"
 )
 
+// baseRuntime is a node with no module behaviour of interest to a test.
+type baseRuntime struct{}
+
+func (baseRuntime) Accepting(protocol.OperationOffer) (bool, error) { return true, nil }
+func (baseRuntime) Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error) {
+	return protocol.ExecutionResult{}, errors.New("unexpected execution")
+}
+func (baseRuntime) Run(ctx context.Context, _ feature.Publish) error { <-ctx.Done(); return ctx.Err() }
+func (baseRuntime) ControlReady()                                    {}
+func (baseRuntime) Handle(protocol.Envelope) (bool, error)           { return false, nil }
+
 type recordingExecutor struct {
+	baseRuntime
 	executed chan string
 }
 
@@ -45,11 +58,12 @@ func TestReconnectBackoffResetsOnlyAfterStableSession(t *testing.T) {
 }
 
 type blockingExecutor struct {
+	baseRuntime
 	started chan struct{}
 	release chan struct{}
 }
 
-type fatalExecutor struct{}
+type fatalExecutor struct{ baseRuntime }
 
 func (fatalExecutor) Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	return protocol.ExecutionResult{}, errors.New("durable state unavailable")
@@ -61,34 +75,28 @@ func (e *blockingExecutor) Execute(context.Context, protocol.OperationOffer) (pr
 	return protocol.ExecutionResult{Outcome: "failed", Code: "test", Result: map[string]any{}}, nil
 }
 
-type failingObservationSource struct{}
+type failingRuntime struct{ baseRuntime }
 
-func (failingObservationSource) Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
+func (failingRuntime) Run(context.Context, feature.Publish) error {
 	return errors.New("observation state failed")
 }
 
-func (failingObservationSource) NotifyControlReady()       {}
-func (failingObservationSource) SnapshotReady() bool       { return false }
-func (failingObservationSource) AckSnapshot(string) error  { return nil }
-func (failingObservationSource) Ack(string) error          { return nil }
-func (failingObservationSource) AckUnchanged(string) error { return nil }
+// holdingRuntime has a module that does not take new work yet.
+type holdingRuntime struct{ baseRuntime }
 
-type readinessObservationSource struct{ ready bool }
+func (holdingRuntime) Accepting(protocol.OperationOffer) (bool, error) { return false, nil }
 
-func (source readinessObservationSource) Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error {
-	return nil
+type rejectingRuntime struct{ baseRuntime }
+
+func (rejectingRuntime) Accepting(protocol.OperationOffer) (bool, error) {
+	return false, errors.New("command type is not enabled on this node")
 }
-func (readinessObservationSource) NotifyControlReady()        {}
-func (source readinessObservationSource) SnapshotReady() bool { return source.ready }
-func (readinessObservationSource) AckSnapshot(string) error   { return nil }
-func (readinessObservationSource) Ack(string) error           { return nil }
-func (readinessObservationSource) AckUnchanged(string) error  { return nil }
 
 func TestOperationLeaseBlocksUpdateUntilExecutionFinishes(t *testing.T) {
 	gate := lifecycle.New()
 	executor := &blockingExecutor{started: make(chan struct{}), release: make(chan struct{})}
 	client := &Client{
-		executor: executor, lifecycle: gate, running: map[string]*lifecycle.Lease{},
+		runtime: executor, lifecycle: gate, running: map[string]*lifecycle.Lease{},
 		pending: map[string]pendingOperation{},
 	}
 	offer := protocol.OperationOffer{
@@ -126,7 +134,7 @@ func TestExecutionPersistenceFailureBecomesFatalWithoutWireResult(t *testing.T) 
 	}
 	commandID := "123e4567-e89b-42d3-a456-426614174003"
 	client := &Client{
-		executor: fatalExecutor{}, lifecycle: gate,
+		runtime: fatalExecutor{}, lifecycle: gate,
 		running: map[string]*lifecycle.Lease{commandID: lease},
 		pending: make(map[string]pendingOperation),
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -144,15 +152,15 @@ func TestExecutionPersistenceFailureBecomesFatalWithoutWireResult(t *testing.T) 
 
 func TestFatalObservationErrorStopsClient(t *testing.T) {
 	client := &Client{
-		endpoint:     "wss://127.0.0.1:1/internal/agents/ws",
-		identity:     identity.Identity{AgentID: "123e4567-e89b-42d3-a456-426614174000"},
-		observations: failingObservationSource{},
-		logger:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		endpoint: "wss://127.0.0.1:1/internal/agents/ws",
+		identity: identity.Identity{AgentID: "123e4567-e89b-42d3-a456-426614174000"},
+		runtime:  failingRuntime{},
+		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 	err := client.Run(ctx)
-	if err == nil || !strings.Contains(err.Error(), "IP observation monitor failed") {
+	if err == nil || !strings.Contains(err.Error(), "Agent module failed") {
 		t.Fatalf("Run error = %v, want fatal monitor failure", err)
 	}
 }
@@ -228,7 +236,7 @@ func TestReadyCallbackRunsAfterHelloAccepted(t *testing.T) {
 		Endpoint: strings.Replace(server.URL, "https://", "wss://", 1) + "/internal/agents/ws",
 		Identity: credentials, Version: "v1.4.0", ConfigurationRevision: 2,
 		Capabilities: []capability.Descriptor{},
-		Executor:     &recordingExecutor{executed: make(chan string, 1)}, Lifecycle: lifecycle.New(),
+		Runtime:      &recordingExecutor{executed: make(chan string, 1)}, Lifecycle: lifecycle.New(),
 		OnReady: func() error {
 			select {
 			case <-helloAcknowledged:
@@ -267,7 +275,7 @@ func (e *recordingExecutor) Execute(_ context.Context, offer protocol.OperationO
 func TestAcceptedAckGatesExecution(t *testing.T) {
 	executor := &recordingExecutor{executed: make(chan string, 2)}
 	client := &Client{
-		executor: executor, lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
+		runtime: executor, lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
 		pending: map[string]pendingOperation{},
 	}
 	first := protocol.OperationOffer{
@@ -312,9 +320,9 @@ func TestExpiredOfferCanReachAuthoritativeAcceptanceHandshake(t *testing.T) {
 	}
 }
 
-func TestChangeIPOfferWaitsForSnapshotAcknowledgement(t *testing.T) {
+func TestOfferWaitsWhileItsModuleIsNotAccepting(t *testing.T) {
 	client := &Client{
-		executor: &recordingExecutor{}, observations: readinessObservationSource{ready: false},
+		runtime:   holdingRuntime{},
 		lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
 		pending: map[string]pendingOperation{},
 	}
@@ -327,11 +335,11 @@ func TestChangeIPOfferWaitsForSnapshotAcknowledgement(t *testing.T) {
 		t.Fatalf("acceptOffer() error = %v", err)
 	}
 	if len(client.pending) != 0 || len(client.running) != 0 {
-		t.Fatal("ChangeIP offer was accepted before snapshot acknowledgement")
+		t.Fatal("offer was accepted while its module was not accepting")
 	}
 	update, acquired := client.lifecycle.TryUpdate()
 	if !acquired {
-		t.Fatal("ignored ChangeIP offer retained an operation lease")
+		t.Fatal("ignored offer retained an operation lease")
 	}
 	update.Release()
 }
@@ -344,7 +352,7 @@ func TestOfferDuringAutomaticUpdateIsDeferredWithoutClosingTheSession(t *testing
 	}
 	defer update.Release()
 	client := &Client{
-		executor: &recordingExecutor{}, lifecycle: gate,
+		runtime: &recordingExecutor{}, lifecycle: gate,
 		running: map[string]*lifecycle.Lease{}, pending: map[string]pendingOperation{},
 	}
 	err := client.acceptOffer(t.Context(), nil, protocol.OperationOffer{
@@ -360,9 +368,9 @@ func TestOfferDuringAutomaticUpdateIsDeferredWithoutClosingTheSession(t *testing
 	}
 }
 
-func TestChangeIPOfferFailsWhenObservationSourceIsUnavailable(t *testing.T) {
+func TestOfferForDisabledModuleClosesTheSession(t *testing.T) {
 	client := &Client{
-		executor: &recordingExecutor{}, lifecycle: lifecycle.New(),
+		runtime: rejectingRuntime{}, lifecycle: lifecycle.New(),
 		running: map[string]*lifecycle.Lease{}, pending: map[string]pendingOperation{},
 	}
 	err := client.acceptOffer(t.Context(), nil, protocol.OperationOffer{
@@ -370,7 +378,7 @@ func TestChangeIPOfferFailsWhenObservationSourceIsUnavailable(t *testing.T) {
 		CommandType: "changeip.execute",
 		NotBefore:   time.Now().Add(-time.Second), ExpiresAt: time.Now().Add(time.Minute),
 	})
-	if err == nil || !strings.Contains(err.Error(), "observation source") {
+	if err == nil || !strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("acceptOffer() error = %v", err)
 	}
 }
@@ -378,7 +386,7 @@ func TestChangeIPOfferFailsWhenObservationSourceIsUnavailable(t *testing.T) {
 func TestAcceptedAckExecutesAfterOfferExpiry(t *testing.T) {
 	executor := &recordingExecutor{executed: make(chan string, 1)}
 	client := &Client{
-		executor: executor, lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
+		runtime: executor, lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
 		pending: map[string]pendingOperation{},
 	}
 	offer := protocol.OperationOffer{

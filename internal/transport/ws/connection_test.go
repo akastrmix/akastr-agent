@@ -18,12 +18,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/feature"
 	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/coder/websocket"
 )
+
+// reportingRuntime is a node whose only reporter is the real IP monitor.
+type reportingRuntime struct {
+	*recordingExecutor
+	reporter ipwatch.Reporter
+}
+
+func (r reportingRuntime) Run(ctx context.Context, publish feature.Publish) error {
+	return r.reporter.Run(ctx, publish)
+}
+func (r reportingRuntime) ControlReady() { r.reporter.ControlReady() }
+func (r reportingRuntime) Handle(envelope protocol.Envelope) (bool, error) {
+	return r.reporter.Acknowledge(envelope)
+}
 
 type changingAddressObserver struct{ calls int }
 
@@ -57,16 +72,16 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 	}
 	// Start from an acknowledged baseline, as on an already-running TIME node.
 	baselineContext, cancelBaseline := context.WithCancel(ctx)
-	err = monitor.Run(baselineContext, func(body protocol.IPSnapshotBody) error {
+	err = monitor.Run(baselineContext, func(body ipwatch.SnapshotBody) error {
 		defer cancelBaseline()
 		return monitor.AckSnapshot(body.SnapshotID)
-	}, func(protocol.IPObservationBody) error { return nil }, func(protocol.ChangeIPUnchangedBody) error { return nil })
+	}, func(ipwatch.ObservationBody) error { return nil }, func(ipwatch.UnchangedBody) error { return nil })
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("baseline setup: %v", err)
 	}
 	var connections atomic.Int32
-	events := make(chan protocol.IPObservationBody, 16)
-	replayed := make(chan protocol.IPObservationBody, 1)
+	events := make(chan ipwatch.ObservationBody, 16)
+	replayed := make(chan ipwatch.ObservationBody, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		number := connections.Add(1)
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -105,15 +120,15 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 			}
 			switch envelope.Type {
 			case "ip.snapshot":
-				body, err := protocol.DecodeBody[protocol.IPSnapshotBody](envelope, "snapshot_id", "family", "address", "observed_at")
+				body, err := protocol.DecodeBody[ipwatch.SnapshotBody](envelope, "snapshot_id", "family", "address", "observed_at")
 				if err != nil {
 					return
 				}
-				if s.write(ctx, "ip.snapshot_ack", protocol.IPSnapshotAckBody{SnapshotID: body.SnapshotID, Persisted: true}) != nil {
+				if s.write(ctx, "ip.snapshot_ack", map[string]any{"snapshot_id": body.SnapshotID, "persisted": true}) != nil {
 					return
 				}
 			case "ip.observed":
-				body, err := protocol.DecodeBody[protocol.IPObservationBody](envelope, "observation_id", "family", "previous_address", "address", "observed_at")
+				body, err := protocol.DecodeBody[ipwatch.ObservationBody](envelope, "observation_id", "family", "previous_address", "address", "observed_at")
 				if err != nil {
 					return
 				}
@@ -121,7 +136,7 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 					events <- body
 					continue
 				}
-				if s.write(ctx, "ip.observed_ack", protocol.IPObservationAckBody{ObservationID: body.ObservationID, Persisted: true}) != nil {
+				if s.write(ctx, "ip.observed_ack", map[string]any{"observation_id": body.ObservationID, "persisted": true}) != nil {
 					return
 				}
 				replayed <- body
@@ -133,7 +148,7 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 	client := &Client{
 		endpoint: strings.Replace(server.URL, "http", "ws", 1), identity: credentials,
 		version: "v1.6.1", configurationRevision: 1,
-		executor: executor, observations: monitor, lifecycle: lifecycle.New(),
+		runtime: reportingRuntime{recordingExecutor: executor, reporter: ipwatch.Reporter{Monitor: monitor}}, lifecycle: lifecycle.New(),
 		heartbeatInterval: 200 * time.Millisecond, heartbeatTimeout: 100 * time.Millisecond,
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
@@ -141,7 +156,7 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- client.Run(ctx) }()
 	defer func() { cancel(); <-done }()
-	var first, replay protocol.IPObservationBody
+	var first, replay ipwatch.ObservationBody
 	select {
 	case first = <-events:
 	case <-ctx.Done():

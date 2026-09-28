@@ -4,12 +4,7 @@
 
 每个安装实例只存在一个 `akastr-agent.service` 和一个 Go 主进程。主进程主动连接 AkastrCloud 的 WSS 控制端点，并在内部检查主控批准的更新（见第 8 节）；节点没有额外 updater service、timer 或常驻辅助进程，也不开放通用管理 HTTP 服务。实例只公布配置中明确启用的能力。
 
-同一个二进制支持两种部署形态：
-
-- 目标节点：公网 IP 观察、ChangeIP，以及可选的不含秘密的 SOCKS5 端点描述；
-- 专用 Runner：IPQuality 执行，`max_concurrency=1`。
-
-运行时能力可以组合，`target` 和 `runner` 不是不同二进制，也不是协议中的永久角色。后台只生成其中一种部署配置：目标节点不执行 IPQuality，专用 Runner 也不承担目标节点能力，避免资源占用和目标网络变化互相影响。
+每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点；目标节点与 Runner 只是 Cloud 选择的两种模块组合：绑定服务器的目标节点必须观察公网 IP，Runner 只执行 IPQuality，避免资源占用和目标网络变化互相影响。
 
 项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。节点由后台先创建，得到节点 UUID 与长期机器 token；provider secret 只在以机器 token 加密的持久 bootstrap 里，不以明文进入 PostgreSQL。节点上的配置就是 Cloud 下发的 bootstrap 明文，Agent 不再转写成第二种格式。配置有单调的 desired/applied revision，两者不等时 Cloud 不派发操作；配置更新由主进程自动取回收敛，不需要重跑安装命令。
 
@@ -43,7 +38,9 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 
 ## 4. 包职责
 
-- `internal/config`：严格读取和验证 Cloud 下发的配置（bootstrap schema 4）；未知字段直接报错。
+- `internal/config`：严格读取节点配置的外层；各模块的配置段由模块自己校验。
+- `internal/feature`：模块接入接口——一次性任务（`Commands`）与持续上报（`Reporter`）。
+- `internal/features/*`：每个模块一个包，拥有自己的配置段、capability、命令、消息与确认；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
 - `internal/layout`：固定的磁盘布局——A/B 两个 slot、`current` 原子切换与安装/更新共用的锁。
 - `internal/capability`：生成确定性且不含秘密的能力描述。
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
@@ -56,8 +53,10 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/bootstrap`：安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。
 - `internal/install`：一次安装命令的全部收敛步骤（第 8 节）。
 - `internal/update`：进程内更新检查与候选版本启动（第 8 节）。
-- `internal/app`：组合配置与 executor，提供更新前的空闲检查。
+- `internal/app`：解析启用的模块并组成运行时；连接层只收发消息，命令、上报与确认都交给对应模块。
 - `internal/daemon`：组织 WSS、更新循环、候选版本激活与退出；CLI 只负责参数和进程信号。
+
+新增能力：在 `internal/features` 下新建模块包，实现 `feature.Commands` 或 `feature.Reporter`，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段与 capability。连接层、更新与安装都不需要改。
 
 ## 5. 本地操作状态
 

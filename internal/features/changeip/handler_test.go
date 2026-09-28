@@ -50,6 +50,8 @@ type fakeReconciler struct {
 	address   string
 }
 
+func (r *fakeReconciler) SnapshotReady() bool { return true }
+
 func (r *fakeReconciler) ArmChange(commandID, address string, _ time.Time) error {
 	r.commandID, r.address = commandID, address
 	return nil
@@ -146,7 +148,7 @@ func TestActiveJournalRecoveryNeverRunsProviderAgain(t *testing.T) {
 		t.Fatalf("Execute() = %#v", result)
 	}
 	oldIPv4, ok := result.Result["old_ipv4"].(*string)
-	if !ok || oldIPv4 == nil || *oldIPv4 != offer.ChangeIP.ExpectedIPv4 {
+	if !ok || oldIPv4 == nil || *oldIPv4 != "8.8.8.8" {
 		t.Fatalf("recovered old IPv4 = %#v", result.Result["old_ipv4"])
 	}
 	if provider.calls != 0 {
@@ -168,6 +170,6 @@ func offerFor(expectedIPv4 string) protocol.OperationOffer {
 	return protocol.OperationOffer{
 		CommandType: "changeip.execute",
 		CommandID:   "123e4567-e89b-42d3-a456-426614174000",
-		ChangeIP:    &protocol.ChangeIPPayload{ExpectedIPv4: expectedIPv4},
+		Payload:     []byte(`{"expected_ipv4":"` + expectedIPv4 + `"}`),
 	}
 }

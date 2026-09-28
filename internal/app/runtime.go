@@ -3,115 +3,118 @@ package app
 import (
 	"context"
 	"errors"
-	"time"
+	"fmt"
 
-	changefeature "github.com/akastrmix/akastr-agent/internal/features/changeip"
-	"github.com/akastrmix/akastr-agent/internal/features/ipqualityrunner"
-	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/feature"
 	"github.com/akastrmix/akastr-agent/internal/layout"
 	"github.com/akastrmix/akastr-agent/internal/operation"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
-	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
-	changecommand "github.com/akastrmix/akastr-agent/internal/providers/changeip/command"
-	changehttp "github.com/akastrmix/akastr-agent/internal/providers/changeip/httpcurl"
-	qualityscript "github.com/akastrmix/akastr-agent/internal/providers/ipquality/script"
 )
 
-// Fixed runtime limits. Cloud configures what a node does, not these bounds.
-const (
-	recentOperationLimit  = 64
-	changeIPTimeout       = time.Minute
-	changeIPObserveWindow = 5 * time.Minute
-	ipQualityTimeout      = 15 * time.Minute
-	observationTimeout    = 10 * time.Second
-)
+const recentOperationLimit = 64
 
+// Runtime is the running set of enabled modules. The control connection only
+// moves messages; every command, report and acknowledgement goes to a module.
 type Runtime struct {
+	journal    *operation.Engine
 	operations *operation.Executor
-	changeIP   *changefeature.Handler
-	ipQuality  *ipqualityrunner.Handler
-	ipMonitor  *ipwatch.Monitor
+	commands   map[string]feature.Commands
+	reporters  []feature.Reporter
 }
 
-// BuildRuntime validates every local dependency the configuration needs. It
+// BuildRuntime validates every local dependency the enabled modules need. It
 // only reads durable state, so update candidates may call it before activation.
 func BuildRuntime(model *Model, paths layout.Layout) (*Runtime, error) {
-	engine, err := operation.Open(operation.Options{
-		StateFile: paths.StateFile(), RecentLimit: recentOperationLimit,
-	})
+	journal, err := operation.Open(operation.Options{StateFile: paths.StateFile(), RecentLimit: recentOperationLimit})
 	if err != nil {
 		return nil, err
 	}
-	runtime := &Runtime{operations: operation.NewExecutor(engine)}
-	if target := model.Config.Target; target != nil {
-		observer, err := ipwatch.New(observationTimeout, "Akastr-Agent")
-		if err != nil {
-			return nil, err
-		}
-		runtime.ipMonitor, err = ipwatch.OpenMonitor(
-			paths.IPStateFile(), observer,
-			time.Duration(target.IPWatchIntervalSeconds)*time.Second, *target.ObserveIPv6,
-		)
-		if err != nil {
-			return nil, err
-		}
-		var provider changeprovider.Provider
-		switch target.ChangeIP.Provider {
-		case "disabled":
-		case "http_bearer":
-			provider, err = changehttp.New(changehttp.Config{
-				Program: "/usr/bin/curl", URL: target.ChangeIP.URL,
-				BearerToken: target.ChangeIP.BearerToken, Timeout: changeIPTimeout,
-			})
-		case "command":
-			provider, err = changecommand.New(changecommand.Config{
-				Program: target.ChangeIP.Program, Args: target.ChangeIP.Args, Timeout: changeIPTimeout,
-			})
-		default:
-			err = errors.New("ChangeIP provider type is unsupported")
-		}
-		if err != nil {
-			return nil, err
-		}
-		if provider != nil {
-			runtime.changeIP = changefeature.New(observer, provider, runtime.ipMonitor, changeIPObserveWindow)
-		}
+	runtime := &Runtime{
+		journal: journal, operations: operation.NewExecutor(journal),
+		commands: map[string]feature.Commands{},
 	}
-	if runner := model.Config.Runner; runner != nil {
-		profiles := make(map[string]qualityscript.Profile, len(runner.Profiles))
-		for _, profile := range runner.Profiles {
-			profiles[profile.ID] = qualityscript.Profile{Username: profile.Username, Password: profile.Password}
-		}
-		provider, err := qualityscript.New(qualityscript.Config{
-			ScriptPath: paths.IPQualityScript(qualityscript.PinnedSHA256), Profiles: profiles,
-			Timeout: ipQualityTimeout, ScriptVersion: qualityscript.PinnedVersion,
-			ExpectedSHA256Hex: qualityscript.PinnedSHA256,
-		})
-		if err != nil {
-			return nil, err
-		}
-		runtime.ipQuality = ipqualityrunner.New(provider, qualityscript.PinnedVersion)
+	if err := model.modules.build(paths, runtime); err != nil {
+		return nil, err
 	}
 	return runtime, nil
 }
 
-func (r *Runtime) IPMonitor() *ipwatch.Monitor {
-	return r.ipMonitor
+func (r *Runtime) addCommands(commands feature.Commands) {
+	r.commands[commands.CommandType()] = commands
+}
+
+// Accepting validates an offer and reports whether its module takes new work now.
+func (r *Runtime) Accepting(offer protocol.OperationOffer) (bool, error) {
+	commands, found := r.commands[offer.CommandType]
+	if !found {
+		return false, fmt.Errorf("command type %q is not enabled on this node", offer.CommandType)
+	}
+	if err := commands.Validate(offer.Payload); err != nil {
+		return false, err
+	}
+	return commands.Accepting(), nil
 }
 
 func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) (protocol.ExecutionResult, error) {
-	switch offer.CommandType {
-	case "changeip.execute":
-		if r.changeIP == nil {
-			return protocol.ExecutionResult{}, errors.New("accepted ChangeIP command has no local capability")
-		}
-		return r.operations.Execute(ctx, offer, "target-network", r.changeIP)
-	case "ipquality.execute":
-		if r.ipQuality == nil {
-			return protocol.ExecutionResult{}, errors.New("accepted IPQuality command has no local capability")
-		}
-		return r.operations.Execute(ctx, offer, "ipquality-runner", r.ipQuality)
-	default:
-		return protocol.ExecutionResult{}, errors.New("accepted command type is unsupported")
+	commands, found := r.commands[offer.CommandType]
+	if !found {
+		return protocol.ExecutionResult{}, errors.New("accepted command has no enabled module")
 	}
+	return r.operations.Execute(ctx, offer, commands.ExclusiveGroup(), commands)
+}
+
+// Run keeps every reporter running; one stopping stops the process, so a node
+// is never online while silently no longer observing.
+func (r *Runtime) Run(ctx context.Context, publish feature.Publish) error {
+	if len(r.reporters) == 0 {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, len(r.reporters))
+	for _, reporter := range r.reporters {
+		go func() { done <- reporter.Run(runContext, publish) }()
+	}
+	err := <-done
+	cancel()
+	for range len(r.reporters) - 1 {
+		<-done
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if err == nil {
+		err = errors.New("module stopped unexpectedly")
+	}
+	return err
+}
+
+func (r *Runtime) ControlReady() {
+	for _, reporter := range r.reporters {
+		reporter.ControlReady()
+	}
+}
+
+func (r *Runtime) Handle(envelope protocol.Envelope) (bool, error) {
+	for _, reporter := range r.reporters {
+		if handled, err := reporter.Acknowledge(envelope); handled {
+			return true, err
+		}
+	}
+	return false, nil
+}
+
+// UpdateSafe refuses to replace the process while an operation or module work
+// must finish in this process first.
+func (r *Runtime) UpdateSafe() error {
+	if len(r.journal.Snapshot().Active) != 0 {
+		return errors.New("an Agent operation is active")
+	}
+	for _, reporter := range r.reporters {
+		if err := reporter.UpdateSafe(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

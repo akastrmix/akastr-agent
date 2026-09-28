@@ -13,23 +13,25 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
+	"github.com/akastrmix/akastr-agent/internal/feature"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/coder/websocket"
 )
 
-type Executor interface {
+// Runtime is the node's enabled modules as seen by the control connection. The
+// client owns the session and the operation handshake; everything else goes to
+// the runtime.
+type Runtime interface {
+	// Accepting validates an offer and reports whether it may be accepted now.
+	Accepting(protocol.OperationOffer) (bool, error)
 	Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error)
-}
-
-type ObservationSource interface {
-	Run(context.Context, func(protocol.IPSnapshotBody) error, func(protocol.IPObservationBody) error, func(protocol.ChangeIPUnchangedBody) error) error
-	NotifyControlReady()
-	SnapshotReady() bool
-	AckSnapshot(string) error
-	Ack(string) error
-	AckUnchanged(string) error
+	// Run keeps module reporters running; they publish on the ready session.
+	Run(context.Context, feature.Publish) error
+	ControlReady()
+	// Handle processes a module message; false means no module owns its type.
+	Handle(protocol.Envelope) (bool, error)
 }
 
 type Client struct {
@@ -38,8 +40,7 @@ type Client struct {
 	version               string
 	configurationRevision int64
 	capabilities          []capability.Descriptor
-	executor              Executor
-	observations          ObservationSource
+	runtime               Runtime
 	lifecycle             *lifecycle.Gate
 	onReady               func() error
 	onSessionEnd          func()
@@ -71,8 +72,7 @@ type Options struct {
 	Version               string
 	ConfigurationRevision int64
 	Capabilities          []capability.Descriptor
-	Executor              Executor
-	Observations          ObservationSource
+	Runtime               Runtime
 	Lifecycle             *lifecycle.Gate
 	// OnReady runs after hello.accepted and before any business message.
 	OnReady func() error
@@ -82,8 +82,8 @@ type Options struct {
 }
 
 func New(options Options) (*Client, error) {
-	if options.Executor == nil {
-		return nil, errors.New("WSS executor is required")
+	if options.Runtime == nil {
+		return nil, errors.New("WSS runtime is required")
 	}
 	if options.Lifecycle == nil {
 		return nil, errors.New("Agent lifecycle gate is required")
@@ -107,8 +107,8 @@ func New(options Options) (*Client, error) {
 		endpoint: options.Endpoint, identity: options.Identity, version: options.Version,
 		configurationRevision: options.ConfigurationRevision,
 		capabilities:          append([]capability.Descriptor(nil), options.Capabilities...),
-		executor:              options.Executor, observations: options.Observations,
-		lifecycle: options.Lifecycle, onReady: options.OnReady,
+		runtime:               options.Runtime,
+		lifecycle:             options.Lifecycle, onReady: options.OnReady,
 		onSessionEnd: options.OnSessionEnd, logger: options.Logger,
 		heartbeatInterval: heartbeatInterval, heartbeatTimeout: heartbeatTimeout,
 		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
@@ -116,32 +116,24 @@ func New(options Options) (*Client, error) {
 }
 
 func (c *Client) Run(ctx context.Context) error {
-	if c.observations == nil {
-		return c.runControlLoop(ctx)
-	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	monitorDone := make(chan error, 1)
+	modulesDone := make(chan error, 1)
 	controlDone := make(chan error, 1)
-	go func() {
-		monitorDone <- c.observations.Run(runContext, c.publishSnapshot, c.publishObservation, c.publishUnchanged)
-	}()
+	go func() { modulesDone <- c.runtime.Run(runContext, c.publish) }()
 	go func() { controlDone <- c.runControlLoop(runContext) }()
 	select {
-	case err := <-monitorDone:
+	case err := <-modulesDone:
 		cancel()
 		<-controlDone
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		c.logger.Error("IP observation monitor stopped", "code", "ip_monitor_failed")
-		if err == nil {
-			return errors.New("IP observation monitor stopped unexpectedly")
-		}
-		return fmt.Errorf("IP observation monitor failed: %w", err)
+		c.logger.Error("Agent module stopped", "code", "module_failed")
+		return fmt.Errorf("Agent module failed: %w", err)
 	case err := <-controlDone:
 		cancel()
-		<-monitorDone
+		<-modulesDone
 		return err
 	}
 }
@@ -221,9 +213,7 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 	}
 	c.setActive(session)
 	c.readyAt = time.Now()
-	if c.observations != nil {
-		c.observations.NotifyControlReady()
-	}
+	c.runtime.ControlReady()
 	defer func() {
 		c.clearActive(session)
 		c.releasePending()
@@ -270,64 +260,16 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 			if !ack.Persisted {
 				return errors.New("operation result was not persisted")
 			}
-		case "ip.snapshot_ack":
-			ack, err := protocol.DecodeBody[protocol.IPSnapshotAckBody](envelope, "snapshot_id", "persisted")
-			if err != nil || !protocol.ValidUUID(ack.SnapshotID) {
-				if err == nil {
-					err = errors.New("invalid IP snapshot acknowledgement identifier")
-				}
-				return err
-			}
-			if !ack.Persisted || c.observations == nil {
-				return errors.New("IP snapshot was not persisted")
-			}
-			if err := c.observations.AckSnapshot(ack.SnapshotID); err != nil {
-				return err
-			}
-		case "ip.observed_ack":
-			ack, err := protocol.DecodeBody[protocol.IPObservationAckBody](envelope, "observation_id", "persisted")
-			if err != nil || !protocol.ValidUUID(ack.ObservationID) {
-				if err == nil {
-					err = errors.New("invalid IP observation acknowledgement identifier")
-				}
-				return err
-			}
-			if !ack.Persisted || c.observations == nil {
-				return errors.New("IP observation was not persisted")
-			}
-			if err := c.observations.Ack(ack.ObservationID); err != nil {
-				return err
-			}
-		case "changeip.unchanged_ack":
-			ack, err := protocol.DecodeBody[protocol.ChangeIPUnchangedAckBody](envelope, "command_id", "persisted")
-			if err != nil || !protocol.ValidUUID(ack.CommandID) {
-				if err == nil {
-					err = errors.New("invalid ChangeIP acknowledgement identifier")
-				}
-				return err
-			}
-			if !ack.Persisted || c.observations == nil {
-				return errors.New("ChangeIP unchanged result was not persisted")
-			}
-			if err := c.observations.AckUnchanged(ack.CommandID); err != nil {
-				return err
-			}
 		default:
-			return fmt.Errorf("unexpected control message %q", envelope.Type)
+			handled, err := c.runtime.Handle(envelope)
+			if err != nil {
+				return err
+			}
+			if !handled {
+				return fmt.Errorf("unexpected control message %q", envelope.Type)
+			}
 		}
 	}
-}
-
-func (c *Client) publishUnchanged(result protocol.ChangeIPUnchangedBody) error {
-	return c.publish("changeip.unchanged", result)
-}
-
-func (c *Client) publishObservation(observation protocol.IPObservationBody) error {
-	return c.publish("ip.observed", observation)
-}
-
-func (c *Client) publishSnapshot(snapshot protocol.IPSnapshotBody) error {
-	return c.publish("ip.snapshot", snapshot)
 }
 
 func (c *Client) publish(messageType string, body any) error {
@@ -401,13 +343,12 @@ func (c *Client) acceptOffer(ctx context.Context, session *session, offer protoc
 	if !offerHandshakeAllows(offer, now) {
 		return errors.New("operation offer is invalid")
 	}
-	if offer.CommandType == "changeip.execute" {
-		if c.observations == nil {
-			return errors.New("ChangeIP observation source is unavailable")
-		}
-		if !c.observations.SnapshotReady() {
-			return nil
-		}
+	accepting, err := c.runtime.Accepting(offer)
+	if err != nil {
+		return err
+	}
+	if !accepting {
+		return nil
 	}
 	c.mu.Lock()
 	if _, found := c.running[offer.CommandID]; found {
@@ -456,7 +397,7 @@ func (c *Client) handleAcceptedAck(ctx context.Context, ack protocol.AcceptedAck
 }
 
 func (c *Client) execute(ctx context.Context, offer protocol.OperationOffer) {
-	result, executeError := c.executor.Execute(ctx, offer)
+	result, executeError := c.runtime.Execute(ctx, offer)
 	c.mu.Lock()
 	lease := c.running[offer.CommandID]
 	delete(c.running, offer.CommandID)

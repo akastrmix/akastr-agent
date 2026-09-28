@@ -62,9 +62,9 @@ func testInstall(t *testing.T, root string) (Options, *fakeControl, *[]string) {
 	t.Cleanup(server.Close)
 	host := strings.TrimPrefix(server.URL, "https://")
 	token := bytes.Repeat([]byte{3}, 32)
-	control := &fakeControl{token: token, payload: []byte(fmt.Sprintf(`{"schema_version":4,"configuration_revision":5,
-"mode":"target","agent_id":%q,"name":"HKT","control_endpoint":"wss://%s/internal/agents/ws",
-"target":{"ip_watch_interval_seconds":60,"observe_ipv6":false,"change_ip":{"provider":"disabled"},"socks5":{"enabled":false}}}`, testAgentID, host))}
+	control := &fakeControl{token: token, payload: []byte(fmt.Sprintf(`{"schema_version":5,"configuration_revision":5,
+"agent_id":%q,"name":"HKT","control_endpoint":"wss://%s/internal/agents/ws",
+"modules":{"ip_watch":{"interval_seconds":60,"ipv6":false}}}`, testAgentID, host))}
 	server.Config.Handler = control
 	executable := filepath.Join(root, "installer")
 	if err := os.WriteFile(executable, []byte("release binary"), 0o755); err != nil {

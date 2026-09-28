@@ -18,15 +18,15 @@ type AddressObserver interface {
 }
 
 type monitorSnapshot struct {
-	SchemaVersion       int                             `json:"schema_version"`
-	LastIPv4            string                          `json:"last_ipv4,omitempty"`
-	LastIPv6            string                          `json:"last_ipv6,omitempty"`
-	PendingSnapshot     *protocol.IPSnapshotBody        `json:"pending_snapshot,omitempty"`
-	Pending             *protocol.IPObservationBody     `json:"pending,omitempty"`
-	PendingIPv6Snapshot *protocol.IPSnapshotBody        `json:"pending_ipv6_snapshot,omitempty"`
-	PendingIPv6         *protocol.IPObservationBody     `json:"pending_ipv6,omitempty"`
-	ChangeAttempt       *changeAttempt                  `json:"change_attempt,omitempty"`
-	PendingUnchanged    *protocol.ChangeIPUnchangedBody `json:"pending_unchanged,omitempty"`
+	SchemaVersion       int              `json:"schema_version"`
+	LastIPv4            string           `json:"last_ipv4,omitempty"`
+	LastIPv6            string           `json:"last_ipv6,omitempty"`
+	PendingSnapshot     *SnapshotBody    `json:"pending_snapshot,omitempty"`
+	Pending             *ObservationBody `json:"pending,omitempty"`
+	PendingIPv6Snapshot *SnapshotBody    `json:"pending_ipv6_snapshot,omitempty"`
+	PendingIPv6         *ObservationBody `json:"pending_ipv6,omitempty"`
+	ChangeAttempt       *changeAttempt   `json:"change_attempt,omitempty"`
+	PendingUnchanged    *UnchangedBody   `json:"pending_unchanged,omitempty"`
 }
 
 type changeAttempt struct {
@@ -76,26 +76,6 @@ func OpenMonitor(filePath string, observer AddressObserver, interval time.Durati
 		}
 	}
 	return monitor, nil
-}
-
-// CheckMaintenanceSafe permits durable IP facts that can be replayed after the
-// configuration switch, while retaining the ChangeIP execution boundary.
-func CheckMaintenanceSafe(filePath string) error {
-	snapshot := monitorSnapshot{SchemaVersion: 2}
-	found, err := state.NewJSONFile(filePath).Load(&snapshot)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-	if err := validateMonitorSnapshot(snapshot); err != nil {
-		return err
-	}
-	if snapshot.ChangeAttempt != nil || snapshot.PendingUnchanged != nil {
-		return errors.New("ChangeIP reconciliation is pending")
-	}
-	return nil
 }
 
 func validateMonitorSnapshot(snapshot monitorSnapshot) error {
@@ -188,7 +168,7 @@ func validateMonitorSnapshot(snapshot monitorSnapshot) error {
 	return nil
 }
 
-func (m *Monitor) Run(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error, publishUnchanged func(protocol.ChangeIPUnchangedBody) error) error {
+func (m *Monitor) Run(ctx context.Context, publishSnapshot func(SnapshotBody) error, publish func(ObservationBody) error, publishUnchanged func(UnchangedBody) error) error {
 	if publishSnapshot == nil || publish == nil || publishUnchanged == nil {
 		return errors.New("IP observation publishers are required")
 	}
@@ -209,13 +189,13 @@ func (m *Monitor) Run(ctx context.Context, publishSnapshot func(protocol.IPSnaps
 	return err
 }
 
-func (m *Monitor) runIPv4(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error, publishUnchanged func(protocol.ChangeIPUnchangedBody) error) error {
+func (m *Monitor) runIPv4(ctx context.Context, publishSnapshot func(SnapshotBody) error, publish func(ObservationBody) error, publishUnchanged func(UnchangedBody) error) error {
 	return m.runLoop(ctx, m.wake, func() error {
 		return m.step(ctx, publishSnapshot, publish, publishUnchanged)
 	})
 }
 
-func (m *Monitor) runIPv6(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error) error {
+func (m *Monitor) runIPv6(ctx context.Context, publishSnapshot func(SnapshotBody) error, publish func(ObservationBody) error) error {
 	return m.runLoop(ctx, m.wakeIPv6, func() error {
 		return m.stepIPv6(ctx, publishSnapshot, publish)
 	})
@@ -384,7 +364,7 @@ func (m *Monitor) AckUnchanged(commandID string) error {
 	return nil
 }
 
-func (m *Monitor) step(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error, publishUnchanged func(protocol.ChangeIPUnchangedBody) error) error {
+func (m *Monitor) step(ctx context.Context, publishSnapshot func(SnapshotBody) error, publish func(ObservationBody) error, publishUnchanged func(UnchangedBody) error) error {
 	m.mu.Lock()
 	if m.snapshot.PendingSnapshot != nil {
 		pending := *m.snapshot.PendingSnapshot
@@ -420,7 +400,7 @@ func (m *Monitor) step(ctx context.Context, publishSnapshot func(protocol.IPSnap
 	// Preserve the durable baseline across restart. A changed address must first
 	// be delivered as an observation, which can also reconcile an accepted command.
 	if m.snapshot.LastIPv4 == "" || (m.snapshotRequired && m.snapshot.ChangeAttempt == nil && m.snapshot.LastIPv4 == current) {
-		pending := &protocol.IPSnapshotBody{
+		pending := &SnapshotBody{
 			SnapshotID: protocol.NewUUID(), Family: "ipv4", Address: current,
 			ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),
 		}
@@ -465,7 +445,7 @@ func (m *Monitor) step(ctx context.Context, publishSnapshot func(protocol.IPSnap
 		m.mu.Unlock()
 		return nil
 	}
-	pending := &protocol.IPObservationBody{
+	pending := &ObservationBody{
 		ObservationID: protocol.NewUUID(), Family: "ipv4",
 		PreviousAddress: m.snapshot.LastIPv4, Address: current,
 		ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),
@@ -486,7 +466,7 @@ func (m *Monitor) step(ctx context.Context, publishSnapshot func(protocol.IPSnap
 	return nil
 }
 
-func (m *Monitor) stepIPv6(ctx context.Context, publishSnapshot func(protocol.IPSnapshotBody) error, publish func(protocol.IPObservationBody) error) error {
+func (m *Monitor) stepIPv6(ctx context.Context, publishSnapshot func(SnapshotBody) error, publish func(ObservationBody) error) error {
 	m.mu.Lock()
 	if m.snapshot.PendingIPv6Snapshot != nil {
 		pending := *m.snapshot.PendingIPv6Snapshot
@@ -513,7 +493,7 @@ func (m *Monitor) stepIPv6(ctx context.Context, publishSnapshot func(protocol.IP
 	current := observation.Address.String()
 	m.mu.Lock()
 	if m.snapshot.LastIPv6 == "" {
-		pending := &protocol.IPSnapshotBody{
+		pending := &SnapshotBody{
 			SnapshotID: protocol.NewUUID(), Family: "ipv6", Address: current,
 			ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),
 		}
@@ -535,7 +515,7 @@ func (m *Monitor) stepIPv6(ctx context.Context, publishSnapshot func(protocol.IP
 		m.mu.Unlock()
 		return nil
 	}
-	pending := &protocol.IPObservationBody{
+	pending := &ObservationBody{
 		ObservationID: protocol.NewUUID(), Family: "ipv6",
 		PreviousAddress: m.snapshot.LastIPv6, Address: current,
 		ObservedAt: observation.ObservedAt.UTC().Format(time.RFC3339Nano),
@@ -556,7 +536,7 @@ func (m *Monitor) stepIPv6(ctx context.Context, publishSnapshot func(protocol.IP
 }
 
 func (m *Monitor) persistUnchangedLocked(attempt changeAttempt, observedAt time.Time) error {
-	pending := &protocol.ChangeIPUnchangedBody{
+	pending := &UnchangedBody{
 		CommandID: attempt.CommandID, Address: attempt.Address,
 		ObservedAt: observedAt.UTC().Format(time.RFC3339Nano),
 	}

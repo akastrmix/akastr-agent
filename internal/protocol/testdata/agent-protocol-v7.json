@@ -391,20 +391,17 @@
             "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
             "configuration_revision": 4,
             "configuration": {
-              "schema_version": 4,
+              "schema_version": 5,
               "configuration_revision": 4,
-              "mode": "target",
               "agent_id": "123e4567-e89b-42d3-a456-426614174102",
               "name": "HKT",
               "control_endpoint": "wss://origin.akastrmix.com/internal/agents/ws",
-              "target": {
-                "ip_watch_interval_seconds": 60,
-                "observe_ipv6": true,
-                "change_ip": {
-                  "provider": "disabled"
+              "modules": {
+                "ip_watch": {
+                  "interval_seconds": 60,
+                  "ipv6": true
                 },
                 "socks5": {
-                  "enabled": true,
                   "port": 1080
                 }
               }
@@ -447,20 +444,17 @@
             "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
             "configuration_revision": 3,
             "configuration": {
-              "schema_version": 4,
+              "schema_version": 5,
               "configuration_revision": 4,
-              "mode": "target",
               "agent_id": "123e4567-e89b-42d3-a456-426614174102",
               "name": "HKT",
               "control_endpoint": "wss://origin.akastrmix.com/internal/agents/ws",
-              "target": {
-                "ip_watch_interval_seconds": 60,
-                "observe_ipv6": true,
-                "change_ip": {
-                  "provider": "disabled"
+              "modules": {
+                "ip_watch": {
+                  "interval_seconds": 60,
+                  "ipv6": true
                 },
                 "socks5": {
-                  "enabled": true,
                   "port": 1080
                 }
               }

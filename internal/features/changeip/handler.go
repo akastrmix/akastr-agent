@@ -2,6 +2,7 @@ package changeip
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
@@ -17,6 +18,7 @@ type Handler struct {
 }
 
 type changeReconciler interface {
+	SnapshotReady() bool
 	ArmChange(commandID, address string, startedAt time.Time) error
 	CancelChange(commandID string) error
 	ChangeAddress(commandID string) (string, bool)
@@ -29,8 +31,23 @@ func New(observer ipwatch.AddressObserver, provider changeprovider.Provider, rec
 	}
 }
 
+func (h *Handler) CommandType() string    { return CommandType }
+func (h *Handler) ExclusiveGroup() string { return "target-network" }
+
+func (h *Handler) Validate(payload json.RawMessage) error {
+	_, err := DecodePayload(payload)
+	return err
+}
+
+// Accepting waits until Cloud has confirmed the IPv4 baseline, so the address a
+// command expects is the one Cloud also holds.
+func (h *Handler) Accepting() bool {
+	return h.reconciler != nil && h.reconciler.SnapshotReady()
+}
+
 func (h *Handler) Recover(offer protocol.OperationOffer) protocol.ExecutionResult {
-	address := offer.ChangeIP.ExpectedIPv4
+	payload, _ := DecodePayload(offer.Payload)
+	address := payload.ExpectedIPv4
 	if h.reconciler != nil {
 		if persisted, found := h.reconciler.ChangeAddress(offer.CommandID); found {
 			address = persisted
@@ -40,7 +57,10 @@ func (h *Handler) Recover(offer protocol.OperationOffer) protocol.ExecutionResul
 }
 
 func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
-	payload := *offer.ChangeIP
+	payload, err := DecodePayload(offer.Payload)
+	if err != nil {
+		return failure("payload_invalid", nil, time.Now().UTC())
+	}
 	observeContext, cancelObserve := context.WithTimeout(ctx, h.observeTimeout)
 	beforeObservation, err := h.observer.Observe(observeContext, ipwatch.IPv4)
 	cancelObserve()

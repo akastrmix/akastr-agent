@@ -2,6 +2,7 @@ package ipqualityrunner
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
@@ -17,12 +18,24 @@ func New(provider *script.Provider, scriptVersion string) *Handler {
 	return &Handler{provider: provider, scriptVersion: scriptVersion}
 }
 
+func (h *Handler) CommandType() string    { return CommandType }
+func (h *Handler) ExclusiveGroup() string { return "ipquality-runner" }
+func (h *Handler) Accepting() bool        { return true }
+
+func (h *Handler) Validate(payload json.RawMessage) error {
+	_, err := DecodePayload(payload)
+	return err
+}
+
 func (h *Handler) Recover(protocol.OperationOffer) protocol.ExecutionResult {
 	return h.failure("interrupted_unknown", "", "", "")
 }
 
 func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
-	payload := *offer.IPQuality
+	payload, err := DecodePayload(offer.Payload)
+	if err != nil {
+		return h.failure("payload_invalid", "", "", "")
+	}
 	if payload.ScriptVersion != h.scriptVersion {
 		return h.failure("script_version_mismatch", "", "", "")
 	}

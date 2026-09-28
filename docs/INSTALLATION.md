@@ -32,15 +32,15 @@ apt-get install --yes ca-certificates curl
 
 ## 2. 在后台填写全部参数
 
-进入 AkastrCloud 后台的“Agent 管理”，选择一种安装类型。
+进入 AkastrCloud 后台的“Agent 管理”，选择节点类型。每项能力是一个模块，表单里一张卡片、一个开关；关掉的模块不会下发到节点。
 
 ### 目标节点
 
-必须填写节点名称并绑定对应服务器，然后设置：
+必须填写节点名称并绑定对应服务器，然后按需打开模块：
 
-- 公网 IP 检查间隔：10–300 秒；一般保持 60 秒。Target 同时尝试观察 IPv6，无公网 IPv6 时忽略；
-- ChangeIP：不启用、粘贴服务商完整 `curl` 命令，或固定本机程序；
-- SOCKS5 入口：不公布，或公布端口。
+- 公网 IP 观察：绑定服务器的节点必须开启（开关锁定）。检查间隔 10–300 秒，一般保持 60 秒；可选同时观察 IPv6，无公网 IPv6 时忽略；
+- 换 IP：粘贴服务商完整 `curl` 命令，或填写固定本机程序；关闭时若该服务器仍有启用的自动换 IP 计划或待执行任务，后台会拒绝保存；
+- SOCKS5 入口：公布已有代理的端口。
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于节点上 root-only 的配置文件。
 
@@ -50,7 +50,7 @@ apt-get install --yes ca-certificates curl
 
 ### IPQuality Runner
 
-Runner 不绑定单一服务器。勾选需要检测的目标服务器，逐项填写 SOCKS5 用户名和密码。后台以稳定 server key 生成 1–128 个本地 profile；密码不会进入安装命令、列表、capability、Agent 日志或 command payload。
+Runner 不绑定单一服务器，只运行 IPQuality 检测这一个模块。勾选需要检测的目标服务器，逐项填写 SOCKS5 用户名和密码。后台以稳定 server key 生成 1–128 个本地 profile；密码不会进入安装命令、列表、capability、Agent 日志或 command payload。
 
 Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，具体 commit 与 SHA-256 见 [`pin.go`](../internal/providers/ipquality/script/pin.go)。并发严格为 1，多个检测由 AkastrCloud 持久排队。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。
 

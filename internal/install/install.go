@@ -19,7 +19,6 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/config"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/layout"
-	qualityscript "github.com/akastrmix/akastr-agent/internal/providers/ipquality/script"
 )
 
 const serviceName = "akastr-agent.service"
@@ -62,10 +61,12 @@ func Install(ctx context.Context, o Options) error {
 	if cfg.AgentID != o.AgentID {
 		return errors.New("bootstrap configuration belongs to another node")
 	}
-	if cfg.Runner != nil {
-		if err := installRunnerPackages(ctx, o); err != nil {
-			return err
-		}
+	model, err := app.NewModel(cfg)
+	if err != nil {
+		return err
+	}
+	if err := installHostPackages(ctx, o, model); err != nil {
+		return err
 	}
 	binary, err := os.ReadFile(o.Executable)
 	if err != nil {
@@ -76,8 +77,7 @@ func Install(ctx context.Context, o Options) error {
 			return err
 		}
 	}
-	model, err := Prepare(ctx, cfg, o.Layout, o.HTTPClient)
-	if err != nil {
+	if err := app.Prepare(ctx, model, o.Layout, o.HTTPClient); err != nil {
 		return err
 	}
 	slot, err := o.Layout.InactiveSlot()
@@ -141,25 +141,6 @@ func Install(ctx context.Context, o Options) error {
 	return err
 }
 
-// Prepare checks that this binary can run cfg on this machine, fetching the
-// pinned IPQuality script first. Updaters call it through `prepare` on the
-// candidate binary.
-func Prepare(ctx context.Context, cfg config.Config, paths layout.Layout, client *http.Client) (*app.Model, error) {
-	if cfg.Runner != nil {
-		if err := qualityscript.EnsurePinnedScript(ctx, client, paths.IPQualityScript(qualityscript.PinnedSHA256)); err != nil {
-			return nil, err
-		}
-	}
-	model, err := app.NewModel(cfg)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := app.BuildRuntime(model, paths); err != nil {
-		return nil, fmt.Errorf("validate runtime dependencies: %w", err)
-	}
-	return model, nil
-}
-
 // checkOwnership refuses to take over another node, or to inherit execution
 // state whose node cannot be identified.
 func checkOwnership(paths layout.Layout, agentID string) error {
@@ -181,13 +162,16 @@ func checkOwnership(paths layout.Layout, agentID string) error {
 	return nil
 }
 
-func installRunnerPackages(ctx context.Context, o Options) error {
+// installHostPackages installs the Debian packages the enabled modules need
+// when their commands are missing. Only the installer runs outside the sandbox.
+func installHostPackages(ctx context.Context, o Options, model *app.Model) error {
+	commands, packages := model.HostRequirements()
 	lookPath := o.LookPath
 	if lookPath == nil {
 		lookPath = exec.LookPath
 	}
 	missing := func() string {
-		for _, command := range strings.Fields(qualityscript.RunnerCommands) {
+		for _, command := range commands {
 			if _, err := lookPath(command); err != nil {
 				return command
 			}
@@ -200,12 +184,11 @@ func installRunnerPackages(ctx context.Context, o Options) error {
 	if err := o.System(ctx, "apt-get", "update"); err != nil {
 		return fmt.Errorf("apt-get update: %w", err)
 	}
-	arguments := append([]string{"install", "-y", "--no-install-recommends"}, strings.Fields(qualityscript.RunnerPackages)...)
-	if err := o.System(ctx, "apt-get", arguments...); err != nil {
-		return fmt.Errorf("install Runner packages: %w", err)
+	if err := o.System(ctx, "apt-get", append([]string{"install", "-y", "--no-install-recommends"}, packages...)...); err != nil {
+		return fmt.Errorf("install module packages: %w", err)
 	}
 	if command := missing(); command != "" {
-		return fmt.Errorf("Runner command %s is unavailable after package installation", command)
+		return fmt.Errorf("command %s is unavailable after package installation", command)
 	}
 	return nil
 }
