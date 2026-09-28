@@ -26,11 +26,14 @@ const maxOutputBytes = 2 * 1024 * 1024
 
 var reportURLPattern = regexp.MustCompile(`(?i)https://report\.check\.place/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]+`)
 
-var requiredCommands = []string{"/bin/bash", "bc", "curl", "dig", "ip", "jq", "nc"}
+type Profile struct {
+	Username string
+	Password string
+}
 
 type Config struct {
 	ScriptPath        string
-	ProfilesFile      string
+	Profiles          map[string]Profile
 	Timeout           time.Duration
 	ScriptVersion     string
 	ExpectedSHA256Hex string
@@ -63,11 +66,10 @@ func New(config Config) (*Provider, error) {
 	if config.ScriptVersion == "" {
 		return nil, errors.New("IPQuality script version is required")
 	}
-	profiles, err := loadProfiles(config.ProfilesFile)
-	if err != nil {
-		return nil, err
+	if len(config.Profiles) == 0 {
+		return nil, errors.New("IPQuality proxy profiles are required")
 	}
-	provider := &Provider{config: config, profiles: profiles, now: time.Now}
+	provider := &Provider{config: config, profiles: config.Profiles, now: time.Now}
 	if err := provider.verifyScript(); err != nil {
 		return nil, err
 	}
@@ -78,7 +80,7 @@ func New(config Config) (*Provider, error) {
 }
 
 func verifyDependencies() error {
-	for _, command := range requiredCommands {
+	for _, command := range strings.Fields(RunnerCommands) {
 		if _, err := exec.LookPath(command); err != nil {
 			return fmt.Errorf("IPQuality required command %q is unavailable", command)
 		}

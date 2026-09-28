@@ -5,117 +5,188 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"sync"
+	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/app"
-	"github.com/akastrmix/akastr-agent/internal/autoupdate"
 	"github.com/akastrmix/akastr-agent/internal/identity"
+	"github.com/akastrmix/akastr-agent/internal/layout"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/systemdnotify"
 	transportws "github.com/akastrmix/akastr-agent/internal/transport/ws"
+	"github.com/akastrmix/akastr-agent/internal/update"
 )
+
+// CandidateTimeout bounds how long an update candidate may take to be accepted
+// by Cloud. When it expires the candidate exits and systemd restarts the active
+// slot, which is still the previous deployment.
+const CandidateTimeout = 45 * time.Second
 
 type Options struct {
 	ConfigPath string
 	Version    string
-	Reexec     func(string, string, string, int64) error
+	Layout     layout.Layout
+	Exec       func(binary, configPath string) error
+	Logger     *slog.Logger
 }
 
-// Run owns the lifetime of business transport, maintenance and deployment trials.
-func Run(ctx context.Context, model *app.Model, options Options) error {
-	return run(ctx, model, options, "/usr/local/lib/akastr-agent")
-}
-
-func run(ctx context.Context, model *app.Model, options Options, releaseRoot string) error {
-	version := options.Version
-	credentials, err := identity.Load(model.Config.Control.CredentialFile)
+// Run owns the business connection, the updater and, for a candidate, its
+// activation.
+func Run(ctx context.Context, options Options) error {
+	paths := options.Layout
+	logger := options.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	}
+	model, err := app.Load(options.ConfigPath)
 	if err != nil {
 		return err
 	}
-	if credentials.AgentID != model.Config.Node.ID {
-		return errors.New("configured node ID does not match enrolled identity")
-	}
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	lifecycleGate := lifecycle.New()
-	maintenance := autoupdate.LoopOptions{
-		ControlEndpoint: model.Config.Control.Endpoint,
-		CurrentVersion:  version, ConfigurationRevision: model.Config.ConfigurationRevision,
-		Credentials: credentials, ConfigPath: options.ConfigPath, ReleaseRoot: releaseRoot,
-		Lifecycle: lifecycleGate, Retry: &autoupdate.RetryState{},
-		CheckIdle: func() error {
-			return app.CheckMaintenanceSafe(model.Config.StateFile, model.Config.IPStateFile, model.Config.RecentOperationLimit)
-		},
-		Reexec: options.Reexec, Logger: logger,
-	}
-	trial, err := autoupdate.LoadTrial(version, model.Config.ConfigurationRevision, releaseRoot, options.ConfigPath)
+	cfg := model.Config
+	credentials, err := identity.Load(paths.IdentityFile)
 	if err != nil {
 		return err
 	}
-	maintenanceTriggers := make(chan autoupdate.Trigger, 1)
-	maintenance.Triggers = maintenanceTriggers
-	services := serviceGroup{
-		notify:      systemdnotify.Ready,
-		maintenance: func(ctx context.Context) error { return autoupdate.RunLoop(ctx, maintenance) },
-		watch: func(ctx context.Context) {
-			(autoupdate.Client{}).Watch(ctx, model.Config.Control.Endpoint, version,
-				model.Config.ConfigurationRevision, credentials, maintenanceTriggers)
-		},
-		trialTimeout: autoupdate.TrialReadinessTimeout,
+	if credentials.AgentID != cfg.AgentID {
+		return errors.New("configured node ID does not match the local identity")
 	}
-	runtime, err := app.BuildRuntime(model)
+	slot, candidate, err := paths.Candidate(options.ConfigPath)
 	if err != nil {
-		if trial != nil {
+		return err
+	}
+	target := update.TargetName(options.Version, cfg.ConfigurationRevision)
+	failCandidate := func(code string) {
+		if candidate && update.RecordCandidateFailure(paths, target, code) != nil {
+			logger.Error("update candidate failure was not recorded", "code", code)
+		}
+	}
+	gate := lifecycle.New()
+	nudges := make(chan struct{}, 1)
+	nudge := func() {
+		select {
+		case nudges <- struct{}{}:
+		default:
+		}
+	}
+	updater := &update.Updater{
+		ControlEndpoint: cfg.ControlEndpoint, Identity: credentials,
+		Version: options.Version, Revision: cfg.ConfigurationRevision,
+		ConfigPath: options.ConfigPath, Layout: paths, Lifecycle: gate,
+		CheckSafe: func() error { return app.CheckUpdateSafe(paths) },
+		Exec:      options.Exec, Logger: logger,
+	}
+	runtime, err := app.BuildRuntime(model, paths)
+	if err != nil {
+		if candidate {
+			failCandidate("candidate_runtime_invalid")
 			return err
 		}
-		logger.Error("local runtime unavailable; HTTPS maintenance remains active", "code", "runtime_initialization_failed")
-		return services.run(ctx)
-	}
-	ready := make(chan struct{})
-	var readyOnce sync.Once
-	var readyError error
-	onReady := func() error {
-		readyOnce.Do(func() {
-			if notifyError := systemdnotify.Ready(); notifyError != nil {
-				readyError = notifyError
-				return
-			}
-			close(ready)
-		})
-		return readyError
-	}
-	deploymentState := "current"
-	var onDeploymentTrial func() error
-	if trial != nil {
-		deploymentState = "trial"
-		onDeploymentTrial = func() error {
-			result, commitError := trial.Commit()
-			if result.CleanupFailed {
-				logger.Warn("managed Agent release cleanup incomplete", "code", "update_cleanup_failed")
-			}
-			return commitError
+		// Keep updating so a release or configuration change can repair the node.
+		logger.Error("local runtime unavailable; updates remain active", "code", "runtime_initialization_failed", "error", err.Error())
+		if err := systemdnotify.Ready(); err != nil {
+			return err
 		}
+		return updater.Loop(ctx, nudges)
+	}
+	committed := make(chan struct{})
+	if !candidate {
+		close(committed)
+	}
+	onReady := func() error {
+		select {
+		case <-committed:
+		default:
+			// The candidate is accepted by Cloud; make it the deployment systemd
+			// restarts before it handles any business message.
+			if err := paths.Activate(slot); err != nil {
+				failCandidate("candidate_activation_failed")
+				return err
+			}
+			close(committed)
+			logger.Info("Agent update activated", "target", target)
+		}
+		nudge()
+		return nil
 	}
 	var observations transportws.ObservationSource
 	if monitor := runtime.IPMonitor(); monitor != nil {
 		observations = monitor
 	}
 	client, err := transportws.New(transportws.Options{
-		Endpoint: model.Config.Control.Endpoint, Identity: credentials,
-		Version: version, ConfigurationRevision: model.Config.ConfigurationRevision,
-		Capabilities: model.Capabilities.List(), DeploymentState: deploymentState,
-		Executor: runtime, Observations: observations,
-		Lifecycle: lifecycleGate, OnReady: onReady, OnDeploymentTrial: onDeploymentTrial,
-		OnMaintenanceCheck: func(retryID string) {
-			autoupdate.Notify(maintenanceTriggers, autoupdate.Trigger{RetryID: retryID})
-		},
-		Logger: logger,
+		Endpoint: cfg.ControlEndpoint, Identity: credentials,
+		Version: options.Version, ConfigurationRevision: cfg.ConfigurationRevision,
+		Capabilities: model.Capabilities.List(), Executor: runtime, Observations: observations,
+		Lifecycle: gate, OnReady: onReady, OnSessionEnd: nudge, Logger: logger,
 	})
 	if err != nil {
 		return err
 	}
-	services.control, services.ready = client.Run, ready
-	if trial != nil {
-		services.discardTrial = trial.Discard
+	if err := systemdnotify.Ready(); err != nil {
+		return err
 	}
-	return services.run(ctx)
+	deadline := time.Duration(0)
+	if candidate {
+		deadline = CandidateTimeout
+	}
+	err = supervise(ctx, client.Run, func(ctx context.Context) error { return updater.Loop(ctx, nudges) }, committed, deadline)
+	if errors.Is(err, errCandidateTimeout) {
+		failCandidate("candidate_not_ready")
+	}
+	return err
+}
+
+var errCandidateTimeout = errors.New("Agent update candidate was not accepted by Cloud in time")
+
+// supervise runs the control connection and the updater until either stops.
+// The updater starts only once the deployment is committed, so a candidate
+// never updates itself; an uncommitted candidate stops at its deadline.
+func supervise(ctx context.Context, control, updates func(context.Context) error, committed <-chan struct{}, deadline time.Duration) error {
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 2)
+	go func() { done <- control(runContext) }()
+	go func() {
+		select {
+		case <-committed:
+			done <- updates(runContext)
+		case <-runContext.Done():
+			done <- runContext.Err()
+		}
+	}()
+	var expired <-chan time.Time
+	if deadline > 0 {
+		timer := time.NewTimer(deadline)
+		defer timer.Stop()
+		expired = timer.C
+	}
+	running := 2
+	stop := func() {
+		cancel()
+		for ; running > 0; running-- {
+			<-done
+		}
+	}
+	activated := committed
+	for {
+		select {
+		case <-activated:
+			activated, expired = nil, nil
+		case <-expired:
+			// Activation may have happened at the same moment as the deadline.
+			select {
+			case <-committed:
+				activated, expired = nil, nil
+				continue
+			default:
+			}
+			stop()
+			return errCandidateTimeout
+		case err := <-done:
+			running--
+			stop()
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+	}
 }

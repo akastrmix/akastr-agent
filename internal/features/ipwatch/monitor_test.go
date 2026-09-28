@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	"github.com/akastrmix/akastr-agent/internal/state"
 )
 
 func TestOpenMonitorRejectsObsoleteStateSchema(t *testing.T) {
@@ -335,7 +336,7 @@ func TestCheckIdleIncludesPendingIPState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckIdle(filePath); err != nil {
+	if err := checkIdle(filePath); err != nil {
 		t.Fatalf("empty IP state is not idle: %v", err)
 	}
 	if err := monitor.ArmChange(
@@ -343,7 +344,7 @@ func TestCheckIdleIncludesPendingIPState(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckIdle(filePath); err == nil {
+	if err := checkIdle(filePath); err == nil {
 		t.Fatal("CheckIdle accepted pending ChangeIP reconciliation")
 	}
 }
@@ -371,7 +372,7 @@ func TestCheckMaintenanceSafeAllowsReplayableIPFacts(t *testing.T) {
 	if err := CheckMaintenanceSafe(filePath); err != nil {
 		t.Fatalf("replayable pending snapshot blocked configuration maintenance: %v", err)
 	}
-	if err := CheckIdle(filePath); err == nil {
+	if err := checkIdle(filePath); err == nil {
 		t.Fatal("full idle check accepted a pending snapshot")
 	}
 	if err := monitor.AckSnapshot(snapshotID); err != nil {
@@ -450,7 +451,7 @@ func TestMonitorPersistsIPv6IndependentlyFromIPv4Readiness(t *testing.T) {
 	if err := monitor.AckSnapshot(snapshots[0].SnapshotID); err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckIdle(filePath); err != nil {
+	if err := checkIdle(filePath); err != nil {
 		t.Fatalf("pending IPv6 blocked operation/configuration idle state: %v", err)
 	}
 	if err := monitor.AckSnapshot(snapshots[1].SnapshotID); err != nil {
@@ -493,4 +494,22 @@ func TestIPv6ProbeFailureIsTransient(t *testing.T) {
 	if !errors.Is(err, errTransientMonitor) {
 		t.Fatalf("IPv6 probe error = %v", err)
 	}
+}
+
+func checkIdle(filePath string) error {
+	snapshot := monitorSnapshot{SchemaVersion: 2}
+	found, err := state.NewJSONFile(filePath).Load(&snapshot)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return nil
+	}
+	if err := validateMonitorSnapshot(snapshot); err != nil {
+		return err
+	}
+	if snapshot.PendingSnapshot != nil || snapshot.Pending != nil || snapshot.ChangeAttempt != nil || snapshot.PendingUnchanged != nil {
+		return errors.New("IP observation or ChangeIP reconciliation is pending")
+	}
+	return nil
 }

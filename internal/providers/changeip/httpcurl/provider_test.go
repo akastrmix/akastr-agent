@@ -32,19 +32,3 @@ func TestClassifyRequiresExactHTTP200(t *testing.T) {
 		})
 	}
 }
-
-func TestConfigFileAcceptsOnlyRevisionManagedPaths(t *testing.T) {
-	if !validConfigFile("/var/lib/akastr-agent/configurations/2/changeip-curl.conf") {
-		t.Fatal("managed revision path rejected")
-	}
-	for _, rejected := range []string{
-		"/etc/akastr-agent/changeip-curl.conf",
-		"/var/lib/akastr-agent/configurations/0/changeip-curl.conf",
-		"/var/lib/akastr-agent/configurations/2/../changeip-curl.conf",
-		"/tmp/changeip-curl.conf",
-	} {
-		if validConfigFile(rejected) {
-			t.Fatalf("unmanaged path accepted: %s", rejected)
-		}
-	}
-}

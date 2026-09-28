@@ -18,18 +18,12 @@ func TestNewRejectsMissingRuntimeDependency(t *testing.T) {
 	if err := os.WriteFile(scriptPath, script, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	profilesPath := filepath.Join(directory, "profiles.json")
-	if err := os.WriteFile(profilesPath, []byte(`{
-  "schema_version": 1,
-  "profiles": {"target": {"username": "user", "password": "secret"}}
-}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	digest := sha256.Sum256(script)
 	t.Setenv("PATH", directory)
 
 	_, err := New(Config{
-		ScriptPath: scriptPath, ProfilesFile: profilesPath, Timeout: time.Minute,
+		ScriptPath: scriptPath, Profiles: map[string]Profile{"target": {Username: "user", Password: "secret"}},
+		Timeout:       time.Minute,
 		ScriptVersion: "test", ExpectedSHA256Hex: hex.EncodeToString(digest[:]),
 	})
 	if err == nil || !strings.Contains(err.Error(), "required command") {
@@ -67,25 +61,5 @@ func TestInterpretScriptOutputFailures(t *testing.T) {
 				t.Fatalf("interpretScriptOutput() code = %q, want %q", code, test.wantCode)
 			}
 		})
-	}
-}
-
-func TestProfileIDsAreSortedWithoutCredentials(t *testing.T) {
-	profilesPath := filepath.Join(t.TempDir(), "profiles.json")
-	if err := os.WriteFile(profilesPath, []byte(`{
-  "schema_version": 1,
-  "profiles": {
-    "z-secondary": {"username": "second-user", "password": "second-secret"},
-    "a-primary": {"username": "first-user", "password": "first-secret"}
-  }
-}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ids, err := ProfileIDs(profilesPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ids) != 2 || ids[0] != "a-primary" || ids[1] != "z-secondary" {
-		t.Fatalf("ProfileIDs() = %#v", ids)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -35,20 +36,19 @@ func (o *changingAddressObserver) Observe(context.Context, ipwatch.Family) (ipwa
 	return ipwatch.Observation{Address: netip.MustParseAddr(address), ObservedAt: time.Now().UTC()}, nil
 }
 
-// Use the production heartbeat deadlines here: a peer accepts writes but
-// suppresses Pongs and event ACKs. The actual client must reconnect and replay
-// the durable event, without needing an incoming command to wake it up.
+// A peer accepts writes but suppresses Pongs and event ACKs. The client must
+// reconnect and replay the durable event without an incoming command to wake it.
 func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 55*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	credentials := identity.Identity{
-		SchemaVersion: identity.SchemaVersion, EnrollmentState: identity.EnrollmentConfirmed,
-		AgentID:   "f40a6d7e-bc54-4c8a-a68f-9895674677b6",
-		PublicKey: base64.RawURLEncoding.EncodeToString(public), PrivateKey: base64.RawURLEncoding.EncodeToString(private),
+		SchemaVersion: identity.SchemaVersion,
+		AgentID:       "f40a6d7e-bc54-4c8a-a68f-9895674677b6",
+		PublicKey:     base64.RawURLEncoding.EncodeToString(public), PrivateKey: base64.RawURLEncoding.EncodeToString(private),
 	}
 	statePath := filepath.Join(t.TempDir(), "ip.json")
 	monitor, err := ipwatch.OpenMonitor(statePath, &changingAddressObserver{}, 10*time.Second, false)
@@ -132,8 +132,9 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 	executor := &recordingExecutor{executed: make(chan string, 1)}
 	client := &Client{
 		endpoint: strings.Replace(server.URL, "http", "ws", 1), identity: credentials,
-		version: "v1.6.1", configurationRevision: 1, deploymentState: "current",
+		version: "v1.6.1", configurationRevision: 1,
 		executor: executor, observations: monitor, lifecycle: lifecycle.New(),
+		heartbeatInterval: 200 * time.Millisecond, heartbeatTimeout: 100 * time.Millisecond,
 		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
 		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
 	}
@@ -155,7 +156,7 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 		t.Fatalf("event changed during recovery: first=%+v replay=%+v connections=%d", first, replay, connections.Load())
 	}
 	// Wait for the real monitor to persist the ACK, not just a successful write.
-	for ipwatch.CheckIdle(statePath) != nil {
+	for persisted, _ := os.ReadFile(statePath); strings.Contains(string(persisted), `"pending":`); persisted, _ = os.ReadFile(statePath) {
 		select {
 		case <-ctx.Done():
 			t.Fatal("IP ACK was not persisted")

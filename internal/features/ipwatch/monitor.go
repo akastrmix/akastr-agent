@@ -78,24 +78,6 @@ func OpenMonitor(filePath string, observer AddressObserver, interval time.Durati
 	return monitor, nil
 }
 
-func CheckIdle(filePath string) error {
-	snapshot := monitorSnapshot{SchemaVersion: 2}
-	found, err := state.NewJSONFile(filePath).Load(&snapshot)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return nil
-	}
-	if err := validateMonitorSnapshot(snapshot); err != nil {
-		return err
-	}
-	if snapshot.PendingSnapshot != nil || snapshot.Pending != nil || snapshot.ChangeAttempt != nil || snapshot.PendingUnchanged != nil {
-		return errors.New("IP observation or ChangeIP reconciliation is pending")
-	}
-	return nil
-}
-
 // CheckMaintenanceSafe permits durable IP facts that can be replayed after the
 // configuration switch, while retaining the ChangeIP execution boundary.
 func CheckMaintenanceSafe(filePath string) error {

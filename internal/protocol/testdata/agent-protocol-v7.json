@@ -1,12 +1,12 @@
 {
   "schema": "akastr-agent-protocol-fixtures.v1",
-  "protocol": "2026-08-23.v6",
+  "protocol": "2026-09-28.v7",
   "golden": [
     {
       "name": "cloud-auth-challenge",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174100",
         "type": "auth.challenge",
         "sent_at": "2026-08-18T00:00:00.000Z",
@@ -20,10 +20,23 @@
       }
     },
     {
+      "name": "cloud-hello-accepted",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-09-28.v7",
+        "message_id": "123e4567-e89b-42d3-a456-426614174150",
+        "type": "hello.accepted",
+        "sent_at": "2026-08-18T00:00:00.500Z",
+        "body": {
+          "agent_id": "123e4567-e89b-42d3-a456-426614174102"
+        }
+      }
+    },
+    {
       "name": "cloud-changeip-offer",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174103",
         "type": "operation.offer",
         "sent_at": "2026-08-18T00:00:01.000Z",
@@ -40,47 +53,10 @@
       }
     },
     {
-      "name": "cloud-maintenance-check",
-      "direction": "cloud_to_agent",
-      "message": {
-        "protocol": "2026-08-23.v6",
-        "message_id": "123e4567-e89b-42d3-a456-426614174199",
-        "type": "maintenance.check",
-        "sent_at": "2026-08-18T00:00:01.500Z",
-        "body": {}
-      }
-    },
-    {
-      "name": "cloud-maintenance-required",
-      "direction": "cloud_to_agent",
-      "message": {
-        "protocol": "2026-08-23.v6",
-        "message_id": "123e4567-e89b-42d3-a456-426614174128",
-        "type": "maintenance.required",
-        "sent_at": "2026-08-18T00:00:01.750Z",
-        "body": {
-          "agent_id": "123e4567-e89b-42d3-a456-426614174102"
-        }
-      }
-    },
-    {
-      "name": "cloud-deployment-trial-accepted",
-      "direction": "cloud_to_agent",
-      "message": {
-        "protocol": "2026-08-23.v6",
-        "message_id": "123e4567-e89b-42d3-a456-426614174130",
-        "type": "deployment.trial_accepted",
-        "sent_at": "2026-08-18T00:00:01.900Z",
-        "body": {
-          "agent_id": "123e4567-e89b-42d3-a456-426614174102"
-        }
-      }
-    },
-    {
       "name": "cloud-ipquality-offer",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174105",
         "type": "operation.offer",
         "sent_at": "2026-08-18T00:00:02.000Z",
@@ -103,7 +79,7 @@
       "name": "cloud-operation-accepted-ack",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174107",
         "type": "operation.accepted_ack",
         "sent_at": "2026-08-18T00:00:03.000Z",
@@ -117,7 +93,7 @@
       "name": "agent-auth-response",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174108",
         "type": "auth.response",
         "sent_at": "2026-08-18T00:00:04.000Z",
@@ -132,7 +108,7 @@
       "name": "agent-hello",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174109",
         "type": "agent.hello",
         "sent_at": "2026-08-18T00:00:05.000Z",
@@ -148,27 +124,15 @@
                 "observe_ipv6": "true"
               }
             }
-          ],
-          "deployment_state": "current"
+          ]
         }
-      }
-    },
-    {
-      "name": "agent-deployment-committed",
-      "direction": "agent_to_cloud",
-      "message": {
-        "protocol": "2026-08-23.v6",
-        "message_id": "123e4567-e89b-42d3-a456-426614174131",
-        "type": "deployment.committed",
-        "sent_at": "2026-08-18T00:00:05.500Z",
-        "body": {}
       }
     },
     {
       "name": "agent-operation-result",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174110",
         "type": "operation.result",
         "sent_at": "2026-08-18T00:00:06.000Z",
@@ -187,7 +151,7 @@
       "name": "agent-ip-observed",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174111",
         "type": "ip.observed",
         "sent_at": "2026-08-18T00:00:07.000Z",
@@ -204,7 +168,7 @@
       "name": "agent-ipv6-observed",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174126",
         "type": "ip.observed",
         "sent_at": "2026-08-18T00:00:08.000Z",
@@ -220,12 +184,12 @@
   ],
   "malformed": [
     {
-      "name": "cloud-maintenance-required-extra-field",
+      "name": "cloud-hello-accepted-extra-field",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174129",
-        "type": "maintenance.required",
+        "type": "hello.accepted",
         "sent_at": "2026-08-18T00:00:01.800Z",
         "body": {
           "agent_id": "123e4567-e89b-42d3-a456-426614174102",
@@ -237,7 +201,7 @@
       "name": "cloud-changeip-offer-missing-expected-ipv4",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174113",
         "type": "operation.offer",
         "sent_at": "2026-08-18T00:00:08.000Z",
@@ -255,7 +219,7 @@
       "name": "cloud-ipquality-offer-extra-field",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174115",
         "type": "operation.offer",
         "sent_at": "2026-08-18T00:00:09.000Z",
@@ -279,7 +243,7 @@
       "name": "cloud-accepted-ack-missing-accepted",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174118",
         "type": "operation.accepted_ack",
         "sent_at": "2026-08-18T00:00:10.000Z",
@@ -292,7 +256,7 @@
       "name": "cloud-auth-challenge-padded-nonce",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174119",
         "type": "auth.challenge",
         "sent_at": "2026-08-18T00:00:11.000Z",
@@ -309,7 +273,7 @@
       "name": "agent-auth-response-padded-signature",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174121",
         "type": "auth.response",
         "sent_at": "2026-08-18T00:00:12.000Z",
@@ -324,7 +288,7 @@
       "name": "agent-ip-observed-missing-observed-at",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174122",
         "type": "ip.observed",
         "sent_at": "2026-08-18T00:00:13.000Z",
@@ -340,7 +304,7 @@
       "name": "agent-result-extra-field",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-08-23.v6",
+        "protocol": "2026-09-28.v7",
         "message_id": "123e4567-e89b-42d3-a456-426614174124",
         "type": "operation.result",
         "sent_at": "2026-08-18T00:00:14.000Z",
@@ -366,5 +330,181 @@
         }
       }
     }
-  ]
+  ],
+  "maintenance": {
+    "public_key": "6kpsY-KcUgq-9VB7Ey7F-ZVHdq6-vnuSQh7qaRRG0iw",
+    "request": {
+      "agent_id": "123e4567-e89b-42d3-a456-426614174102",
+      "agent_version": "v1.7.0",
+      "configuration_revision": 3,
+      "error_code": "candidate_not_ready",
+      "nonce": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+      "sent_at": "2026-09-28T00:00:00.000Z",
+      "signature": "4UvWMKhMJ1qWysbmaYL1UC9lHyFg-8n98N236Kz0sARdcKO49bE-vMKTK6ouIdxjXwpo7NedlbRep9zCXxEZAg"
+    },
+    "signing_text": "akastr-agent-maintenance-v2\n123e4567-e89b-42d3-a456-426614174102\nv1.7.0\n3\ncandidate_not_ready\nCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\n2026-09-28T00:00:00.000Z",
+    "responses": {
+      "golden": [
+        {
+          "name": "current",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "current",
+            "version": "v1.7.0",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.7.0/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 3,
+            "configuration": null
+          }
+        },
+        {
+          "name": "busy",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "busy",
+            "version": "v1.8.0",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.8.0/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 3,
+            "configuration": null
+          }
+        },
+        {
+          "name": "software-only",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "update_available",
+            "version": "v1.8.0",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.8.0/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 3,
+            "configuration": null
+          }
+        },
+        {
+          "name": "software-and-configuration",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "update_available",
+            "version": "v1.8.0",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.8.0/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 4,
+            "configuration": {
+              "schema_version": 4,
+              "configuration_revision": 4,
+              "mode": "target",
+              "agent_id": "123e4567-e89b-42d3-a456-426614174102",
+              "name": "HKT",
+              "control_endpoint": "wss://origin.akastrmix.com/internal/agents/ws",
+              "target": {
+                "ip_watch_interval_seconds": 60,
+                "observe_ipv6": true,
+                "change_ip": {
+                  "provider": "disabled"
+                },
+                "socks5": {
+                  "enabled": true,
+                  "port": 1080
+                }
+              }
+            }
+          }
+        }
+      ],
+      "malformed": [
+        {
+          "name": "software-downgrade",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "update_available",
+            "version": "v1.6.3",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.6.3/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 3,
+            "configuration": null
+          }
+        },
+        {
+          "name": "configuration-change-without-configuration",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "update_available",
+            "version": "v1.7.0",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.7.0/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 4,
+            "configuration": null
+          }
+        },
+        {
+          "name": "configuration-without-revision-change",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "update_available",
+            "version": "v1.8.0",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.8.0/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 3,
+            "configuration": {
+              "schema_version": 4,
+              "configuration_revision": 4,
+              "mode": "target",
+              "agent_id": "123e4567-e89b-42d3-a456-426614174102",
+              "name": "HKT",
+              "control_endpoint": "wss://origin.akastrmix.com/internal/agents/ws",
+              "target": {
+                "ip_watch_interval_seconds": 60,
+                "observe_ipv6": true,
+                "change_ip": {
+                  "provider": "disabled"
+                },
+                "socks5": {
+                  "enabled": true,
+                  "port": 1080
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "binary-outside-release-repository",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "update_available",
+            "version": "v1.8.0",
+            "binary_url": "https://example.com/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 3,
+            "configuration": null
+          }
+        },
+        {
+          "name": "unknown-field",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "current",
+            "version": "v1.7.0",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.7.0/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 3,
+            "configuration": null,
+            "retry_id": "x"
+          }
+        },
+        {
+          "name": "current-with-newer-software",
+          "response": {
+            "schema": "akastr-agent-maintenance.v2",
+            "status": "current",
+            "version": "v1.8.0",
+            "binary_url": "https://github.com/akastrmix/akastr-agent/releases/download/v1.8.0/akastr-agent-linux-amd64",
+            "binary_sha256": "66dcc1ae17b2e8b25db8cc252412eb456458c5d5eb12acfaab952d49cc2e359a",
+            "configuration_revision": 3,
+            "configuration": null
+          }
+        }
+      ]
+    }
+  }
 }

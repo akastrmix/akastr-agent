@@ -82,22 +82,9 @@ scripts/                release 构建与非交互安装模板
 ./scripts/verify-go.sh
 ```
 
-修改 installer 或安装状态转换时，在本机 Docker 运行 Debian 12/13 回归，覆盖首次安装、同节点覆盖、残缺/failed 状态、失败重跑、Target/Runner 与卸载收敛；容器不连接 Cloud，也不使用真实 token：
+安装与更新逻辑都在 Go 里（`internal/install`、`internal/update`），由上面的 Go 测试用模拟主控覆盖；`install.sh` 只负责下载、校验并交给程序。
 
-```bash
-for version in 12 13; do
-  docker run --rm \
-    -e AKASTR_INSTALLER_CONTAINER_TEST=1 \
-    --volume "$PWD:/source:ro" \
-    --workdir /source \
-    "debian:${version}-slim" \
-    sh scripts/test-installer-container.sh
-done
-```
-
-需要测量维护模块时，在隔离 Linux 环境运行 `AKASTR_RESOURCE_PROBE=1 go test -run '^TestMaintenanceIdleResourceProbe$' -v ./internal/autoupdate`；该可选测试耗时约 62 秒，CPU/RSS 包含测试框架及本机模拟 HTTPS 主控，不代表完整 Agent 或生产机器。文件回收开销可用 `go test -run '^$' -bench BenchmarkIdleMaintenanceCleanup -benchmem ./internal/autoupdate` 测量。
-
-每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查和 Debian 12/13 installer 容器回归。正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真和重跑规则见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围与操作者配置)，不在本仓库手工拆分发布步骤。
+每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查、固定 IPQuality 源校验和 Debian 12/13 Runner 依赖检查。正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真和重跑规则见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围与操作者配置)，不在本仓库手工拆分发布步骤。
 
 本地排查发布构建时可以运行：
 
@@ -112,6 +99,6 @@ akastr-agent-linux-amd64
 install.sh
 ```
 
-`install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件接受安装码直接安装，也保留环境变量加 `--install` 的原入口、只读 `--status` 和显式确认的 `--uninstall`。
+`install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件接受安装码安装、只读 `--status` 和显式确认的 `--uninstall`。
 
-GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，主进程的独立维护协调才会看到该版本。同协议版本走普通同步发布；业务协议的破坏性版本使用相同入口加 `--breaking-protocol`，Cloud 短暂只读切换后恢复，节点通过独立 HTTPS 维护通道自动更新；维护契约本身保持稳定，不维护多套业务协议。
+GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，节点的更新检查才会看到该版本。同协议版本走普通同步发布；业务协议的破坏性版本使用相同入口加 `--breaking-protocol`，Cloud 短暂只读切换后恢复，节点通过独立的 HTTPS 更新检查自动更新；更新检查本身保持稳定，不维护多套业务协议。

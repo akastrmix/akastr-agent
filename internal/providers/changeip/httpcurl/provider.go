@@ -7,14 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"time"
 
 	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
 )
-
-var reconciledConfigFile = regexp.MustCompile(`^/var/lib/akastr-agent/configurations/[1-9][0-9]*/changeip-curl\.conf$`)
 
 const (
 	CodeCompleted             = "completed"
@@ -26,9 +23,10 @@ const (
 )
 
 type Config struct {
-	Program    string
-	ConfigFile string
-	Timeout    time.Duration
+	Program     string
+	URL         string
+	BearerToken string
+	Timeout     time.Duration
 }
 
 type Provider struct {
@@ -37,20 +35,16 @@ type Provider struct {
 }
 
 func New(config Config) (*Provider, error) {
-	if config.Program != "/usr/bin/curl" || !validConfigFile(config.ConfigFile) {
-		return nil, errors.New("HTTP ChangeIP provider paths are invalid")
+	if config.Program != "/usr/bin/curl" || config.URL == "" || config.BearerToken == "" ||
+		strings.ContainsAny(config.URL+config.BearerToken, "\r\n") || strings.ContainsAny(config.BearerToken, "\"\\") {
+		return nil, errors.New("HTTP ChangeIP provider configuration is invalid")
 	}
-	for label, filePath := range map[string]string{"curl": config.Program, "HTTP ChangeIP configuration": config.ConfigFile} {
-		info, err := os.Stat(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("stat %s: %w", label, err)
-		}
-		if !info.Mode().IsRegular() {
-			return nil, fmt.Errorf("%s must be a regular file", label)
-		}
-		if label == "curl" && info.Mode().Perm()&0o111 == 0 {
-			return nil, errors.New("curl must be executable")
-		}
+	info, err := os.Stat(config.Program)
+	if err != nil {
+		return nil, fmt.Errorf("stat curl: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return nil, errors.New("curl must be an executable regular file")
 	}
 	if config.Timeout <= 0 || config.Timeout > 5*time.Minute {
 		return nil, errors.New("HTTP ChangeIP timeout must be positive and no longer than 5 minutes")
@@ -58,21 +52,21 @@ func New(config Config) (*Provider, error) {
 	return &Provider{config: config, now: time.Now}, nil
 }
 
-func validConfigFile(value string) bool {
-	return reconciledConfigFile.MatchString(value)
-}
-
 func (p *Provider) Run(ctx context.Context) changeprovider.Result {
 	startedAt := p.now().UTC()
 	runContext, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
+	// The URL and bearer token reach curl through its stdin config, never argv or disk.
 	process := exec.Command(
 		p.config.Program,
-		"--config", p.config.ConfigFile,
+		"--config", "-",
 		"--output", os.DevNull,
 		"--write-out", "%{http_code}",
 	)
-	process.Stdin = nil
+	process.Stdin = strings.NewReader(fmt.Sprintf(
+		"url = \"%s\"\nrequest = \"POST\"\nheader = \"Authorization: Bearer %s\"\nfail\nsilent\nshow-error\n",
+		strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(p.config.URL), p.config.BearerToken,
+	))
 	var output bytes.Buffer
 	process.Stdout = &output
 	process.Stderr = nil

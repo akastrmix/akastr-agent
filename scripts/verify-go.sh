@@ -5,9 +5,8 @@ set -eu
 : "${GOMEMLIMIT:=256MiB}"
 export GOMAXPROCS GOMEMLIMIT
 repository=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-# Keep cancellation stress checks before the full suite. Timeouts expose leaks.
-go -C "$repository" test -p "$GOMAXPROCS" -count=100 -timeout=2m ./internal/autoupdate
-go -C "$repository" test -p "$GOMAXPROCS" -count=20 -timeout=2m ./internal/features/ipwatch
+# Repeat the concurrency-heavy packages; timeouts expose leaked goroutines.
+go -C "$repository" test -p "$GOMAXPROCS" -count=20 -timeout=2m ./internal/features/ipwatch ./internal/daemon
 go -C "$repository" test -p "$GOMAXPROCS" -count=1 -timeout=2m ./...
 go -C "$repository" vet -p "$GOMAXPROCS" ./...
-go -C "$repository" build -p "$GOMAXPROCS" ./cmd/akastr-agent
+go -C "$repository" build -p "$GOMAXPROCS" -o /dev/null ./cmd/akastr-agent

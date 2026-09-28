@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
@@ -19,58 +20,57 @@ func Load(configPath string) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	var runnerProfileIDs []string
-	if cfg.Capabilities.IPQualityRunner.Enabled {
-		runnerProfileIDs, err = qualityscript.ProfileIDs(cfg.Capabilities.IPQualityRunner.ProxyProfilesFile)
-		if err != nil {
-			return nil, fmt.Errorf("load IPQuality profile identifiers: %w", err)
-		}
-	}
-	registry, err := buildCapabilities(cfg.Capabilities, runnerProfileIDs)
+	return NewModel(cfg)
+}
+
+func NewModel(cfg config.Config) (*Model, error) {
+	registry, err := buildCapabilities(cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &Model{Config: cfg, Capabilities: registry}, nil
 }
 
-func buildCapabilities(cfg config.CapabilitiesConfig, runnerProfileIDs []string) (*capability.Registry, error) {
+func buildCapabilities(cfg config.Config) (*capability.Registry, error) {
 	descriptors := make([]capability.Descriptor, 0, 4)
-	if cfg.IPWatch.Enabled {
+	if target := cfg.Target; target != nil {
 		descriptors = append(descriptors, capability.Descriptor{
 			Name:    "ip.observe",
 			Version: 1,
 			Properties: map[string]any{
-				"interval_seconds": strconv.Itoa(cfg.IPWatch.IntervalSeconds),
-				"observe_ipv6":     strconv.FormatBool(cfg.IPWatch.ObserveIPv6),
+				"interval_seconds": strconv.Itoa(target.IPWatchIntervalSeconds),
+				"observe_ipv6":     strconv.FormatBool(*target.ObserveIPv6),
 			},
 		})
-	}
-	if cfg.ChangeIP.Provider != "disabled" {
-		descriptors = append(descriptors, capability.Descriptor{
-			Name:            "changeip.command",
-			Version:         1,
-			ExclusiveGroups: []string{"target-network"},
-		})
-	}
-	if cfg.SOCKS5.Enabled {
-		properties := map[string]any{
-			"port": strconv.Itoa(cfg.SOCKS5.Port),
+		if target.ChangeIP.Provider != "disabled" {
+			descriptors = append(descriptors, capability.Descriptor{
+				Name:            "changeip.command",
+				Version:         1,
+				ExclusiveGroups: []string{"target-network"},
+			})
 		}
-		descriptors = append(descriptors, capability.Descriptor{
-			Name:       "proxy.socks5",
-			Version:    1,
-			Properties: properties,
-		})
+		if target.SOCKS5.Enabled {
+			descriptors = append(descriptors, capability.Descriptor{
+				Name:       "proxy.socks5",
+				Version:    1,
+				Properties: map[string]any{"port": strconv.Itoa(target.SOCKS5.Port)},
+			})
+		}
 	}
-	if cfg.IPQualityRunner.Enabled {
+	if runner := cfg.Runner; runner != nil {
+		profileIDs := make([]string, 0, len(runner.Profiles))
+		for _, profile := range runner.Profiles {
+			profileIDs = append(profileIDs, profile.ID)
+		}
+		sort.Strings(profileIDs)
 		descriptors = append(descriptors, capability.Descriptor{
 			Name:            "ipquality.runner",
 			Version:         1,
 			ExclusiveGroups: []string{"ipquality-runner"},
 			Properties: map[string]any{
-				"max_concurrency":   strconv.Itoa(cfg.IPQualityRunner.MaxConcurrency),
-				"script_version":    cfg.IPQualityRunner.ScriptVersion,
-				"proxy_profile_ids": append([]string(nil), runnerProfileIDs...),
+				"max_concurrency":   "1",
+				"script_version":    qualityscript.PinnedVersion,
+				"proxy_profile_ids": profileIDs,
 			},
 		})
 	}

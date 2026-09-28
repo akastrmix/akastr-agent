@@ -2,176 +2,185 @@ package daemon
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/app"
-	"github.com/akastrmix/akastr-agent/internal/autoupdate"
-	"github.com/akastrmix/akastr-agent/internal/config"
 	"github.com/akastrmix/akastr-agent/internal/identity"
+	"github.com/akastrmix/akastr-agent/internal/layout"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	"github.com/coder/websocket"
 )
 
-func missingDependencyModel(t *testing.T) *app.Model {
-	t.Helper()
-	root := t.TempDir()
-	public, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+func waitForCancel(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }
+
+// A candidate that Cloud never accepts must exit so systemd restarts the
+// previous deployment, and it must not start updating itself meanwhile.
+func TestCandidateStopsAtDeadlineWithoutUpdating(t *testing.T) {
+	var updating atomic.Bool
+	err := supervise(t.Context(), waitForCancel,
+		func(ctx context.Context) error { updating.Store(true); return waitForCancel(ctx) },
+		make(chan struct{}), 20*time.Millisecond)
+	if !errors.Is(err, errCandidateTimeout) || updating.Load() {
+		t.Fatalf("err=%v updating=%v", err, updating.Load())
 	}
-	credentials := identity.Identity{
-		SchemaVersion: identity.SchemaVersion, EnrollmentState: identity.EnrollmentConfirmed,
-		AgentID:   "123e4567-e89b-42d3-a456-426614174000",
-		PublicKey: base64.RawURLEncoding.EncodeToString(public), PrivateKey: base64.RawURLEncoding.EncodeToString(private),
-	}
-	encoded, err := json.Marshal(credentials)
-	if err != nil {
-		t.Fatal(err)
-	}
-	credentialFile := filepath.Join(root, "identity.json")
-	if err := os.WriteFile(credentialFile, encoded, 0600); err != nil {
-		t.Fatal(err)
-	}
-	return &app.Model{Config: config.Config{
-		ConfigurationRevision: 1,
-		Node:                  config.NodeConfig{ID: credentials.AgentID},
-		Control:               config.ControlConfig{CredentialFile: credentialFile},
-		StateFile:             filepath.Join(root, "operations.json"), IPStateFile: filepath.Join(root, "ip.json"), RecentOperationLimit: 16,
-		Capabilities: config.CapabilitiesConfig{ChangeIP: config.ChangeIPConfig{
-			Provider: "command", Program: filepath.Join(root, "missing-provider"), TimeoutSeconds: 30,
-		}},
-	}}
 }
 
-func TestCurrentMissingDependencyKeepsHTTPSMaintenanceRunning(t *testing.T) {
-	t.Setenv(autoupdate.TrialVersionEnvironment, "")
-	t.Setenv("NOTIFY_SOCKET", "")
-	model := missingDependencyModel(t)
-	if _, err := app.BuildRuntime(model); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("fixture must fail because its provider is missing: %v", err)
-	}
-	checked := make(chan struct{}, 1)
-	var waits, business atomic.Int32
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_ = r.Body.Close()
-		switch r.URL.Path {
-		case "/internal/agents/maintenance-wait":
-			if waits.Add(1) > 1 {
-				<-r.Context().Done()
-				return
-			}
-			w.Header().Set("X-Akastr-Agent-Retry", "123e4567-e89b-42d3-a456-426614174001")
-			_ = json.NewEncoder(w).Encode(map[string]bool{"check": true})
-		case "/internal/agents/maintenance":
-			_ = json.NewEncoder(w).Encode(autoupdate.Manifest{
-				Schema: autoupdate.Schema, Status: "current",
-				Software: autoupdate.SoftwareTarget{Status: "current", Version: "v1.0.0", Protocol: protocol.Version,
-					BinaryURL: "https://github.com/akastrmix/akastr-agent/releases/download/v1.0.0/akastr-agent-linux-amd64", BinarySHA256: strings.Repeat("a", 64)},
-				Configuration: autoupdate.ConfigurationTarget{Status: "current", Revision: 1, SchemaVersion: 1, MinimumAgentVersion: "v1.0.0"},
-			})
-			select {
-			case checked <- struct{}{}:
-			default:
-			}
-		default:
-			business.Add(1)
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
-	// The production client uses the default transport; trust only this local test server.
-	previousTransport := http.DefaultTransport
-	http.DefaultTransport = server.Client().Transport
-	defer func() { http.DefaultTransport = previousTransport }()
-	model.Config.Control.Endpoint = "wss" + strings.TrimPrefix(server.URL, "https") + "/internal/agents/ws"
+func TestActivatedCandidateStartsUpdatesAndDisarmsDeadline(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	committed, started := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- run(ctx, model, Options{Version: "v1.0.0", ConfigPath: filepath.Join(t.TempDir(), "config.json"),
-			Reexec: func(string, string, string, int64) error { return errors.New("unexpected process replacement") }}, t.TempDir())
+		done <- supervise(ctx,
+			func(ctx context.Context) error { close(committed); return waitForCancel(ctx) },
+			func(ctx context.Context) error { close(started); return waitForCancel(ctx) },
+			committed, 20*time.Millisecond)
 	}()
 	select {
-	case <-checked:
-	case err := <-done:
-		t.Fatalf("current deployment stopped before receiving maintenance: %v", err)
-	case <-time.After(5 * time.Second):
-		t.Fatal("missing runtime dependency blocked HTTPS maintenance")
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("activated candidate did not start updates")
 	}
 	select {
 	case err := <-done:
-		t.Fatalf("maintenance stopped after its first check: %v", err)
-	default:
+		t.Fatalf("activated candidate stopped: %v", err)
+	case <-time.After(60 * time.Millisecond):
 	}
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-	if waits.Load() == 0 || business.Load() != 0 {
-		t.Fatalf("waits=%d business requests=%d", waits.Load(), business.Load())
-	}
 }
 
-func TestInvalidTrialDoesNotFallBackToMaintenance(t *testing.T) {
-	t.Setenv(autoupdate.TrialVersionEnvironment, "v2.0.0")
-	model := missingDependencyModel(t)
-	err := run(t.Context(), model, Options{Version: "v1.0.0"}, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "trial version is invalid") {
-		t.Fatalf("trial validation must precede runtime fallback: %v", err)
-	}
-}
-
-func TestTrialMissingDependencyStopsBeforeMaintenance(t *testing.T) {
-	if root := os.Getenv("AKASTR_TEST_TRIAL_ROOT"); root != "" {
-		model := missingDependencyModel(t)
-		ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
-		defer cancel()
-		err := run(ctx, model, Options{Version: "v1.0.0",
-			ConfigPath: filepath.Join(root, "deployments", "v1.0.0-r1", "config", "config.json")}, root)
-		if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "missing-provider") {
-			t.Fatalf("trial runtime failure must return without maintenance fallback: %v", err)
-		}
-		return
-	}
+// The whole candidate path through Run: a process started from the inactive
+// slot becomes the active deployment only once Cloud accepts its hello.
+func TestCandidateActivatesItsSlotWhenCloudAcceptsIt(t *testing.T) {
 	root := t.TempDir()
-	for _, directory := range []string{"releases/v1.0.0", "deployments/v1.0.0-r1", "configurations/1"} {
-		if err := os.MkdirAll(filepath.Join(root, directory), 0700); err != nil {
+	paths := layout.Layout{Root: filepath.Join(root, "lib"), StateDir: filepath.Join(root, "state"), IdentityFile: filepath.Join(root, "identity.json")}
+	credentials, err := identity.Generate("123e4567-e89b-42d3-a456-426614174102")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := credentials.Save(paths.IdentityFile); err != nil {
+		t.Fatal(err)
+	}
+	for _, slot := range []string{paths.Slot("a"), paths.Slot("b")} {
+		if err := os.MkdirAll(slot, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Symlink(filepath.Join(root, "configurations", "1"), filepath.Join(root, "deployments", "v1.0.0-r1", "config")); err != nil {
+	if err := paths.Activate(paths.Slot("a")); err != nil {
 		t.Fatal(err)
 	}
-	executable, err := os.Executable()
-	if err != nil {
+	hellos := make(chan protocol.HelloBody, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/internal/agents/ws" {
+			http.NotFound(response, request)
+			return
+		}
+		connection, err := websocket.Accept(response, request, nil)
+		if err != nil {
+			return
+		}
+		defer connection.CloseNow()
+		send := func(messageType string, body any) error {
+			encoded, err := protocol.Encode(messageType, body)
+			if err != nil {
+				return err
+			}
+			return connection.Write(request.Context(), websocket.MessageText, encoded)
+		}
+		read := func() (protocol.Envelope, error) {
+			_, data, err := connection.Read(request.Context())
+			if err != nil {
+				return protocol.Envelope{}, err
+			}
+			return protocol.Decode(data)
+		}
+		now := time.Now().UTC()
+		if send("auth.challenge", protocol.AuthChallenge{
+			ChallengeID: "123e4567-e89b-42d3-a456-426614174000", AgentID: credentials.AgentID,
+			Nonce:    base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
+			IssuedAt: now.Format(time.RFC3339Nano), ExpiresAt: now.Add(time.Minute).Format(time.RFC3339Nano),
+		}) != nil {
+			return
+		}
+		if _, err := read(); err != nil || send("auth.accepted", protocol.AgentIDBody{AgentID: credentials.AgentID}) != nil {
+			return
+		}
+		envelope, err := read()
+		if err != nil {
+			return
+		}
+		hello, err := protocol.DecodeBody[protocol.HelloBody](envelope, "agent_version", "configuration_revision", "capabilities")
+		if err != nil {
+			return
+		}
+		hellos <- hello
+		if send("hello.accepted", protocol.AgentIDBody{AgentID: credentials.AgentID}) != nil {
+			return
+		}
+		for {
+			if _, err := read(); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+	originalTransport := http.DefaultTransport
+	http.DefaultTransport = server.Client().Transport
+	defer func() { http.DefaultTransport = originalTransport }()
+	configuration := fmt.Sprintf(`{"schema_version":4,"configuration_revision":4,"mode":"target",
+"agent_id":%q,"name":"HKT","control_endpoint":"wss://%s/internal/agents/ws",
+"target":{"ip_watch_interval_seconds":60,"observe_ipv6":false,"change_ip":{"provider":"disabled"},"socks5":{"enabled":false}}}`,
+		credentials.AgentID, strings.TrimPrefix(server.URL, "https://"))
+	configPath := layout.SlotConfig(paths.Slot("b"))
+	if err := os.WriteFile(configPath, []byte(configuration), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	binary, err := os.ReadFile(executable)
-	if err != nil {
-		t.Fatal(err)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, Options{
+			ConfigPath: configPath, Version: "v1.8.0", Layout: paths,
+			Exec:   func(string, string) error { return errors.New("unexpected update") },
+			Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		})
+	}()
+	select {
+	case hello := <-hellos:
+		if hello.AgentVersion != "v1.8.0" || hello.ConfigurationRevision != 4 {
+			t.Fatalf("hello = %+v", hello)
+		}
+	case err := <-done:
+		t.Fatalf("candidate stopped before its hello: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("candidate did not send hello")
 	}
-	candidate := filepath.Join(root, "releases", "v1.0.0", "akastr-agent")
-	if err := os.WriteFile(candidate, binary, 0700); err != nil {
-		t.Fatal(err)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if active, _ := paths.ActiveSlot(); active == paths.Slot("b") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("accepted candidate did not activate its slot")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	cmd := exec.CommandContext(t.Context(), candidate, "-test.run=^TestTrialMissingDependencyStopsBeforeMaintenance$")
-	cmd.Env = append(os.Environ(), "AKASTR_TEST_TRIAL_ROOT="+root,
-		autoupdate.TrialVersionEnvironment+"=v1.0.0", autoupdate.TrialRevisionEnvironment+"=1")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("trial process: %v\n%s", err, output)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

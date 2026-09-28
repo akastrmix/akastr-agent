@@ -143,16 +143,15 @@ func (o *Observer) fetch(ctx context.Context, client *http.Client, candidate sou
 }
 
 func newFamilyClient(network string, timeout time.Duration) *http.Client {
-	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	dialer := &net.Dialer{Timeout: timeout}
+	// Every observation opens a new connection: an established flow can keep the
+	// previous egress address after a network change and would hide the new IP.
 	transport := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, _ string, address string) (net.Conn, error) {
 			return dialer.DialContext(ctx, network, address)
 		},
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          4,
-		MaxIdleConnsPerHost:   1,
-		IdleConnTimeout:       90 * time.Second,
+		DisableKeepAlives:     true,
 		TLSHandshakeTimeout:   timeout,
 		ResponseHeaderTimeout: timeout,
 	}

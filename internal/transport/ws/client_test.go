@@ -37,7 +37,7 @@ func TestReconnectBackoffResetsOnlyAfterStableSession(t *testing.T) {
 		{"healthy then disconnected", now.Add(-heartbeatInterval), time.Second},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := sessionBackoff(30*time.Second, test.readyAt, now); got != test.want {
+			if got := sessionBackoff(30*time.Second, test.readyAt, now, heartbeatInterval); got != test.want {
 				t.Fatalf("backoff=%v, want %v", got, test.want)
 			}
 		})
@@ -157,101 +157,16 @@ func TestFatalObservationErrorStopsClient(t *testing.T) {
 	}
 }
 
-func TestMaintenanceCheckTriggersExistingReconciliationLoop(t *testing.T) {
-	triggered := 0
-	var retryID string
-	client := &Client{onMaintenanceCheck: func(id string) { triggered++; retryID = id }}
-	encoded, err := protocol.Encode("maintenance.check", struct{}{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := protocol.Decode(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := client.handleMaintenanceCheck(envelope); err != nil {
-		t.Fatalf("handleMaintenanceCheck() error = %v", err)
-	}
-	if triggered != 1 {
-		t.Fatalf("manual maintenance triggers = %d, want 1", triggered)
-	}
-	if retryID != envelope.MessageID {
-		t.Fatal("manual WSS notification lost its one-use ID")
-	}
-	envelope.Body = []byte(`{"unexpected":true}`)
-	if err := client.handleMaintenanceCheck(envelope); err == nil {
-		t.Fatal("maintenance.check accepted an unknown body field")
-	}
-}
-
-func TestMaintenanceOnlySessionRejectsBusinessMessages(t *testing.T) {
-	client := &Client{onMaintenanceCheck: func(string) {}}
-	encoded, err := protocol.Encode("operation.offer", struct{}{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := protocol.Decode(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := client.handleMaintenanceSessionEnvelope(envelope); err == nil {
-		t.Fatal("maintenance-only session accepted a business message")
-	}
-}
-
-func TestHelloResponseSelectsMaintenanceOnlySession(t *testing.T) {
-	agentID := "f40a6d7e-bc54-4c8a-a68f-9895674677b6"
-	encoded, err := protocol.Encode("maintenance.required", protocol.AgentIDBody{AgentID: agentID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := protocol.Decode(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mode, err := helloSessionMode(envelope, agentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mode != sessionMaintenance {
-		t.Fatalf("maintenance response selected session mode %d", mode)
-	}
-	if _, err := helloSessionMode(envelope, "2bfadfbb-7481-4d96-9e0b-40a04aa4aeb4"); err == nil {
-		t.Fatal("maintenance response accepted another Agent identity")
-	}
-}
-
-func TestHelloResponseSelectsDeploymentTrial(t *testing.T) {
-	agentID := "f40a6d7e-bc54-4c8a-a68f-9895674677b6"
-	encoded, err := protocol.Encode("deployment.trial_accepted", protocol.AgentIDBody{AgentID: agentID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	envelope, err := protocol.Decode(encoded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mode, err := helloSessionMode(envelope, agentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mode != sessionTrial {
-		t.Fatalf("trial response selected session mode %d", mode)
-	}
-}
-
-func TestDeploymentTrialCommitsBeforeReady(t *testing.T) {
+func TestReadyCallbackRunsAfterHelloAccepted(t *testing.T) {
 	agentID := "f40a6d7e-bc54-4c8a-a68f-9895674677b6"
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	credentials := identity.Identity{
-		SchemaVersion: identity.SchemaVersion, EnrollmentState: identity.EnrollmentConfirmed,
-		AgentID: agentID, PublicKey: base64.RawURLEncoding.EncodeToString(publicKey),
+		SchemaVersion: identity.SchemaVersion, AgentID: agentID, PublicKey: base64.RawURLEncoding.EncodeToString(publicKey),
 		PrivateKey: base64.RawURLEncoding.EncodeToString(privateKey),
 	}
-	trialCommitted := make(chan struct{})
 	helloAcknowledged := make(chan struct{})
 	ready := make(chan struct{})
 	serverErrors := make(chan error, 1)
@@ -289,30 +204,10 @@ func TestDeploymentTrialCommitsBeforeReady(t *testing.T) {
 			serverErrors <- readError
 			return
 		}
-		hello, decodeError := protocol.DecodeBody[protocol.HelloBody](
-			helloEnvelope, "agent_version", "configuration_revision", "deployment_state", "capabilities",
-		)
-		if decodeError != nil || hello.DeploymentState != "trial" {
-			serverErrors <- errors.New("client did not authenticate as a deployment trial")
-			return
-		}
-		if writeError := session.write(request.Context(), "deployment.trial_accepted", protocol.AgentIDBody{AgentID: agentID}); writeError != nil {
-			serverErrors <- writeError
-			return
-		}
-		committed, readError := readEnvelope(request.Context(), connection, "deployment.committed")
-		if readError != nil {
-			serverErrors <- readError
-			return
-		}
-		if _, decodeError := protocol.DecodeBody[struct{}](committed); decodeError != nil {
+		if _, decodeError := protocol.DecodeBody[protocol.HelloBody](
+			helloEnvelope, "agent_version", "configuration_revision", "capabilities",
+		); decodeError != nil {
 			serverErrors <- decodeError
-			return
-		}
-		select {
-		case <-trialCommitted:
-		default:
-			serverErrors <- errors.New("deployment.committed was sent before the local trial callback")
 			return
 		}
 		close(helloAcknowledged)
@@ -329,17 +224,11 @@ func TestDeploymentTrialCommitsBeforeReady(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	trialCalls := 0
 	client, err := New(Options{
 		Endpoint: strings.Replace(server.URL, "https://", "wss://", 1) + "/internal/agents/ws",
 		Identity: credentials, Version: "v1.4.0", ConfigurationRevision: 2,
-		Capabilities: []capability.Descriptor{}, DeploymentState: "trial",
-		Executor: &recordingExecutor{executed: make(chan string, 1)}, Lifecycle: lifecycle.New(),
-		OnDeploymentTrial: func() error {
-			trialCalls++
-			close(trialCommitted)
-			return nil
-		},
+		Capabilities: []capability.Descriptor{},
+		Executor:     &recordingExecutor{executed: make(chan string, 1)}, Lifecycle: lifecycle.New(),
 		OnReady: func() error {
 			select {
 			case <-helloAcknowledged:
@@ -361,15 +250,12 @@ func TestDeploymentTrialCommitsBeforeReady(t *testing.T) {
 	select {
 	case <-serverDone:
 	case <-time.After(time.Second):
-		t.Fatal("trial server did not finish")
+		t.Fatal("control server did not finish")
 	}
 	select {
 	case serverError := <-serverErrors:
 		t.Fatal(serverError)
 	default:
-	}
-	if trialCalls != 1 || client.deploymentState != "current" {
-		t.Fatalf("trial callbacks=%d deployment_state=%s", trialCalls, client.deploymentState)
 	}
 }
 

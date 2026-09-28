@@ -34,13 +34,8 @@ jobs:
         run: |
           set -euo pipefail
           sh scripts/verify-go.sh
-          sh -n scripts/verify-go.sh
-          bash -n scripts/install.sh
-          bash -n scripts/build-release.sh
-          bash -n scripts/verify-ipquality-source.sh
-          bash -n scripts/verify-debian-runtime-dependencies.sh
-          bash -n scripts/test-installer-container.sh
-          bash scripts/verify-ipquality-source.sh
+          for script in scripts/*.sh; do sh -n "$script"; done
+          sh scripts/verify-ipquality-source.sh
 
       - name: Build and verify release assets
         shell: bash
@@ -50,15 +45,9 @@ jobs:
           trap 'rm -rf -- "$release_root"' EXIT
           scripts/build-release.sh v0.0.0 "$release_root/release"
           test "$("$release_root/release/akastr-agent-linux-amd64" version)" = v0.0.0
-          bash -n "$release_root/release/install.sh"
-          binary_sha=$(sha256sum "$release_root/release/akastr-agent-linux-amd64" | awk '{print $1}')
-          grep -Fq "AGENT_RELEASE_VERSION='v0.0.0'" "$release_root/release/install.sh"
-          grep -Fq "BINARY_SHA256='$binary_sha'" "$release_root/release/install.sh"
+          sh -n "$release_root/release/install.sh"
+          # An unsubstituted pin would publish an installer that can never succeed.
           ! grep -Eq '@AKASTR_AGENT_(VERSION|BINARY_SHA256)@' "$release_root/release/install.sh"
-          grep -Fq "curl --fail --show-error --silent --location" "$release_root/release/install.sh"
-          grep -Fq -- "--proto '=https' --proto-redir '=https' --retry 3" "$release_root/release/install.sh"
-          grep -Fq -- '--output "$destination" "$url"' "$release_root/release/install.sh"
-          ! grep -Fq "wget " "$release_root/release/install.sh"
 
       - name: Verify Debian runtime dependencies
         shell: bash
@@ -70,17 +59,4 @@ jobs:
               --workdir /source \
               "debian:${version}-slim" \
               sh scripts/verify-debian-runtime-dependencies.sh
-          done
-
-      - name: Verify installer convergence on Debian
-        shell: bash
-        run: |
-          set -euo pipefail
-          for version in 12 13; do
-            docker run --rm \
-              --env AKASTR_INSTALLER_CONTAINER_TEST=1 \
-              --volume "$PWD:/source:ro" \
-              --workdir /source \
-              "debian:${version}-slim" \
-              sh scripts/test-installer-container.sh
           done

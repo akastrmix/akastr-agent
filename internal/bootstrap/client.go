@@ -1,3 +1,5 @@
+// Package bootstrap fetches the sealed node configuration at install time. The
+// machine token authenticates the request and, with the node UUID, decrypts it.
 package bootstrap
 
 import (
@@ -14,10 +16,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path"
-	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -34,139 +32,72 @@ type fetchResponse struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
-type FetchOptions struct {
-	Endpoint          string
-	AgentID           string
-	TokenFile         string
-	HTTPClient        *http.Client
-	OutputDir         string
-	ConfigurationRoot string
-	IPQVersion        string
-	IPQSHA256         string
+// DecodeToken validates the canonical base64url machine token.
+func DecodeToken(token string) ([]byte, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != token {
+		return nil, errors.New("machine token must be canonical base64url for 32 bytes")
+	}
+	return decoded, nil
 }
 
-func FetchAndWrite(ctx context.Context, options FetchOptions) (Payload, error) {
-	if !path.IsAbs(options.ConfigurationRoot) {
-		return Payload{}, errors.New("bootstrap configuration root must be absolute")
-	}
-	token, tokenBytes, err := readToken(options.TokenFile)
+// Fetch returns the decrypted configuration document. Callers validate it.
+func Fetch(ctx context.Context, client *http.Client, endpoint, agentID, token string) ([]byte, error) {
+	tokenBytes, err := DecodeToken(token)
 	if err != nil {
-		return Payload{}, err
+		return nil, err
 	}
-	if !canonicalUUID.MatchString(options.AgentID) {
-		return Payload{}, errors.New("bootstrap agent ID is invalid")
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "/internal/agents/bootstrap" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, errors.New("bootstrap endpoint must be an absolute HTTPS bootstrap URL")
 	}
-	endpoint, err := validateBootstrapEndpoint(options.Endpoint)
+	body, err := json.Marshal(fetchRequest{AgentID: agentID, MachineToken: token})
 	if err != nil {
-		return Payload{}, err
+		return nil, err
 	}
-	body, err := json.Marshal(fetchRequest{AgentID: options.AgentID, MachineToken: token})
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, parsed.String(), bytes.NewReader(body))
 	if err != nil {
-		return Payload{}, err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return Payload{}, err
+		return nil, err
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
-	client := options.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
-	strictClient := *client
-	strictClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	response, err := strictClient.Do(request)
+	strict := *client
+	strict.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := strict.Do(request)
 	if err != nil {
-		return Payload{}, fmt.Errorf("fetch bootstrap: %w", err)
+		return nil, fmt.Errorf("fetch bootstrap: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return Payload{}, fmt.Errorf("fetch bootstrap: server returned HTTP %d", response.StatusCode)
+		return nil, fmt.Errorf("fetch bootstrap: server returned HTTP %d", response.StatusCode)
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxBootstrapBytes+1))
 	decoder.DisallowUnknownFields()
 	var envelope fetchResponse
 	if err := decoder.Decode(&envelope); err != nil {
-		return Payload{}, fmt.Errorf("decode bootstrap response: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Payload{}, errors.New("bootstrap response contains trailing JSON")
+		return nil, fmt.Errorf("decode bootstrap response: %w", err)
 	}
 	if envelope.Schema != "akastr-agent-bootstrap.v4" {
-		return Payload{}, errors.New("bootstrap response schema is unsupported")
+		return nil, errors.New("bootstrap response schema is unsupported")
 	}
 	nonce, err := base64.RawURLEncoding.DecodeString(envelope.Nonce)
 	if err != nil || len(nonce) != 12 {
-		return Payload{}, errors.New("bootstrap nonce is invalid")
+		return nil, errors.New("bootstrap nonce is invalid")
 	}
 	ciphertext, err := base64.RawURLEncoding.DecodeString(envelope.Ciphertext)
 	if err != nil || len(ciphertext) < 17 || len(ciphertext) > maxBootstrapBytes {
-		return Payload{}, errors.New("bootstrap ciphertext is invalid")
+		return nil, errors.New("bootstrap ciphertext is invalid")
 	}
-	plaintext, err := decrypt(tokenBytes, options.AgentID, nonce, ciphertext)
-	if err != nil {
-		return Payload{}, err
-	}
-	var payload Payload
-	plainDecoder := json.NewDecoder(bytes.NewReader(plaintext))
-	plainDecoder.DisallowUnknownFields()
-	if err := plainDecoder.Decode(&payload); err != nil {
-		return Payload{}, fmt.Errorf("decode bootstrap payload: %w", err)
-	}
-	if err := plainDecoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return Payload{}, errors.New("bootstrap payload contains trailing JSON")
-	}
-	if err := payload.Validate(options.AgentID); err != nil {
-		return Payload{}, err
-	}
-	runtimeDirectory := path.Join(options.ConfigurationRoot, fmt.Sprint(payload.ConfigurationRevision))
-	if err := writeFiles(options.OutputDir, runtimeDirectory, payload, token, options.IPQVersion, options.IPQSHA256); err != nil {
-		return Payload{}, err
-	}
-	digest := sha256.Sum256(plaintext)
-	if err := writeFileSynced(filepath.Join(options.OutputDir, ConfigurationBootstrapDigestFile), []byte(fmt.Sprintf("%x\n", digest)), 0o600); err != nil {
-		return Payload{}, fmt.Errorf("write bootstrap digest: %w", err)
-	}
-	if err := syncDirectory(options.OutputDir); err != nil {
-		return Payload{}, fmt.Errorf("sync bootstrap output: %w", err)
-	}
-	return payload, nil
-}
-
-func validateBootstrapEndpoint(raw string) (string, error) {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.Path != "/internal/agents/bootstrap" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("bootstrap endpoint must be an absolute HTTPS bootstrap URL")
-	}
-	return parsed.String(), nil
-}
-
-func readToken(filePath string) (string, []byte, error) {
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return "", nil, fmt.Errorf("stat bootstrap token: %w", err)
-	}
-	if !info.Mode().IsRegular() || (info.Mode().Perm()&0o077 != 0) {
-		return "", nil, errors.New("bootstrap token must be a root-only regular file")
-	}
-	raw, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", nil, fmt.Errorf("read bootstrap token: %w", err)
-	}
-	token := strings.TrimSpace(string(raw))
-	decoded, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != token {
-		return "", nil, errors.New("bootstrap token must be canonical base64url for 32 bytes")
-	}
-	return token, decoded, nil
+	return decrypt(tokenBytes, agentID, nonce, ciphertext)
 }
 
 func decrypt(token []byte, agentID string, nonce, ciphertext []byte) ([]byte, error) {
-	key := deriveKey(token, agentID)
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(deriveKey(token, agentID))
 	if err != nil {
 		return nil, err
 	}

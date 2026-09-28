@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 
-commit=$(sed -n "s/^IPQUALITY_COMMIT='\([0-9a-f]\{40\}\)'$/\1/p" scripts/install.sh)
-expected=$(sed -n "s/^IPQUALITY_SHA256='\([0-9a-f]\{64\}\)'$/\1/p" scripts/install.sh)
+pins=internal/providers/ipquality/script/pin.go
+commit=$(sed -n 's/^[[:space:]]*PinnedCommit[[:space:]]*= "\([0-9a-f]\{40\}\)"$/\1/p' "$pins")
+expected=$(sed -n 's/^[[:space:]]*PinnedSHA256[[:space:]]*= "\([0-9a-f]\{64\}\)"$/\1/p' "$pins")
 [ -n "$commit" ] && [ -n "$expected" ] || {
   echo 'IPQuality source pin is missing or invalid' >&2
   exit 1

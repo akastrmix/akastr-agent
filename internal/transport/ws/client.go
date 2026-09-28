@@ -38,14 +38,14 @@ type Client struct {
 	version               string
 	configurationRevision int64
 	capabilities          []capability.Descriptor
-	deploymentState       string
 	executor              Executor
 	observations          ObservationSource
 	lifecycle             *lifecycle.Gate
 	onReady               func() error
-	onDeploymentTrial     func() error
-	onMaintenanceCheck    func(string)
+	onSessionEnd          func()
 	logger                *slog.Logger
+	heartbeatInterval     time.Duration
+	heartbeatTimeout      time.Duration
 
 	mu       sync.Mutex
 	active   *session
@@ -65,28 +65,20 @@ type session struct {
 	writeMu    sync.Mutex
 }
 
-type sessionMode uint8
-
-const (
-	sessionReady sessionMode = iota + 1
-	sessionMaintenance
-	sessionTrial
-)
-
 type Options struct {
 	Endpoint              string
 	Identity              identity.Identity
 	Version               string
 	ConfigurationRevision int64
 	Capabilities          []capability.Descriptor
-	DeploymentState       string
 	Executor              Executor
 	Observations          ObservationSource
 	Lifecycle             *lifecycle.Gate
-	OnReady               func() error
-	OnDeploymentTrial     func() error
-	OnMaintenanceCheck    func(string)
-	Logger                *slog.Logger
+	// OnReady runs after hello.accepted and before any business message.
+	OnReady func() error
+	// OnSessionEnd runs whenever a connection attempt or session ends.
+	OnSessionEnd func()
+	Logger       *slog.Logger
 }
 
 func New(options Options) (*Client, error) {
@@ -105,12 +97,6 @@ func New(options Options) (*Client, error) {
 	if options.ConfigurationRevision < 1 {
 		return nil, errors.New("Agent configuration revision is invalid")
 	}
-	if options.DeploymentState != "current" && options.DeploymentState != "trial" {
-		return nil, errors.New("Agent deployment state is invalid")
-	}
-	if options.DeploymentState == "trial" && options.OnDeploymentTrial == nil {
-		return nil, errors.New("automatic deployment trial callback is required")
-	}
 	parsed, err := url.Parse(options.Endpoint)
 	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" ||
 		parsed.Path != "/internal/agents/ws" || parsed.User != nil ||
@@ -120,12 +106,11 @@ func New(options Options) (*Client, error) {
 	return &Client{
 		endpoint: options.Endpoint, identity: options.Identity, version: options.Version,
 		configurationRevision: options.ConfigurationRevision,
-		deploymentState:       options.DeploymentState,
 		capabilities:          append([]capability.Descriptor(nil), options.Capabilities...),
 		executor:              options.Executor, observations: options.Observations,
 		lifecycle: options.Lifecycle, onReady: options.OnReady,
-		onDeploymentTrial:  options.OnDeploymentTrial,
-		onMaintenanceCheck: options.OnMaintenanceCheck, logger: options.Logger,
+		onSessionEnd: options.OnSessionEnd, logger: options.Logger,
+		heartbeatInterval: heartbeatInterval, heartbeatTimeout: heartbeatTimeout,
 		running: make(map[string]*lifecycle.Lease), pending: make(map[string]pendingOperation),
 	}, nil
 }
@@ -166,13 +151,16 @@ func (c *Client) runControlLoop(ctx context.Context) error {
 	for ctx.Err() == nil {
 		c.readyAt = time.Time{}
 		err := c.runSession(ctx)
+		if c.onSessionEnd != nil {
+			c.onSessionEnd()
+		}
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if fatalError := c.executionFailure(); fatalError != nil {
 			return fatalError
 		}
-		backoff = sessionBackoff(backoff, c.readyAt, time.Now())
+		backoff = sessionBackoff(backoff, c.readyAt, time.Now(), c.heartbeatInterval)
 		delay := backoff + time.Duration(rand.Int64N(max(1, int64(backoff/4))))
 		c.logger.Warn("control connection ended", "code", safeConnectionCode(err), "retry_in", delay.String())
 		timer := time.NewTimer(delay)
@@ -192,8 +180,8 @@ func (c *Client) runControlLoop(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func sessionBackoff(backoff time.Duration, readyAt, now time.Time) time.Duration {
-	if !readyAt.IsZero() && now.Sub(readyAt) >= heartbeatInterval {
+func sessionBackoff(backoff time.Duration, readyAt, now time.Time, stable time.Duration) time.Duration {
+	if !readyAt.IsZero() && now.Sub(readyAt) >= stable {
 		return time.Second
 	}
 	return backoff
@@ -219,57 +207,11 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 	connection.SetReadLimit(protocol.MaxMessage)
 	session := &session{connection: connection}
 	defer connection.CloseNow()
-	mode, err := c.authenticate(setupContext, session)
-	if err != nil {
+	if err := c.authenticate(setupContext, session); err != nil {
 		return err
 	}
-	if mode == sessionMaintenance {
-		c.readyAt = time.Now()
-		cancelSetup()
-		defer session.watchConnection(ctx, heartbeatInterval, heartbeatTimeout, c.logger)()
-		if c.onMaintenanceCheck == nil {
-			return errors.New("maintenance-only control session is unavailable")
-		}
-		c.onMaintenanceCheck("")
-		c.logger.Info("maintenance-only control connection ready")
-		for {
-			messageType, data, err := connection.Read(ctx)
-			if err != nil {
-				return err
-			}
-			if messageType != websocket.MessageText {
-				return errors.New("binary control message rejected")
-			}
-			envelope, err := protocol.Decode(data)
-			if err != nil {
-				return err
-			}
-			if err := c.handleMaintenanceSessionEnvelope(envelope); err != nil {
-				return err
-			}
-		}
-	}
-	if mode == sessionTrial {
-		if err := c.onDeploymentTrial(); err != nil {
-			fatal := fmt.Errorf("commit automatic deployment trial: %w", err)
-			c.recordFatal(fatal)
-			return fatal
-		}
-		c.deploymentState = "current"
-		if err := session.write(setupContext, "deployment.committed", struct{}{}); err != nil {
-			return err
-		}
-		committed, err := readEnvelope(setupContext, session.connection, "hello.accepted")
-		if err != nil {
-			return err
-		}
-		acknowledgement, err := protocol.DecodeBody[protocol.AgentIDBody](committed, "agent_id")
-		if err != nil || acknowledgement.AgentID != c.identity.AgentID {
-			return errors.New("deployment commit acknowledgement agent mismatch")
-		}
-	}
 	cancelSetup()
-	defer session.watchConnection(ctx, heartbeatInterval, heartbeatTimeout, c.logger)()
+	defer session.watchConnection(ctx, c.heartbeatInterval, c.heartbeatTimeout, c.logger)()
 	if c.onReady != nil {
 		if err := c.onReady(); err != nil {
 			fatal := fmt.Errorf("complete service readiness: %w", err)
@@ -300,10 +242,6 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 			return err
 		}
 		switch envelope.Type {
-		case "maintenance.check":
-			if err := c.handleMaintenanceCheck(envelope); err != nil {
-				return err
-			}
 		case "operation.offer":
 			offer, err := protocol.DecodeOperationOffer(envelope)
 			if err != nil {
@@ -380,49 +318,19 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 	}
 }
 
-func (c *Client) handleMaintenanceCheck(envelope protocol.Envelope) error {
-	if _, err := protocol.DecodeBody[struct{}](envelope); err != nil {
-		return err
-	}
-	if c.onMaintenanceCheck == nil {
-		return errors.New("manual maintenance trigger is unavailable")
-	}
-	c.onMaintenanceCheck(envelope.MessageID)
-	return nil
-}
-
-func (c *Client) handleMaintenanceSessionEnvelope(envelope protocol.Envelope) error {
-	if envelope.Type != "maintenance.check" {
-		return fmt.Errorf("unexpected maintenance-only message %q", envelope.Type)
-	}
-	return c.handleMaintenanceCheck(envelope)
-}
-
 func (c *Client) publishUnchanged(result protocol.ChangeIPUnchangedBody) error {
-	c.mu.Lock()
-	active := c.active
-	c.mu.Unlock()
-	if active == nil {
-		return errors.New("control connection is not ready")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return active.write(ctx, "changeip.unchanged", result)
+	return c.publish("changeip.unchanged", result)
 }
 
 func (c *Client) publishObservation(observation protocol.IPObservationBody) error {
-	c.mu.Lock()
-	active := c.active
-	c.mu.Unlock()
-	if active == nil {
-		return errors.New("control connection is not ready")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	return active.write(ctx, "ip.observed", observation)
+	return c.publish("ip.observed", observation)
 }
 
 func (c *Client) publishSnapshot(snapshot protocol.IPSnapshotBody) error {
+	return c.publish("ip.snapshot", snapshot)
+}
+
+func (c *Client) publish(messageType string, body any) error {
 	c.mu.Lock()
 	active := c.active
 	c.mu.Unlock()
@@ -431,82 +339,61 @@ func (c *Client) publishSnapshot(snapshot protocol.IPSnapshotBody) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return active.write(ctx, "ip.snapshot", snapshot)
+	return active.write(ctx, messageType, body)
 }
 
-func (c *Client) authenticate(ctx context.Context, session *session) (sessionMode, error) {
+func (c *Client) authenticate(ctx context.Context, session *session) error {
 	challengeEnvelope, err := readEnvelope(ctx, session.connection, "auth.challenge")
 	if err != nil {
-		return 0, err
+		return err
 	}
 	challenge, err := protocol.DecodeBody[protocol.AuthChallenge](
 		challengeEnvelope, "challenge_id", "agent_id", "nonce", "issued_at", "expires_at",
 	)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	if challenge.AgentID != c.identity.AgentID {
-		return 0, errors.New("authentication challenge agent mismatch")
+		return errors.New("authentication challenge agent mismatch")
 	}
 	signingText, err := protocol.AuthSigningText(challenge)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	expiresAt, _ := time.Parse(time.RFC3339Nano, challenge.ExpiresAt)
 	if time.Now().After(expiresAt) {
-		return 0, errors.New("authentication challenge expired")
+		return errors.New("authentication challenge expired")
 	}
 	signature := ed25519.Sign(c.identity.Ed25519PrivateKey(), signingText)
 	if err := session.write(ctx, "auth.response", protocol.AuthResponseBody{
 		AgentID: c.identity.AgentID, ChallengeID: challenge.ChallengeID,
 		Signature: base64.RawURLEncoding.EncodeToString(signature),
 	}); err != nil {
-		return 0, err
+		return err
 	}
 	authAcceptedEnvelope, err := readEnvelope(ctx, session.connection, "auth.accepted")
 	if err != nil {
-		return 0, err
+		return err
 	}
 	authAccepted, err := protocol.DecodeBody[protocol.AgentIDBody](authAcceptedEnvelope, "agent_id")
 	if err != nil || authAccepted.AgentID != c.identity.AgentID {
-		return 0, errors.New("authentication acknowledgement agent mismatch")
+		return errors.New("authentication acknowledgement agent mismatch")
 	}
 	if err := session.write(ctx, "agent.hello", protocol.HelloBody{
 		AgentVersion: c.version, ConfigurationRevision: c.configurationRevision,
-		DeploymentState: c.deploymentState, Capabilities: c.capabilities,
+		Capabilities: c.capabilities,
 	}); err != nil {
-		return 0, err
+		return err
 	}
-	helloResponse, err := readProtocolEnvelope(ctx, session.connection)
+	accepted, err := readEnvelope(ctx, session.connection, "hello.accepted")
 	if err != nil {
-		return 0, err
+		return err
 	}
-	mode, err := helloSessionMode(helloResponse, c.identity.AgentID)
-	if err != nil {
-		return 0, err
+	acknowledgement, err := protocol.DecodeBody[protocol.AgentIDBody](accepted, "agent_id")
+	if err != nil || acknowledgement.AgentID != c.identity.AgentID {
+		return errors.New("hello acknowledgement agent mismatch")
 	}
-	if (c.deploymentState == "trial" && mode == sessionReady) ||
-		(c.deploymentState == "current" && mode == sessionTrial) {
-		return 0, errors.New("hello response does not match deployment state")
-	}
-	return mode, nil
-}
-
-func helloSessionMode(helloResponse protocol.Envelope, agentID string) (sessionMode, error) {
-	if helloResponse.Type != "hello.accepted" && helloResponse.Type != "maintenance.required" && helloResponse.Type != "deployment.trial_accepted" {
-		return 0, fmt.Errorf("expected hello response, received %s", helloResponse.Type)
-	}
-	acknowledgement, err := protocol.DecodeBody[protocol.AgentIDBody](helloResponse, "agent_id")
-	if err != nil || acknowledgement.AgentID != agentID {
-		return 0, errors.New("hello acknowledgement agent mismatch")
-	}
-	if helloResponse.Type == "maintenance.required" {
-		return sessionMaintenance, nil
-	}
-	if helloResponse.Type == "deployment.trial_accepted" {
-		return sessionTrial, nil
-	}
-	return sessionReady, nil
+	return nil
 }
 
 func (c *Client) acceptOffer(ctx context.Context, session *session, offer protocol.OperationOffer) error {

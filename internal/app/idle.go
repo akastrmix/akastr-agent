@@ -2,31 +2,22 @@ package app
 
 import (
 	"errors"
+
 	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/layout"
 	"github.com/akastrmix/akastr-agent/internal/operation"
 )
 
-func CheckIdle(stateFile, ipStateFile string, recentLimit int) error {
-	if err := checkOperationIdle(stateFile, recentLimit); err != nil {
-		return err
-	}
-	return ipwatch.CheckIdle(ipStateFile)
-}
-
-func CheckMaintenanceSafe(stateFile, ipStateFile string, recentLimit int) error {
-	if err := checkOperationIdle(stateFile, recentLimit); err != nil {
-		return err
-	}
-	return ipwatch.CheckMaintenanceSafe(ipStateFile)
-}
-
-func checkOperationIdle(stateFile string, recentLimit int) error {
-	engine, err := operation.Open(operation.Options{StateFile: stateFile, RecentLimit: recentLimit})
+// CheckUpdateSafe refuses to replace the process while an operation or a
+// ChangeIP reconciliation is in flight. Pending IP facts are durable and are
+// replayed by the next process, so they do not block an update.
+func CheckUpdateSafe(paths layout.Layout) error {
+	engine, err := operation.Open(operation.Options{StateFile: paths.StateFile(), RecentLimit: recentOperationLimit})
 	if err != nil {
 		return err
 	}
 	if len(engine.Snapshot().Active) != 0 {
 		return errors.New("an Agent operation is active")
 	}
-	return nil
+	return ipwatch.CheckMaintenanceSafe(paths.IPStateFile())
 }
