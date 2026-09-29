@@ -71,9 +71,9 @@ Agent 每 60 秒检查一次，并在业务连接每次结束或进入 ready 时
 
 Agent 在当前时间达到 `not_before` 且进程没有准备替换为更新候选时发送 `operation.accepted`，但该消息只发起持久化握手，不代表本地已经获得执行权。主控只会在未过 `expires_at` 的 offered command 上首次建立 accepted；已经 accepted 的 command 即使原窗口已过仍返回 `operation.accepted_ack accepted=true`，从未 accepted 的过期 command 返回 `false`。Agent 只有收到 `true` 才调用本地已配置 provider，此后不再用本地时钟复核原 offer 截止时间。终态先持久化，再释放 operation lease 并通过 `operation.result` 发送；AkastrCloud 只接受数据库状态已经是 `accepted` 的首个终态，在数据库事务和下游事件接纳成功后发送 `operation.result_ack`。
 
-已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时主控继续发送相同 offer，并以 accepted ack 恢复执行权；这覆盖主控已提交 acceptance、但 ack 尚未到达节点便断线的窗口。active ChangeIP journal 一律收敛为 `change_trigger_unknown`，recent 记录重放原终态，两者都不会再次执行 provider；首次 accepted ack 后尚无 journal 的 command 才开始一次本地执行。主控从未 accepted 的过期 command 不会获得执行权。
+已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时以及连接期间每 30 秒，主控继续发送相同 offer，并以 accepted ack 恢复执行权；这覆盖主控已提交 acceptance、但 ack 尚未到达节点便断线的窗口，也让节点已完成却未送达的结果在一个周期内重放。active ChangeIP journal 一律收敛为 `change_trigger_unknown`，recent 记录重放原终态，两者都不会再次执行 provider；首次 accepted ack 后尚无 journal 的 command 才开始一次本地执行。主控从未 accepted 的过期 command 不会获得执行权。
 
-断线后 offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件、凭据或任意 URL。
+offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件、凭据或任意 URL。
 
 ### `changeip.execute`
 
