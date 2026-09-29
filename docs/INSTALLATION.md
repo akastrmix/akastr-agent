@@ -90,6 +90,7 @@ Akastr Agent <release-version> installed successfully.
 /etc/akastr-agent/identity.json
 /var/lib/akastr-agent/state.json
 /var/lib/akastr-agent/ip-state.json
+/var/lib/akastr-agent/update-attempt.json（仅在更新失败后出现）
 /usr/local/lib/akastr-agent/current -> slots/a 或 slots/b
 /usr/local/lib/akastr-agent/slots/{a,b}/{akastr-agent,config.json}
 /usr/local/lib/akastr-agent/ipquality/<sha256>.sh

@@ -6,10 +6,11 @@
 //	  slots/{a,b}/akastr-agent    binary of that slot
 //	  slots/{a,b}/config.json     Cloud configuration of that slot (root-only)
 //	  ipquality/<sha256>.sh       pinned Runner script, one file per pin
-//	  update-attempt.json         bounded candidate attempts for one target
-//	  .maintenance.lock           flock shared by installer and updater
 //	/etc/akastr-agent/identity.json
-//	/var/lib/akastr-agent/{state,ip-state}.json
+//	/var/lib/akastr-agent/
+//	  {state,ip-state}.json       execution journal and IP facts
+//	  update-attempt.json         bounded candidate attempts for one target
+//	  .maintenance.lock           flock shared by installer, updater and candidate
 package layout
 
 import (
@@ -43,7 +44,7 @@ func Default() Layout {
 
 func (l Layout) StateFile() string   { return filepath.Join(l.StateDir, "state.json") }
 func (l Layout) IPStateFile() string { return filepath.Join(l.StateDir, "ip-state.json") }
-func (l Layout) AttemptFile() string { return filepath.Join(l.Root, "update-attempt.json") }
+func (l Layout) AttemptFile() string { return filepath.Join(l.StateDir, "update-attempt.json") }
 func (l Layout) Current() string     { return filepath.Join(l.Root, "current") }
 
 func (l Layout) Slot(name string) string { return filepath.Join(l.Root, "slots", name) }
@@ -137,10 +138,10 @@ func (l Layout) Activate(slot string) error {
 // Lock takes the maintenance lock. The descriptor is close-on-exec, so an
 // updater's lock is released when it replaces itself with a candidate.
 func (l Layout) Lock() (*os.File, error) {
-	if err := os.MkdirAll(l.Root, 0o755); err != nil {
+	if err := os.MkdirAll(l.StateDir, 0o700); err != nil {
 		return nil, err
 	}
-	fd, err := syscall.Open(filepath.Join(l.Root, ".maintenance.lock"),
+	fd, err := syscall.Open(filepath.Join(l.StateDir, ".maintenance.lock"),
 		syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
