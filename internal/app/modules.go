@@ -139,9 +139,8 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	}
 	if m.runner != nil {
 		provider, err := qualityscript.New(qualityscript.Config{
-			ScriptPath: paths.IPQualityScript(qualityscript.PinnedSHA256), Profiles: m.runner.ScriptProfiles(),
-			Timeout: ipQualityTimeout, ScriptVersion: qualityscript.PinnedVersion,
-			ExpectedSHA256Hex: qualityscript.PinnedSHA256,
+			ScriptPath: paths.IPQualityScript(qualityscript.PinnedSHA256), Timeout: ipQualityTimeout,
+			ScriptVersion: qualityscript.PinnedVersion, ExpectedSHA256Hex: qualityscript.PinnedSHA256,
 		})
 		if err != nil {
 			return err

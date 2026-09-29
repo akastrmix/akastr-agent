@@ -40,21 +40,21 @@ apt-get install --yes ca-certificates curl
 
 - 公网 IP 观察：绑定服务器的节点必须开启（开关锁定）。检查间隔 10–300 秒，一般保持 60 秒；可选同时观察 IPv6，无公网 IPv6 时忽略；
 - 换 IP：粘贴服务商完整 `curl` 命令，或填写固定本机程序；关闭时若该服务器仍有启用的自动换 IP 计划或待执行任务，后台会拒绝保存；
-- SOCKS5 入口：公布已有代理的端口。
+- SOCKS5 入口：已有代理的端口、用户名和密码，供 IPQuality 检测使用。
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于节点上 root-only 的配置文件。
 
 “固定本机程序”填写节点上已有程序或脚本的干净绝对路径，例如 `/usr/local/bin/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。程序必须是 Agent service 可读取的非 symlink regular file 并具有执行权限；脚本需要有效 shebang。它不接受相对路径、控制字符、shell/env/busybox 入口，以及 sandbox 隐藏的 home、runtime user 或临时目录。主控以后只能触发这组固定 argv，不能远程换程序或参数。
 
-公布 SOCKS5 只描述已有代理，Agent 不安装代理服务，也不保存该代理的用户名和密码。只需填写 1–65535 的监听端口；主控始终使用 Agent 最近一次观测到的公网 IPv4，不接受 DDNS、固定主机名或手填 IP。尚未建立公网 IPv4 baseline 时不会派发 IPQuality。
+公布 SOCKS5 只描述已有代理，Agent 不安装、不配置代理服务。填写 1–65535 的监听端口和该代理的用户名、密码；登录只用于主控派发 IPQuality 检测，不进入安装命令、列表或 capability。主控始终使用 Agent 最近一次观测到的公网 IPv4，不接受 DDNS、固定主机名或手填 IP。尚未建立公网 IPv4 baseline 时不会派发 IPQuality。
 
 ### IPQuality Runner
 
-Runner 不绑定单一服务器，只运行 IPQuality 检测这一个模块。勾选需要检测的目标服务器，逐项填写 SOCKS5 用户名和密码。后台以稳定 server key 生成 1–128 个本地 profile；密码不会进入安装命令、列表、capability、Agent 日志或 command payload。
+Runner 不绑定单一服务器，只运行 IPQuality 检测这一个模块，没有其他设置。可检测的服务器就是开启了 SOCKS5 入口的目标节点；每次检测时主控把该节点的代理登录随任务发给 Runner，Runner 不保存任何代理密码，也不写入日志。
 
 Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，具体 commit 与 SHA-256 见 [`pin.go`](../internal/providers/ipquality/script/pin.go)。并发严格为 1，多个检测由 AkastrCloud 持久排队。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。
 
-检测次数与缓存由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)管理；重装 Runner 或新增 profile 不能绕过限制。
+检测次数与缓存由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)管理；重装 Runner 不能绕过限制。
 
 ## 3. 添加节点并执行一键命令
 
@@ -70,7 +70,7 @@ curl -fsSL https://origin.akastrmix.com/agent.sh | sh -s -- '安装码'
 
 安装码只是 `节点UUID.机器token` 的组合，不是新增凭据或短码兑换服务；脚本拆开后通过环境变量交给 Agent 程序，使用 HTTPS bootstrap `https://origin.akastrmix.com/internal/agents/bootstrap`。机器 token 是长期安装凭据，可能进入 shell history 和安装脚本参数，但不会写入节点磁盘，也不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
-需要修改配置时点击“修改配置”。后台回填完整配置，包括 ChangeIP curl 原文与 Runner 凭据，密码可按需显示；在同一表单修改后保存。内容没有变化时不会更新版本或断开连接；真实修改会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，并在新配置应用完成前暂停业务派发。保存时会核对你打开表单时的配置版本；若另一页面已修改，保留当前草稿并提示读取最新配置后重新确认。具体编辑契约见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。在线 Agent 会立即取回新配置自动应用；离线 Agent 在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖另一个节点的机器，也拒绝接手没有 identity 的执行状态；同节点重装会生成新密钥，但保留执行日志与 IP 状态，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
+需要修改配置时点击“修改配置”。后台回填完整配置，包括 ChangeIP curl 原文与 SOCKS5 登录，密码可按需显示；在同一表单修改后保存。内容没有变化时不会更新版本或断开连接；真实修改会保留节点 ID、角色、服务器绑定、机器 token 与 identity，递增 configuration revision，并在新配置应用完成前暂停业务派发。保存时会核对你打开表单时的配置版本；若另一页面已修改，保留当前草稿并提示读取最新配置后重新确认。具体编辑契约见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。在线 Agent 会立即取回新配置自动应用；离线 Agent 在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖另一个节点的机器，也拒绝接手没有 identity 的执行状态；同节点重装会生成新密钥，但保留执行日志与 IP 状态，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
 
 安装过程完全非交互，自动校验程序与脚本、取得密封配置并注册节点。它只管理唯一的 `akastr-agent.service`，完成后仍须按第 5 节验收业务连接。内部安装与更新流程见[架构说明](ARCHITECTURE.md#8-安装与自动更新)。
 
@@ -96,7 +96,7 @@ Akastr Agent <release-version> installed successfully.
 /etc/systemd/system/akastr-agent.service
 ```
 
-`current` 指向正在运行的 slot，另一个 slot 是上一版。`config.json` 就是 Cloud 下发的完整配置，含 ChangeIP Bearer 或 Runner 代理密码，权限为 `0600`；identity、配置和状态目录都是 root-only。固定程序由操作者在节点上管理，安装器不会写入或卸载。唯一主进程可以写 `/var/lib/akastr-agent` 与 `/usr/local/lib/akastr-agent`；固定程序所在的其他系统目录在 `ProtectSystem=strict` 下只读，home 目录不对 service 开放。
+`current` 指向正在运行的 slot，另一个 slot 是上一版。`config.json` 就是 Cloud 下发的完整配置，含 ChangeIP Bearer 或 SOCKS5 登录，权限为 `0600`；identity、配置和状态目录都是 root-only。固定程序由操作者在节点上管理，安装器不会写入或卸载。唯一主进程可以写 `/var/lib/akastr-agent` 与 `/usr/local/lib/akastr-agent`；固定程序所在的其他系统目录在 `ProtectSystem=strict` 下只读，home 目录不对 service 开放。
 
 ## 5. 安装后验收
 
@@ -132,7 +132,7 @@ systemctl restart akastr-agent.service
 
 ## 7. 更新、状态与卸载
 
-普通配置修改不需要重新运行安装命令。在 Cloud 的添加/编辑表单管理同一套完整参数，curl 原文、脚本路径/参数和 Runner 凭据会回填；Cloud 加密保存，管理员读取时解密，密码可显示。节点上的自定义程序由操作者准备。新增 Agent 功能由维护者发布新版本。两种变更都由主控保存为节点的目标版本与配置，再由 Agent 自动应用：
+普通配置修改不需要重新运行安装命令。在 Cloud 的添加/编辑表单管理同一套完整参数，curl 原文、脚本路径/参数和 SOCKS5 登录会回填；Cloud 加密保存，管理员读取时解密，密码可显示。节点上的自定义程序由操作者准备。新增 Agent 功能由维护者发布新版本。两种变更都由主控保存为节点的目标版本与配置，再由 Agent 自动应用：
 
 ```mermaid
 flowchart TD
@@ -186,7 +186,6 @@ curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release
 | `change_trigger_unknown` | 换 IP 可能让响应、进程或 WSS 提前断开；Agent 不重发 provider，恢复后由常驻 IPv4 monitor 收敛 |
 | `http_status_not_200` / `exited_nonzero` | 服务商返回非 `200`，或固定程序非零退出；先修复 provider，Agent 不把它当成已触发 |
 | IPQuality 脚本校验失败 | 停止安装；不要更改 checksum 或使用浮动在线脚本 |
-| `proxy_profile_not_found` | Runner 未配置该目标 server key；删除后按完整 profile 重新添加 Runner 节点 |
 | `proxy_preflight_failed` / `proxy_postflight_failed` | 检查目标 SOCKS5 host、端口、凭据和代理稳定性，不要打印密码 |
 | `runner_busy` | Runner 单执行槽正忙，应由主控排队 |
 | enrollment 返回 `agent_node_busy` / HTTP 409 | 主控仍有 pending、offered、accepted command 或 active ChangeIP session；等待其终结后重新运行同一安装命令 |

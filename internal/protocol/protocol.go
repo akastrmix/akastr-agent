@@ -174,6 +174,12 @@ func PublicIPv4(value string) bool {
 	return err == nil && address.String() == value && netpolicy.IsPublicIPv4(address)
 }
 
+// SOCKSCredential reports whether value is a usable SOCKS5 username or password
+// (RFC 1929 allows up to 255 bytes).
+func SOCKSCredential(value string) bool {
+	return value != "" && len(value) <= 255 && !strings.ContainsRune(value, '\x00')
+}
+
 func ValidUUID(value string) bool {
 	return canonicalUUID.MatchString(value)
 }

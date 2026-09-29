@@ -48,7 +48,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/features/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/providers/changeip`：统一描述明确触发、结果未知和明确失败；`httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
-- `internal/providers/ipquality/script`：通过秘密 SOCKS5 profile 执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
+- `internal/providers/ipquality/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/bootstrap`：安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。
 - `internal/install`：一次安装命令的全部收敛步骤（第 8 节）。
@@ -82,7 +82,7 @@ ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对�
 
 ## 7. SOCKS5 与 IPQuality
 
-目标节点的 capability metadata 只公布端口，不包含地址来源、主机名、用户名或密码。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 上的凭据只在 root-only 的 slot 配置里，以 AkastrCloud 的稳定 server key 索引。
+SOCKS5 的端口和登录都属于目标节点的 `socks5` 模块，目标节点的 capability metadata 只公布端口。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 没有任何代理配置：每次检测由 Cloud 把目标的登录放进任务，Runner 只在执行期间持有，因此增删目标或改密码都不需要改动或重启 Runner，多个 Runner 也无需各自配置。
 
 Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/providers/ipquality/script/pin.go`），脚本按摘要存放，候选版本改变固定版本也不会影响可回退的旧版本；CI 会实际下载并验证固定输入与 Debian 依赖声明。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为该代际的有效报告。
 

@@ -32,12 +32,11 @@ func model(t *testing.T, modules string) (*Model, error) {
 func TestCapabilitiesOmitSecretsAndLocalPaths(t *testing.T) {
 	target, err := model(t, `{"ip_watch":{"interval_seconds":60,"ipv6":true},
 "changeip":{"provider":"command","program":"/usr/local/bin/changeip","args":["secret-arg"]},
-"socks5":{"port":1080}}`)
+"socks5":{"port":1080,"username":"proxy-user","password":"proxy-secret"}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := model(t, `{"ipquality_runner":{"profiles":[
-{"id":"primary","username":"user","password":"secret"},{"id":"backup","username":"user","password":"secret"}]}}`)
+	runner, err := model(t, `{"ipquality_runner":{}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,17 +45,9 @@ func TestCapabilitiesOmitSecretsAndLocalPaths(t *testing.T) {
 		t.Fatalf("capabilities = %#v", listed)
 	}
 	encoded, _ := json.Marshal(listed)
-	for _, secret := range []string{"/usr/local/bin/changeip", "secret-arg", "secret", "user"} {
-		if strings.Contains(string(encoded), `"`+secret+`"`) {
+	for _, secret := range []string{"/usr/local/bin/changeip", "secret-arg", "proxy-user", "proxy-secret"} {
+		if strings.Contains(string(encoded), secret) {
 			t.Fatalf("capabilities leak %q: %s", secret, encoded)
-		}
-	}
-	for _, descriptor := range listed {
-		if descriptor.Name == "ipquality.runner" {
-			ids, _ := descriptor.Properties["proxy_profile_ids"].([]string)
-			if len(ids) != 2 || ids[0] != "backup" || ids[1] != "primary" {
-				t.Fatalf("runner profile ids = %#v", ids)
-			}
 		}
 	}
 }
@@ -72,6 +63,8 @@ func TestModuleConfigurationFailsClosed(t *testing.T) {
 		"unknown module field":      `{"ip_watch":{"interval_seconds":60,"ipv6":false,"extra":1}}`,
 		"missing module field":      `{"ip_watch":{"interval_seconds":60}}`,
 		"plain HTTP ChangeIP":       `{` + watch + `,"changeip":{"provider":"http_bearer","url":"http://x.test/","bearer_token":"t"}}`,
+		"SOCKS5 without login":      `{` + watch + `,"socks5":{"port":1080}}`,
+		"runner with profiles":      `{"ipquality_runner":{"profiles":[]}}`,
 	} {
 		if _, err := model(t, modules); err == nil {
 			t.Errorf("%s accepted", name)

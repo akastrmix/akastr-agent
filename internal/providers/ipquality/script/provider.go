@@ -26,6 +26,8 @@ const maxOutputBytes = 2 * 1024 * 1024
 
 var reportURLPattern = regexp.MustCompile(`(?i)https://report\.check\.place/[A-Za-z0-9._~!$&'()*+,;=:@%/?#-]+`)
 
+// Profile is the SOCKS5 login of the target node's proxy; it arrives with each
+// operation and is never stored.
 type Profile struct {
 	Username string
 	Password string
@@ -33,22 +35,20 @@ type Profile struct {
 
 type Config struct {
 	ScriptPath        string
-	Profiles          map[string]Profile
 	Timeout           time.Duration
 	ScriptVersion     string
 	ExpectedSHA256Hex string
 }
 
 type Provider struct {
-	config   Config
-	profiles map[string]Profile
-	now      func() time.Time
+	config Config
+	now    func() time.Time
 }
 
 type Request struct {
-	ProxyPort      int
-	ProxyProfileID string
-	ExpectedIPv4   string
+	ProxyPort    int
+	Credentials  Profile
+	ExpectedIPv4 string
 }
 
 type Result struct {
@@ -66,10 +66,7 @@ func New(config Config) (*Provider, error) {
 	if config.ScriptVersion == "" {
 		return nil, errors.New("IPQuality script version is required")
 	}
-	if len(config.Profiles) == 0 {
-		return nil, errors.New("IPQuality proxy profiles are required")
-	}
-	provider := &Provider{config: config, profiles: config.Profiles, now: time.Now}
+	provider := &Provider{config: config, now: time.Now}
 	if err := provider.verifyScript(); err != nil {
 		return nil, err
 	}
@@ -90,10 +87,7 @@ func verifyDependencies() error {
 
 func (p *Provider) Run(ctx context.Context, request Request) Result {
 	checkedAt := p.now().UTC()
-	profile, found := p.profiles[request.ProxyProfileID]
-	if !found {
-		return Result{Code: "proxy_profile_not_found", CheckedAt: checkedAt}
-	}
+	profile := request.Credentials
 	expected, err := netip.ParseAddr(request.ExpectedIPv4)
 	if err != nil || !netpolicy.IsPublicIPv4(expected) || request.ProxyPort < 1 || request.ProxyPort > 65535 {
 		return Result{Code: "proxy_endpoint_invalid", CheckedAt: checkedAt}

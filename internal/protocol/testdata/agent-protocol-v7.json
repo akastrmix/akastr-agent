@@ -67,7 +67,8 @@
           "payload": {
             "expected_ipv4": "8.8.4.4",
             "proxy_port": 1080,
-            "proxy_profile_id": "hkt",
+            "proxy_username": "hkt-user",
+            "proxy_password": "hkt-password",
             "script_version": "2026.08.18"
           },
           "not_before": "2026-08-18T00:00:00.000Z",
@@ -230,7 +231,8 @@
           "payload": {
             "expected_ipv4": "8.8.4.4",
             "proxy_port": 1080,
-            "proxy_profile_id": "hkt",
+            "proxy_username": "hkt-user",
+            "proxy_password": "hkt-password",
             "script_version": "2026.08.18",
             "unexpected": true
           },
@@ -402,7 +404,9 @@
                   "ipv6": true
                 },
                 "socks5": {
-                  "port": 1080
+                  "port": 1080,
+                  "username": "hkt-user",
+                  "password": "hkt-password"
                 }
               }
             }
@@ -455,7 +459,9 @@
                   "ipv6": true
                 },
                 "socks5": {
-                  "port": 1080
+                  "port": 1080,
+                  "username": "hkt-user",
+                  "password": "hkt-password"
                 }
               }
             }

@@ -18,8 +18,8 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 |---|---|---|
 | `ip_watch` | `interval_seconds`（10–300）、`ipv6` | `ip.observe` |
 | `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`、`args` | `changeip.command`；需要 `ip_watch` |
-| `socks5` | `port` | `proxy.socks5` |
-| `ipquality_runner` | `profiles[]`：`id`、`username`、`password` | `ipquality.runner` |
+| `socks5` | `port`、`username`、`password`（该代理的登录） | `proxy.socks5`（只公布端口） |
+| `ipquality_runner` | 无字段（`{}`） | `ipquality.runner` version 2 |
 
 Agent 只检查模块自身与技术依赖；哪些模块可以组合（例如绑定服务器的节点必须开 `ip_watch`、Runner 只开 `ipquality_runner`）由 Cloud 决定。新增能力只增加一个模块键和对应 capability：Cloud 只向公布了该 capability 的节点派发它的命令、只接收这类节点的相应消息，所以旧节点不受影响，不需要改协议版本；改变已有消息的含义才需要新协议版本。
 
@@ -83,7 +83,7 @@ HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或
 
 ### `ipquality.execute`
 
-payload 只包含 `expected_ipv4`、不含秘密的 `proxy_port`、本地 `proxy_profile_id` 和 `script_version`。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 或目标 ID 字段。SOCKS5 username/password 只存在 Runner 的 root-only 配置中。
+payload 只包含 `expected_ipv4`、`proxy_port`、`proxy_username`、`proxy_password` 和 `script_version`。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 或目标 ID 字段。登录来自目标节点的 `socks5` 模块，由 Cloud 在 offer 时解密放入；Runner 只在本次执行的内存中使用，不写入配置、操作日志或普通日志，Cloud 也不把 payload 存入数据库。只有公布 `ipquality.runner` version 2 的 Runner 会收到这种 payload。
 
 Runner 同一时间只允许一个 command。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
 
@@ -91,7 +91,7 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 /bin/bash <script_path> -4 -n -x <local_socks5_relay_url>
 ```
 
-本地 relay 只监听 `127.0.0.1` 的随机端口，并使用 profile 中的凭据连接上游 SOCKS5。脚本结束后 Runner 再做 postflight；代理地址改变、预期 IPv4 过期、checksum 不一致或找不到 profile 都会失败。
+本地 relay 只监听 `127.0.0.1` 的随机端口，并使用 payload 中的登录连接上游 SOCKS5。脚本结束后 Runner 再做 postflight；代理地址改变、预期 IPv4 过期或 checksum 不一致都会失败。
 
 只有精确来源 `https://report.check.place/...`、无用户信息和显式端口的 URL 加成功 postflight 才是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
 

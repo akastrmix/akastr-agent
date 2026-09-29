@@ -22,7 +22,7 @@ func TestNewRejectsMissingRuntimeDependency(t *testing.T) {
 	t.Setenv("PATH", directory)
 
 	_, err := New(Config{
-		ScriptPath: scriptPath, Profiles: map[string]Profile{"target": {Username: "user", Password: "secret"}},
+		ScriptPath:    scriptPath,
 		Timeout:       time.Minute,
 		ScriptVersion: "test", ExpectedSHA256Hex: hex.EncodeToString(digest[:]),
 	})
