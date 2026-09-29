@@ -97,21 +97,16 @@ func writeFile(t *testing.T, path, contents string) {
 	}
 }
 
-// Reinstalling over the pre-slot layout keeps the execution journal and IP
-// facts that prevent repeated ChangeIP side effects, and replaces everything else.
-func TestReinstallMigratesLegacyLayoutAndKeepsExecutionState(t *testing.T) {
+// Reinstalling keeps the execution journal and IP facts that prevent repeated
+// ChangeIP side effects, and replaces everything else.
+func TestReinstallKeepsExecutionState(t *testing.T) {
 	root := t.TempDir()
 	options, control, commands := testInstall(t, root)
 	paths := options.Layout
 	journal := `{"schema_version":1,"active":{},"recent":[]}`
 	writeFile(t, paths.StateFile(), journal)
 	writeFile(t, paths.IdentityFile, `{"schema_version":2,"enrollment_state":"confirmed","agent_id":"`+testAgentID+`"}`)
-	writeFile(t, filepath.Join(paths.Root, "releases", "v1.6.3", "akastr-agent"), "old")
-	writeFile(t, filepath.Join(paths.StateDir, "configurations", "4", "config.json"), "old")
 	writeFile(t, options.UnitFile, "old unit")
-	if err := os.Symlink("deployments/v1.6.3-r4", paths.Current()); err != nil {
-		t.Fatal(err)
-	}
 
 	if err := Install(t.Context(), options); err != nil {
 		t.Fatal(err)
@@ -128,11 +123,6 @@ func TestReinstallMigratesLegacyLayoutAndKeepsExecutionState(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(layout.SlotConfig(paths.Current())); !bytes.Equal(got, control.payload) {
 		t.Fatal("installed configuration differs from Cloud's configuration")
-	}
-	for _, legacy := range []string{filepath.Join(paths.Root, "releases"), filepath.Join(paths.StateDir, "configurations")} {
-		if _, err := os.Stat(legacy); !os.IsNotExist(err) {
-			t.Fatalf("legacy path %s remains", legacy)
-		}
 	}
 	unit, _ := os.ReadFile(options.UnitFile)
 	if !strings.Contains(string(unit), "ExecStart="+paths.Current()+"/akastr-agent run --config "+paths.Current()+"/config.json") {

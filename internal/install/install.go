@@ -123,7 +123,6 @@ func Install(ctx context.Context, o Options) error {
 	if err := os.Remove(o.Layout.AttemptFile()); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	removeLegacyLayout(o.Layout)
 	if err := layout.WriteFile(o.UnitFile, []byte(unit(o.Layout)), 0o644); err != nil {
 		return err
 	}
@@ -191,21 +190,6 @@ func installHostPackages(ctx context.Context, o Options, model *app.Model) error
 		return fmt.Errorf("command %s is unavailable after package installation", command)
 	}
 	return nil
-}
-
-// removeLegacyLayout deletes what the pre-slot installer and updater left.
-// Identity and execution state are never touched here.
-func removeLegacyLayout(paths layout.Layout) {
-	for _, path := range []string{
-		filepath.Join(paths.Root, "releases"),
-		filepath.Join(paths.Root, "deployments"),
-		filepath.Join(paths.Root, "maintenance-attempt.json"),
-		filepath.Join(paths.Root, "ipquality", "ip.sh"),
-		filepath.Join(paths.StateDir, "configurations"),
-		filepath.Join(filepath.Dir(paths.IdentityFile), "machine-token"),
-	} {
-		_ = os.RemoveAll(path)
-	}
 }
 
 func unit(paths layout.Layout) string {

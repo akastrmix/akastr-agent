@@ -163,10 +163,10 @@ Agent 不提供 `--update` 或本地回退 CLI。自动更新不重写 systemd u
 systemctl --no-pager --full status akastr-agent.service
 ```
 
-永久卸载必须使用版本化 installer 和显式销毁参数：
+永久卸载使用当前批准的 installer 和显式销毁参数。后台删除节点后会显示这条命令，形如：
 
 ```bash
-curl -fsSL 'https://github.com/akastrmix/akastr-agent/releases/download/<release-version>/install.sh' | sh -s -- --uninstall --confirm-destroy-local-agent
+curl -fsSL https://<AkastrCloud 主控>/agent.sh | sh -s -- --uninstall --confirm-destroy-local-agent
 ```
 
 卸载会停止唯一 service，并永久删除该 unit、`/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行记录；中途失败直接重跑同一卸载命令。执行记录删除后，若主控仍有该节点未完成的任务，重装会被主控拒绝，直到管理员处理这些任务。操作者自行管理的固定 ChangeIP 程序不受影响。它不会自动删除后台节点。

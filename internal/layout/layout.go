@@ -56,7 +56,7 @@ func SlotBinary(slot string) string { return filepath.Join(slot, BinaryName) }
 func SlotConfig(slot string) string { return filepath.Join(slot, ConfigName) }
 
 // ActiveSlot returns the slot that current points to, or "" when current is
-// missing or still points at a pre-slot installation.
+// missing or points outside the two slots.
 func (l Layout) ActiveSlot() (string, error) {
 	target, err := os.Readlink(l.Current())
 	if errors.Is(err, os.ErrNotExist) {
