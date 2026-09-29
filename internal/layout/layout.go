@@ -6,11 +6,12 @@
 //	  slots/{a,b}/akastr-agent    binary of that slot
 //	  slots/{a,b}/config.json     Cloud configuration of that slot (root-only)
 //	  ipquality/<sha256>.sh       pinned Runner script, one file per pin
+//	  .maintenance.lock           flock guarding this directory; every Agent
+//	                              version must use this exact path
 //	/etc/akastr-agent/identity.json
 //	/var/lib/akastr-agent/
 //	  {state,ip-state}.json       execution journal and IP facts
 //	  update-attempt.json         bounded candidate attempts for one target
-//	  .maintenance.lock           flock shared by installer, updater and candidate
 package layout
 
 import (
@@ -138,10 +139,12 @@ func (l Layout) Activate(slot string) error {
 // Lock takes the maintenance lock. The descriptor is close-on-exec, so an
 // updater's lock is released when it replaces itself with a candidate.
 func (l Layout) Lock() (*os.File, error) {
-	if err := os.MkdirAll(l.StateDir, 0o700); err != nil {
+	if err := os.MkdirAll(l.Root, 0o755); err != nil {
 		return nil, err
 	}
-	fd, err := syscall.Open(filepath.Join(l.StateDir, ".maintenance.lock"),
+	// Old and new versions overlap during updates and reinstalls, so moving
+	// this path would let each take its own lock and clear the other's slot.
+	fd, err := syscall.Open(filepath.Join(l.Root, ".maintenance.lock"),
 		syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return nil, err
