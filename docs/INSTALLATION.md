@@ -61,12 +61,12 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，
 点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际安装码由后台填写：
 
 ```text
-curl -fsSL https://origin.akastrmix.com/agent.sh | sh -s -- '安装码'
+curl -fsSL https://origin.akastrmix.com/agent/install.sh | sh -s -- '安装码'
 ```
 
 上面只展示命令结构；实际安装必须完整复制后台生成的命令，不要手工替换占位符。
 
-不要改写、拆分或公开这行命令。`/agent.sh` 不接收安装码，只以不缓存的 302 跳转到 Cloud 当前批准版本的 GitHub Release installer；同一命令重跑会取得当时批准的版本，而非 GitHub latest。命令信任官方 HTTPS 入口及其固定版本 Release 跳转，发布流程验真 installer，installer 内部仍校验 Agent binary 的 SHA-256。
+不要改写、拆分或公开这行命令。`/agent/install.sh` 不接收安装码，只以不缓存的 302 跳转到 Cloud 当前批准版本的 GitHub Release installer；同一命令重跑会取得当时批准的版本，而非 GitHub latest。命令信任官方 HTTPS 入口及其固定版本 Release 跳转，发布流程验真 installer，installer 内部仍校验 Agent binary 的 SHA-256。
 
 安装码只是 `节点UUID.机器token` 的组合，不是新增凭据或短码兑换服务；脚本拆开后通过环境变量交给 Agent 程序，使用 HTTPS bootstrap `https://origin.akastrmix.com/internal/agents/bootstrap`。机器 token 是长期安装凭据，可能进入 shell history 和安装脚本参数，但不会写入节点磁盘，也不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
@@ -166,7 +166,7 @@ systemctl --no-pager --full status akastr-agent.service
 永久卸载使用当前批准的 installer 和显式销毁参数。后台删除节点后会显示这条命令，形如：
 
 ```bash
-curl -fsSL https://<AkastrCloud 主控>/agent.sh | sh -s -- --uninstall --confirm-destroy-local-agent
+curl -fsSL https://<AkastrCloud 主控>/agent/install.sh | sh -s -- --uninstall --confirm-destroy-local-agent
 ```
 
 卸载会停止唯一 service，并永久删除该 unit、`/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行记录；中途失败直接重跑同一卸载命令。执行记录删除后，若主控仍有该节点未完成的任务，重装会被主控拒绝，直到管理员处理这些任务。操作者自行管理的固定 ChangeIP 程序不受影响。它不会自动删除后台节点。
