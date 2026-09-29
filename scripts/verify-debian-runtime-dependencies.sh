@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-pins=internal/providers/ipquality/script/pin.go
+pins=internal/modules/ipqualityrunner/script/pin.go
 runner_packages=$(sed -n 's/^[[:space:]]*RunnerPackages[[:space:]]*= "\([^"]*\)"$/\1/p' "$pins")
 runner_commands=$(sed -n 's/^[[:space:]]*RunnerCommands[[:space:]]*= "\([^"]*\)"$/\1/p' "$pins")
 [ -n "$runner_packages" ] && [ -n "$runner_commands" ] || {

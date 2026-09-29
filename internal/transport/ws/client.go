@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
-	"github.com/akastrmix/akastr-agent/internal/feature"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
+	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/coder/websocket"
 )
@@ -28,7 +28,7 @@ type Runtime interface {
 	Accepting(protocol.OperationOffer) (bool, error)
 	Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error)
 	// Run keeps module reporters running; they publish on the ready session.
-	Run(context.Context, feature.Publish) error
+	Run(context.Context, module.Publish) error
 	ControlReady()
 	// Handle processes a module message; false means no module owns its type.
 	Handle(protocol.Envelope) (bool, error)

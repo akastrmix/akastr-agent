@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-pins=internal/providers/ipquality/script/pin.go
+pins=internal/modules/ipqualityrunner/script/pin.go
 commit=$(sed -n 's/^[[:space:]]*PinnedCommit[[:space:]]*= "\([0-9a-f]\{40\}\)"$/\1/p' "$pins")
 expected=$(sed -n 's/^[[:space:]]*PinnedSHA256[[:space:]]*= "\([0-9a-f]\{64\}\)"$/\1/p' "$pins")
 [ -n "$commit" ] && [ -n "$expected" ] || {

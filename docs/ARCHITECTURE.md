@@ -39,16 +39,16 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 ## 4. 包职责
 
 - `internal/config`：严格读取节点配置的外层；各模块的配置段由模块自己校验。
-- `internal/feature`：模块接入接口——一次性任务（`Commands`）与持续上报（`Reporter`）。
-- `internal/features/*`：每个模块一个包，拥有自己的配置段、capability、命令、消息与确认；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
+- `internal/module`：模块接入接口——一次性任务（`Commands`）与持续上报（`Reporter`）。
+- `internal/modules/*`：每个模块一个目录，放齐它的全部代码：配置段、capability、命令、消息与确认，以及只供它使用的执行方式（子包）；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
 - `internal/layout`：固定的磁盘布局——A/B 两个 slot、`current` 原子切换与安装/更新共用的锁。
 - `internal/capability`：生成确定性且不含秘密的能力描述。
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
 - `internal/operation`：统一拥有实时执行、终态重放、重启恢复、本地 exclusive group 和有界操作日志；不保存 command payload 或凭据。能力 handler 只提供执行和恢复结果，不各自维护 journal 流程。
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
-- `internal/features/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
-- `internal/providers/changeip`：统一描述明确触发、结果未知和明确失败；`httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
-- `internal/providers/ipquality/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
+- `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
+- `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
+- `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/bootstrap`：安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。
 - `internal/install`：一次安装命令的全部收敛步骤（第 8 节）。
@@ -56,7 +56,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/app`：解析启用的模块并组成运行时；连接层只收发消息，命令、上报与确认都交给对应模块。
 - `internal/daemon`：组织 WSS、更新循环、候选版本激活与退出；CLI 只负责参数和进程信号。
 
-新增能力：在 `internal/features` 下新建模块包，实现 `feature.Commands` 或 `feature.Reporter`，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段与 capability。连接层、更新与安装都不需要改。
+新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands` 或 `module.Reporter`，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段与 capability。连接层、更新与安装都不需要改。
 
 节点配置只放模块开关和很少变化的设置：配置一变，整个进程就经第 8 节的更新路径重启，新配置先校验，失败回到旧 slot。经常变化的业务数据（例如防火墙规则、xray 用户）不进节点配置，否则每次修改都会重启节点；Cloud 通过 WSS 以操作下发完整的目标状态，模块对比本机现状，只改有差别的部分。同一目标状态重复下发结果不变，所以断线重放是安全的。
 
@@ -84,7 +84,7 @@ ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对�
 
 SOCKS5 的端口和登录都属于目标节点的 `socks5` 模块，目标节点的 capability metadata 只公布端口。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 没有任何代理配置：每次检测由 Cloud 把目标的登录放进任务，Runner 只在执行期间持有，因此增删目标或改密码都不需要改动或重启 Runner，多个 Runner 也无需各自配置。
 
-Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/providers/ipquality/script/pin.go`），脚本按摘要存放，候选版本改变固定版本也不会影响可回退的旧版本；新部署确定生效后删除其他摘要的脚本；CI 会实际下载并验证固定输入与 Debian 依赖声明。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为该代际的有效报告。
+Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/modules/ipqualityrunner/script/pin.go`），脚本按摘要存放，候选版本改变固定版本也不会影响可回退的旧版本；新部署确定生效后删除其他摘要的脚本；CI 会实际下载并验证固定输入与 Debian 依赖声明。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为该代际的有效报告。
 
 官方脚本在仅 IPv4 模式下可能生成有效报告 URL，却返回非零 Bash 状态。因此，“输出中包含有界、有效的 `https://report.check.place/...` URL，且代理 postflight 成功”视为完成；非零退出且没有报告 URL 是 `script_failed`。
 

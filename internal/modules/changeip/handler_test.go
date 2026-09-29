@@ -7,10 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/operation"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
-	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
 )
 
 type observerStep struct {
@@ -39,9 +38,9 @@ func (o *fakeObserver) Observe(context.Context, ipwatch.Family) (ipwatch.Observa
 	}, nil
 }
 
-type fakeProvider struct{ result changeprovider.Result }
+type fakeProvider struct{ result Result }
 
-func (p fakeProvider) Run(context.Context) changeprovider.Result {
+func (p fakeProvider) Run(context.Context) Result {
 	return p.result
 }
 
@@ -70,8 +69,8 @@ func TestCompletedProviderReturnsTriggeredWithoutASecondObservation(t *testing.T
 	observer := &fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}}
 	handler := &Handler{
 		observer: observer,
-		provider: fakeProvider{result: changeprovider.Result{
-			State: changeprovider.TriggerConfirmed, Code: "completed", FinishedAt: time.Now().UTC(),
+		provider: fakeProvider{result: Result{
+			State: TriggerConfirmed, Code: "completed", FinishedAt: time.Now().UTC(),
 		}},
 		reconciler: &fakeReconciler{}, observeTimeout: time.Second,
 	}
@@ -89,19 +88,19 @@ func TestCompletedProviderReturnsTriggeredWithoutASecondObservation(t *testing.T
 func TestProviderOutcomeControlsReconciliationWithoutRetry(t *testing.T) {
 	tests := []struct {
 		name          string
-		providerState changeprovider.TriggerState
+		providerState TriggerState
 		providerCode  string
 		wantOutcome   string
 		wantCode      string
 		wantArmed     bool
 	}{
 		{
-			name: "unknown remains armed", providerState: changeprovider.TriggerUnknown,
+			name: "unknown remains armed", providerState: TriggerUnknown,
 			providerCode: "trigger_outcome_unknown", wantOutcome: "succeeded",
 			wantCode: "change_trigger_unknown", wantArmed: true,
 		},
 		{
-			name: "definite failure cancels", providerState: changeprovider.TriggerFailed,
+			name: "definite failure cancels", providerState: TriggerFailed,
 			providerCode: "exited_nonzero", wantOutcome: "failed",
 			wantCode: "exited_nonzero", wantArmed: false,
 		},
@@ -111,7 +110,7 @@ func TestProviderOutcomeControlsReconciliationWithoutRetry(t *testing.T) {
 			reconciler := &fakeReconciler{}
 			handler := &Handler{
 				observer: &fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}},
-				provider: fakeProvider{result: changeprovider.Result{
+				provider: fakeProvider{result: Result{
 					State: test.providerState, Code: test.providerCode, FinishedAt: time.Now().UTC(),
 				}},
 				reconciler: reconciler, observeTimeout: time.Second,
@@ -161,9 +160,9 @@ func TestActiveJournalRecoveryNeverRunsProviderAgain(t *testing.T) {
 
 type countingProvider struct{ calls int }
 
-func (p *countingProvider) Run(context.Context) changeprovider.Result {
+func (p *countingProvider) Run(context.Context) Result {
 	p.calls++
-	return changeprovider.Result{}
+	return Result{}
 }
 
 func offerFor(expectedIPv4 string) protocol.OperationOffer {

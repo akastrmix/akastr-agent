@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
-	"github.com/akastrmix/akastr-agent/internal/providers/ipquality/script"
 )
 
 type Handler struct {

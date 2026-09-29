@@ -11,15 +11,14 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
-	changefeature "github.com/akastrmix/akastr-agent/internal/features/changeip"
-	"github.com/akastrmix/akastr-agent/internal/features/ipqualityrunner"
-	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
-	"github.com/akastrmix/akastr-agent/internal/features/socks5"
 	"github.com/akastrmix/akastr-agent/internal/layout"
-	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
-	changecommand "github.com/akastrmix/akastr-agent/internal/providers/changeip/command"
-	changehttp "github.com/akastrmix/akastr-agent/internal/providers/changeip/httpcurl"
-	qualityscript "github.com/akastrmix/akastr-agent/internal/providers/ipquality/script"
+	changefeature "github.com/akastrmix/akastr-agent/internal/modules/changeip"
+	changecommand "github.com/akastrmix/akastr-agent/internal/modules/changeip/command"
+	changehttp "github.com/akastrmix/akastr-agent/internal/modules/changeip/httpcurl"
+	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
+	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
+	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/modules/socks5"
 )
 
 // Fixed runtime limits. Cloud configures what a node does, not these bounds.
@@ -31,7 +30,7 @@ const (
 )
 
 // modules holds the parsed configuration of every module a node can enable.
-// Adding a capability means one package under internal/features plus one
+// Adding a capability means one package under internal/modules plus one
 // field and its cases in this file.
 type modules struct {
 	ipWatch  *ipwatch.Config
@@ -127,7 +126,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 		runtime.reporters = append(runtime.reporters, ipwatch.Reporter{Monitor: monitor})
 		if m.changeIP != nil {
-			var provider changeprovider.Provider
+			var provider changefeature.Provider
 			if m.changeIP.Provider == "http_bearer" {
 				provider, err = changehttp.New(changehttp.Config{
 					Program: "/usr/bin/curl", URL: m.changeIP.URL,

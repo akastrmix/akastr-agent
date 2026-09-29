@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
-	"github.com/akastrmix/akastr-agent/internal/feature"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
+	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/coder/websocket"
 )
@@ -29,9 +29,9 @@ func (baseRuntime) Accepting(protocol.OperationOffer) (bool, error) { return tru
 func (baseRuntime) Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error) {
 	return protocol.ExecutionResult{}, errors.New("unexpected execution")
 }
-func (baseRuntime) Run(ctx context.Context, _ feature.Publish) error { <-ctx.Done(); return ctx.Err() }
-func (baseRuntime) ControlReady()                                    {}
-func (baseRuntime) Handle(protocol.Envelope) (bool, error)           { return false, nil }
+func (baseRuntime) Run(ctx context.Context, _ module.Publish) error { <-ctx.Done(); return ctx.Err() }
+func (baseRuntime) ControlReady()                                   {}
+func (baseRuntime) Handle(protocol.Envelope) (bool, error)          { return false, nil }
 
 type recordingExecutor struct {
 	baseRuntime
@@ -77,7 +77,7 @@ func (e *blockingExecutor) Execute(context.Context, protocol.OperationOffer) (pr
 
 type failingRuntime struct{ baseRuntime }
 
-func (failingRuntime) Run(context.Context, feature.Publish) error {
+func (failingRuntime) Run(context.Context, module.Publish) error {
 	return errors.New("observation state failed")
 }
 

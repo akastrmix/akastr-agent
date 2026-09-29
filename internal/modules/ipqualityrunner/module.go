@@ -6,8 +6,8 @@ import (
 	"regexp"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
+	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
-	qualityscript "github.com/akastrmix/akastr-agent/internal/providers/ipquality/script"
 )
 
 // Module name in the node configuration.

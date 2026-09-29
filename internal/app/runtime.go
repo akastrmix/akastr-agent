@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/akastrmix/akastr-agent/internal/feature"
 	"github.com/akastrmix/akastr-agent/internal/layout"
+	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/operation"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
@@ -18,8 +18,8 @@ const recentOperationLimit = 64
 type Runtime struct {
 	journal    *operation.Engine
 	operations *operation.Executor
-	commands   map[string]feature.Commands
-	reporters  []feature.Reporter
+	commands   map[string]module.Commands
+	reporters  []module.Reporter
 }
 
 // BuildRuntime validates every local dependency the enabled modules need. It
@@ -31,7 +31,7 @@ func BuildRuntime(model *Model, paths layout.Layout) (*Runtime, error) {
 	}
 	runtime := &Runtime{
 		journal: journal, operations: operation.NewExecutor(journal),
-		commands: map[string]feature.Commands{},
+		commands: map[string]module.Commands{},
 	}
 	if err := model.modules.build(paths, runtime); err != nil {
 		return nil, err
@@ -39,7 +39,7 @@ func BuildRuntime(model *Model, paths layout.Layout) (*Runtime, error) {
 	return runtime, nil
 }
 
-func (r *Runtime) addCommands(commands feature.Commands) {
+func (r *Runtime) addCommands(commands module.Commands) {
 	r.commands[commands.CommandType()] = commands
 }
 
@@ -65,7 +65,7 @@ func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 
 // Run keeps every reporter running; one stopping stops the process, so a node
 // is never online while silently no longer observing.
-func (r *Runtime) Run(ctx context.Context, publish feature.Publish) error {
+func (r *Runtime) Run(ctx context.Context, publish module.Publish) error {
 	if len(r.reporters) == 0 {
 		<-ctx.Done()
 		return ctx.Err()

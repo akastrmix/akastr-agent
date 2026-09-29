@@ -1,7 +1,8 @@
-// Package feature defines how a node capability plugs into the Agent. Each
-// capability is a module under internal/features that Cloud switches on by
-// including its configuration section; internal/app wires the enabled modules.
-package feature
+// Package module defines how a node capability plugs into the Agent. Each
+// capability is a module under internal/modules, holding all of its code, that
+// Cloud switches on by including its configuration section; internal/app wires
+// the enabled modules.
+package module
 
 import (
 	"context"

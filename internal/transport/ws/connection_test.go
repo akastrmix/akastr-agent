@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/feature"
-	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
+	"github.com/akastrmix/akastr-agent/internal/module"
+	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/coder/websocket"
 )
@@ -32,7 +32,7 @@ type reportingRuntime struct {
 	reporter ipwatch.Reporter
 }
 
-func (r reportingRuntime) Run(ctx context.Context, publish feature.Publish) error {
+func (r reportingRuntime) Run(ctx context.Context, publish module.Publish) error {
 	return r.reporter.Run(ctx, publish)
 }
 func (r reportingRuntime) ControlReady() { r.reporter.ControlReady() }

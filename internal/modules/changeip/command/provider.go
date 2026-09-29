@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"time"
 
-	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
+	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
 
 const (
@@ -54,7 +54,7 @@ func New(config Config) (*Provider, error) {
 	return &Provider{config: config, now: time.Now}, nil
 }
 
-func (p *Provider) Run(ctx context.Context) changeprovider.Result {
+func (p *Provider) Run(ctx context.Context) changeip.Result {
 	startedAt := p.now().UTC()
 	runContext, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
@@ -65,7 +65,7 @@ func (p *Provider) Run(ctx context.Context) changeprovider.Result {
 	process.Stderr = io.Discard
 	configureProcess(process)
 	if err := process.Start(); err != nil {
-		return changeprovider.Result{State: changeprovider.TriggerFailed, Code: CodeStartFailed, ExitCode: -1, StartedAt: startedAt, FinishedAt: p.now().UTC()}
+		return changeip.Result{State: changeip.TriggerFailed, Code: CodeStartFailed, ExitCode: -1, StartedAt: startedAt, FinishedAt: p.now().UTC()}
 	}
 
 	done := make(chan error, 1)
@@ -83,15 +83,15 @@ func (p *Provider) Run(ctx context.Context) changeprovider.Result {
 		if ctx.Err() != nil {
 			code = CodeCancelled
 		}
-		return changeprovider.Result{State: changeprovider.TriggerUnknown, Code: code, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: p.now().UTC()}
+		return changeip.Result{State: changeip.TriggerUnknown, Code: code, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: p.now().UTC()}
 	}
 }
 
-func resultFromWait(waitError error, process *exec.Cmd, startedAt, finishedAt time.Time) changeprovider.Result {
+func resultFromWait(waitError error, process *exec.Cmd, startedAt, finishedAt time.Time) changeip.Result {
 	if waitError == nil {
-		return changeprovider.Result{State: changeprovider.TriggerConfirmed, Code: CodeCompleted, ExitCode: 0, StartedAt: startedAt, FinishedAt: finishedAt}
+		return changeip.Result{State: changeip.TriggerConfirmed, Code: CodeCompleted, ExitCode: 0, StartedAt: startedAt, FinishedAt: finishedAt}
 	}
-	return changeprovider.Result{State: changeprovider.TriggerFailed, Code: CodeExitedNonZero, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: finishedAt}
+	return changeip.Result{State: changeip.TriggerFailed, Code: CodeExitedNonZero, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: finishedAt}
 }
 
 func exitCode(process *exec.Cmd) int {

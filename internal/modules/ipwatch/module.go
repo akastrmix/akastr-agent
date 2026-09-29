@@ -8,7 +8,7 @@ import (
 	"strconv"
 
 	"github.com/akastrmix/akastr-agent/internal/capability"
-	"github.com/akastrmix/akastr-agent/internal/feature"
+	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
@@ -66,9 +66,9 @@ func (c Config) Capability() capability.Descriptor {
 // Reporter exposes the monitor to the control connection.
 type Reporter struct{ Monitor *Monitor }
 
-var _ feature.Reporter = Reporter{}
+var _ module.Reporter = Reporter{}
 
-func (r Reporter) Run(ctx context.Context, publish feature.Publish) error {
+func (r Reporter) Run(ctx context.Context, publish module.Publish) error {
 	return r.Monitor.Run(ctx,
 		func(body SnapshotBody) error { return publish("ip.snapshot", body) },
 		func(body ObservationBody) error { return publish("ip.observed", body) },

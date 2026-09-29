@@ -5,14 +5,13 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/features/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
-	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
 )
 
 type Handler struct {
 	observer       ipwatch.AddressObserver
-	provider       changeprovider.Provider
+	provider       Provider
 	reconciler     changeReconciler
 	observeTimeout time.Duration
 }
@@ -24,7 +23,7 @@ type changeReconciler interface {
 	ChangeAddress(commandID string) (string, bool)
 }
 
-func New(observer ipwatch.AddressObserver, provider changeprovider.Provider, reconciler changeReconciler, observeTimeout time.Duration) *Handler {
+func New(observer ipwatch.AddressObserver, provider Provider, reconciler changeReconciler, observeTimeout time.Duration) *Handler {
 	return &Handler{
 		observer: observer, provider: provider, reconciler: reconciler,
 		observeTimeout: observeTimeout,
@@ -75,13 +74,13 @@ func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protoc
 		return failure("reconciliation_state_failed", &before, time.Now().UTC())
 	}
 	providerResult := h.provider.Run(ctx)
-	if providerResult.State == changeprovider.TriggerFailed {
+	if providerResult.State == TriggerFailed {
 		if err := h.reconciler.CancelChange(offer.CommandID); err != nil {
 			return reconciliationPending(&before, providerResult.FinishedAt)
 		}
 		return failure(providerResult.Code, &before, providerResult.FinishedAt)
 	}
-	if providerResult.State == changeprovider.TriggerUnknown {
+	if providerResult.State == TriggerUnknown {
 		return reconciliationPending(&before, providerResult.FinishedAt)
 	}
 	return protocol.ExecutionResult{

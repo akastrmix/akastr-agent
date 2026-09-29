@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	changeprovider "github.com/akastrmix/akastr-agent/internal/providers/changeip"
+	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
 
 const (
@@ -52,7 +52,7 @@ func New(config Config) (*Provider, error) {
 	return &Provider{config: config, now: time.Now}, nil
 }
 
-func (p *Provider) Run(ctx context.Context) changeprovider.Result {
+func (p *Provider) Run(ctx context.Context) changeip.Result {
 	startedAt := p.now().UTC()
 	runContext, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
@@ -71,7 +71,7 @@ func (p *Provider) Run(ctx context.Context) changeprovider.Result {
 	process.Stdout = &output
 	process.Stderr = nil
 	if err := process.Start(); err != nil {
-		return p.result(changeprovider.TriggerFailed, CodeRequestFailed, -1, startedAt)
+		return p.result(changeip.TriggerFailed, CodeRequestFailed, -1, startedAt)
 	}
 	done := make(chan error, 1)
 	go func() { done <- process.Wait() }()
@@ -88,28 +88,28 @@ func (p *Provider) Run(ctx context.Context) changeprovider.Result {
 		if ctx.Err() != nil {
 			code = CodeCancelled
 		}
-		return p.result(changeprovider.TriggerUnknown, code, process.ProcessState.ExitCode(), startedAt)
+		return p.result(changeip.TriggerUnknown, code, process.ProcessState.ExitCode(), startedAt)
 	}
 }
 
-func classify(waitError error, exitCode int, status string) (changeprovider.TriggerState, string) {
+func classify(waitError error, exitCode int, status string) (changeip.TriggerState, string) {
 	if status == "200" {
 		if waitError == nil {
-			return changeprovider.TriggerConfirmed, CodeCompleted
+			return changeip.TriggerConfirmed, CodeCompleted
 		}
-		return changeprovider.TriggerUnknown, CodeTriggerOutcomeUnknown
+		return changeip.TriggerUnknown, CodeTriggerOutcomeUnknown
 	}
 	if len(status) == 3 && status != "000" && status[0] >= '1' && status[0] <= '5' {
-		return changeprovider.TriggerFailed, CodeHTTPStatusNot200
+		return changeip.TriggerFailed, CodeHTTPStatusNot200
 	}
 	if exitCode == 6 || exitCode == 7 || exitCode == 35 {
-		return changeprovider.TriggerFailed, CodeRequestFailed
+		return changeip.TriggerFailed, CodeRequestFailed
 	}
-	return changeprovider.TriggerUnknown, CodeTriggerOutcomeUnknown
+	return changeip.TriggerUnknown, CodeTriggerOutcomeUnknown
 }
 
-func (p *Provider) result(state changeprovider.TriggerState, code string, exitCode int, startedAt time.Time) changeprovider.Result {
-	return changeprovider.Result{
+func (p *Provider) result(state changeip.TriggerState, code string, exitCode int, startedAt time.Time) changeip.Result {
+	return changeip.Result{
 		State: state, Code: code, ExitCode: exitCode,
 		StartedAt: startedAt, FinishedAt: p.now().UTC(),
 	}

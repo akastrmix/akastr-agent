@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/akastrmix/akastr-agent/internal/config"
-	changefeature "github.com/akastrmix/akastr-agent/internal/features/changeip"
-	"github.com/akastrmix/akastr-agent/internal/features/ipqualityrunner"
+	changefeature "github.com/akastrmix/akastr-agent/internal/modules/changeip"
+	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
