@@ -270,12 +270,20 @@ func TestMonitorPersistsFastUnchangedReconciliation(t *testing.T) {
 	if err := monitor.ArmChange(commandID, "8.8.8.8", now); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(5 * time.Minute)
-	for index := 0; index < 3; index++ {
+	// The old address before the grace ends does not settle the attempt.
+	now = now.Add(time.Minute)
+	if err := monitor.step(context.Background(), publishSnapshot, noObservation, publishUnchanged); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	for index := 0; index < 2; index++ {
+		if len(unchanged) != 0 {
+			t.Fatalf("attempt settled after %d confirmations: %#v", index, unchanged)
+		}
 		if err := monitor.step(context.Background(), publishSnapshot, noObservation, publishUnchanged); err != nil {
 			t.Fatal(err)
 		}
-		now = now.Add(time.Minute)
+		now = now.Add(changeObserveInterval)
 	}
 	if len(unchanged) != 1 || unchanged[0].CommandID != commandID || unchanged[0].Address != "8.8.8.8" {
 		t.Fatalf("unchanged events = %#v", unchanged)

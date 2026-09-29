@@ -51,9 +51,15 @@ type Monitor struct {
 
 var errTransientMonitor = errors.New("transient IP monitor failure")
 
+// A ChangeIP normally drops the network and the address seen once it is back
+// is final, so after a short grace two observations of the old address settle
+// the attempt. While an attempt is open the address is observed every
+// changeObserveInterval instead of the configured interval; failed
+// observations never count.
 const (
-	changeReconcileGrace         = 5 * time.Minute
-	changeUnchangedConfirmations = 3
+	changeReconcileGrace         = 2 * time.Minute
+	changeUnchangedConfirmations = 2
+	changeObserveInterval        = 10 * time.Second
 )
 
 func OpenMonitor(filePath string, observer AddressObserver, interval time.Duration, observeIPv6 bool) (*Monitor, error) {
@@ -152,8 +158,7 @@ func validateMonitorSnapshot(snapshot monitorSnapshot) error {
 	if attempt := snapshot.ChangeAttempt; attempt != nil {
 		address, parseError := netip.ParseAddr(attempt.Address)
 		if !protocol.ValidUUID(attempt.CommandID) || parseError != nil || !address.Is4() ||
-			attempt.ReconcileAt.IsZero() || attempt.Confirmations < 0 ||
-			attempt.Confirmations >= changeUnchangedConfirmations {
+			attempt.ReconcileAt.IsZero() || attempt.Confirmations < 0 {
 			return errors.New("IP state ChangeIP attempt is invalid")
 		}
 	}
@@ -190,23 +195,32 @@ func (m *Monitor) Run(ctx context.Context, publishSnapshot func(SnapshotBody) er
 }
 
 func (m *Monitor) runIPv4(ctx context.Context, publishSnapshot func(SnapshotBody) error, publish func(ObservationBody) error, publishUnchanged func(UnchangedBody) error) error {
-	return m.runLoop(ctx, m.wake, func() error {
+	return m.runLoop(ctx, m.wake, m.ipv4Delay, func() error {
 		return m.step(ctx, publishSnapshot, publish, publishUnchanged)
 	})
 }
 
+func (m *Monitor) ipv4Delay() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.snapshot.ChangeAttempt != nil && m.interval > changeObserveInterval {
+		return changeObserveInterval
+	}
+	return m.interval
+}
+
 func (m *Monitor) runIPv6(ctx context.Context, publishSnapshot func(SnapshotBody) error, publish func(ObservationBody) error) error {
-	return m.runLoop(ctx, m.wakeIPv6, func() error {
+	return m.runLoop(ctx, m.wakeIPv6, func() time.Duration { return m.interval }, func() error {
 		return m.stepIPv6(ctx, publishSnapshot, publish)
 	})
 }
 
-func (m *Monitor) runLoop(ctx context.Context, wake <-chan struct{}, step func() error) error {
+func (m *Monitor) runLoop(ctx context.Context, wake <-chan struct{}, delay func() time.Duration, step func() error) error {
 	for {
 		if err := step(); err != nil && ctx.Err() == nil && !errors.Is(err, errTransientMonitor) {
 			return err
 		}
-		timer := time.NewTimer(m.interval)
+		timer := time.NewTimer(delay())
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -271,6 +285,7 @@ func (m *Monitor) ArmChange(commandID, address string, startedAt time.Time) erro
 		return err
 	}
 	m.snapshot = next
+	wakeMonitor(m.wake) // Switch to the fast cadence now rather than after the current wait.
 	return nil
 }
 

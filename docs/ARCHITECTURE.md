@@ -78,7 +78,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 
 ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对起点写入同一个 IP 状态文件。HTTP provider 只有收到 `200` 才返回 `change_triggered`；固定程序退出 `0` 也返回该结果。请求可能已经送达但响应、进程或 WSS 被换 IP 断开的情况返回 `change_trigger_unknown`，不会重发 provider。明确的非 `200`、非零退出或启动失败会取消核对并失败。
 
-唯一的常驻 IPv4 monitor 随后负责事实判定：观察到新 IP 时持久上报 `ip.observed`；五分钟宽限后连续三次成功观察仍是旧 IP 时持久上报 `changeip.unchanged`。网络或观察源失败不计次数。两类消息在主控确认前都会跨断线和进程重启重发；主控按 command ID 收敛同一 session，且不要求 `operation.result` 必须先到达。45 分钟兜底只由 AkastrCloud session 持有，Agent 不维护第二个业务计时器。
+唯一的常驻 IPv4 monitor 随后负责事实判定：核对期间改为每 10 秒观察一次；观察到新 IP 时持久上报 `ip.observed`；触发两分钟后连续两次成功观察仍是旧 IP 时持久上报 `changeip.unchanged`。换 IP 通常伴随断网，恢复后看到的地址即为结果；网络或观察源失败不计次数。两类消息在主控确认前都会跨断线和进程重启重发；主控按 command ID 收敛同一 session，且不要求 `operation.result` 必须先到达。45 分钟兜底只由 AkastrCloud session 持有，Agent 不维护第二个业务计时器。
 
 ## 7. SOCKS5 与 IPQuality
 
