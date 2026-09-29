@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -97,6 +98,12 @@ func (m modules) hostCommands() ([]string, []string) {
 		return nil, nil
 	}
 	return strings.Fields(qualityscript.RunnerCommands), strings.Fields(qualityscript.RunnerPackages)
+}
+
+// RemoveStaleAssets deletes pinned module assets that only earlier deployments
+// used. Call it once this deployment is committed.
+func RemoveStaleAssets(paths layout.Layout) error {
+	return qualityscript.RemoveOtherScripts(filepath.Dir(paths.IPQualityScript(qualityscript.PinnedSHA256)))
 }
 
 // prepare fetches pinned module assets before the runtime is built.

@@ -84,7 +84,7 @@ ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对�
 
 SOCKS5 的端口和登录都属于目标节点的 `socks5` 模块，目标节点的 capability metadata 只公布端口。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 没有任何代理配置：每次检测由 Cloud 把目标的登录放进任务，Runner 只在执行期间持有，因此增删目标或改密码都不需要改动或重启 Runner，多个 Runner 也无需各自配置。
 
-Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/providers/ipquality/script/pin.go`），脚本按摘要存放，候选版本改变固定版本也不会影响可回退的旧版本；CI 会实际下载并验证固定输入与 Debian 依赖声明。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为该代际的有效报告。
+Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/providers/ipquality/script/pin.go`），脚本按摘要存放，候选版本改变固定版本也不会影响可回退的旧版本；新部署确定生效后删除其他摘要的脚本；CI 会实际下载并验证固定输入与 Debian 依赖声明。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为该代际的有效报告。
 
 官方脚本在仅 IPv4 模式下可能生成有效报告 URL，却返回非零 Bash 状态。因此，“输出中包含有界、有效的 `https://report.check.place/...` URL，且代理 postflight 成功”视为完成；非零退出且没有报告 URL 是 `script_failed`。
 

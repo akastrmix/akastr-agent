@@ -69,6 +69,28 @@ func EnsurePinnedScript(ctx context.Context, client *http.Client, path string) e
 	return os.Rename(temporary, path)
 }
 
+// RemoveOtherScripts deletes scripts of earlier pins from directory, which
+// holds one script per pin. Only a committed deployment calls it: a later
+// candidate downloads its own pin again.
+func RemoveOtherScripts(directory string) error {
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == PinnedSHA256+".sh" {
+			continue
+		}
+		if err := os.Remove(filepath.Join(directory, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
 func digest(contents []byte) string {
 	sum := sha256.Sum256(contents)
 	return hex.EncodeToString(sum[:])

@@ -88,9 +88,15 @@ func Run(ctx context.Context, options Options) error {
 		return updater.Loop(ctx, nudges)
 	}
 	updater.CheckSafe = runtime.UpdateSafe
+	removeStaleAssets := func() {
+		if err := app.RemoveStaleAssets(paths); err != nil {
+			logger.Warn("stale module assets remain", "error", err.Error())
+		}
+	}
 	committed := make(chan struct{})
 	if !candidate {
 		close(committed)
+		removeStaleAssets()
 	}
 	onReady := func() error {
 		select {
@@ -105,6 +111,7 @@ func Run(ctx context.Context, options Options) error {
 			}
 			close(committed)
 			logger.Info("Agent update activated", "target", target)
+			removeStaleAssets()
 		}
 		nudge()
 		return nil
