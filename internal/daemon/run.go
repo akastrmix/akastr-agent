@@ -97,8 +97,9 @@ func Run(ctx context.Context, options Options) error {
 		case <-committed:
 		default:
 			// The candidate is accepted by Cloud; make it the deployment systemd
-			// restarts before it handles any business message.
-			if err := paths.Activate(slot); err != nil {
+			// restarts before it handles any business message. The installer's
+			// lock keeps a concurrent reinstall from clearing the slot it activates.
+			if err := activate(paths, slot); err != nil {
 				failCandidate("candidate_activation_failed")
 				return err
 			}
@@ -129,6 +130,15 @@ func Run(ctx context.Context, options Options) error {
 		failCandidate("candidate_not_ready")
 	}
 	return err
+}
+
+func activate(paths layout.Layout, slot string) error {
+	lock, err := paths.Lock()
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return paths.Activate(slot)
 }
 
 var errCandidateTimeout = errors.New("Agent update candidate was not accepted by Cloud in time")
