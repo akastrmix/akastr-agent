@@ -115,7 +115,7 @@ Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`
 
 ## 自然 IPv6 变化
 
-`family=ipv6` 的 `ip.observed` 始终是独立自然变化，不归因于 ChangeIP，也不重置 IPQuality。AkastrCloud 将变化写入 `/iplog` 数据源；主动通知只面向 Carpool 管理员，非管理员不会收到 IPv6 变化消息。
+`family=ipv6` 的 `ip.observed` 始终是独立自然变化，不归因于 ChangeIP，也不重置 IPQuality。AkastrCloud 只把变化写入 `/iplog` 数据源，不发送主动通知。
 
 ## 安全边界
 
