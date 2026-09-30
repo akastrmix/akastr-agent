@@ -99,13 +99,13 @@ Runner 同一时间只允许一个 command。每次执行前都重新校验脚�
 
 `ip.snapshot` 与 `ip.observed` 的 `family` 只允许 `ipv4` 或 `ipv6`，地址必须与 family 匹配且为对应协议族的公网地址。IPv6 在比较和持久化前规范化文本，并按固定 IANA special-purpose policy 拒绝非 globally reachable 地址；Cloud 还要求 active `ip.observe.properties.observe_ipv6=true`。IPv4 与 IPv6 各自使用独立 baseline、待确认事实和 UUID 幂等重放；任一 family 的 ack 不得清除另一 family 的状态。
 
-节点是自身地址的权威。`ip.snapshot` 与 `ip.observed` 都表示“节点现在的地址”：Cloud 采用该地址，与自己所持 baseline 不同时，以 Cloud 所持地址为 previous 记录一次变化，不论 `previous_address` 是什么；不因 baseline 不一致或时间而拒绝。`observed_at` 只用于同一节点事实的排序与展示，超前主控或不晚于上一条事实时改用主控时间。Agent 会无限重发未确认的事实，因此 Cloud 对格式正确但无法使用的事实（服务器已停用、IPv6 capability 未开启、`changeip.unchanged` 指向主控没有的 command 等）记录日志并照常返回 `persisted=true` 的 ack，不断开连接；只有数据库故障等暂时性失败才结束连接，由 Agent 重连重试。
+节点是自身地址的权威。`ip.snapshot` 与 `ip.observed` 都表示“节点现在的地址”：Cloud 采用该地址，与自己所持 baseline 不同时，以 Cloud 所持地址为 previous 记录一次变化，不论 `previous_address` 是什么；不因 baseline 不一致或时间而拒绝。节点时间（`observed_at`、`checked_at`，包括 `operation.result` 中的）只用于同一节点事实的排序与展示，超前主控或不晚于上一条事实时改用主控时间。Agent 会无限重发未确认的事实，因此 Cloud 对格式正确但无法使用的事实（服务器已停用、IPv6 capability 未开启、`changeip.unchanged` 指向主控没有的 command 等）记录日志并照常返回 `persisted=true` 的 ack，不断开连接；只有数据库故障等暂时性失败才结束连接，由 Agent 重连重试。
 
 Target 首次成功 IPv6 观察发送 `family=ipv6` 的 `ip.snapshot`，之后地址改变发送 `family=ipv6` 的 `ip.observed`。IPv6 snapshot 只建立主控 baseline，不设置 IPv4 readiness；无 IPv6、探测失败或暂时不可达不发送消失事件，也不影响 IPv4、ChangeIP、IPQuality 或 SOCKS5。
 
 Agent 没有本地 IPv4 baseline 时，首次成功观察必须先持久化并发送 `ip.snapshot`；重启后已有 baseline 时先重放待确认事实，并把与该 baseline 不同的地址以 `ip.observed` 持久上报，确认后再发送当前 `ip.snapshot`。snapshot body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；当前 identity 的 snapshot readiness 与该提交原子持久化，普通 WSS 重连保留，重新 enrollment 时清除。Agent 在确认前不得接受新的 ChangeIP，并跨重连、重启重发尚未确认的 snapshot。
 
-`ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。只有换 IP 仍在进行、其 command 已 accepted 且变化前 Cloud 所持地址就是该次换 IP 的起始地址时，变化才归因于 ChangeIP（snapshot 带来的变化同样适用）；消息可以先于 `operation.result` 到达。尚未接受 command 时发生的变化仍是自然变化，不会被错误归因。
+`ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。只有换 IP 仍在进行、节点已接过其 command（无论触发结果是否送达或可用）且变化前 Cloud 所持地址就是该次换 IP 的起始地址时，变化才归因于 ChangeIP（snapshot 带来的变化同样适用）；消息可以先于 `operation.result` 到达。尚未接受 command 时发生的变化仍是自然变化，不会被错误归因。
 
 核对期间 Agent 每 10 秒观察一次；若触发两分钟后连续两次成功观察仍是触发前 IP，Agent 发送 `changeip.unchanged`，body 必须且只能包含 `command_id`、`address` 和 `observed_at`。网络失败不计确认次数。AkastrCloud 持久接纳后返回 `changeip.unchanged_ack`，body 为相同 `command_id` 和 `persisted=true`；45 分钟兜底只属于 Cloud 业务 session。
 
