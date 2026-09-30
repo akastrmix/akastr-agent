@@ -335,10 +335,8 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 }
 
 func (c *Client) acceptOffer(ctx context.Context, session *session, offer protocol.OperationOffer) error {
-	now := time.Now()
-	if !offerHandshakeAllows(offer, now) {
-		return errors.New("operation offer is invalid")
-	}
+	// Cloud offers a command only once it is due and judges its expiry itself,
+	// so a node clock behind Cloud's is no reason to end the session.
 	accepting, err := c.runtime.Accepting(offer)
 	if err != nil {
 		return err
@@ -363,10 +361,6 @@ func (c *Client) acceptOffer(ctx context.Context, session *session, offer protoc
 	c.pending[offer.CommandID] = pendingOperation{offer: offer, lease: lease}
 	c.mu.Unlock()
 	return session.write(ctx, "operation.accepted", protocol.CommandIDBody{CommandID: offer.CommandID})
-}
-
-func offerHandshakeAllows(offer protocol.OperationOffer, now time.Time) bool {
-	return offer.ExpiresAt.After(offer.NotBefore) && !now.Before(offer.NotBefore)
 }
 
 func (c *Client) handleAcceptedAck(ctx context.Context, ack protocol.AcceptedAckBody) {

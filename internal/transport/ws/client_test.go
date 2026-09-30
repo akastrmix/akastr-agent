@@ -310,13 +310,20 @@ func TestAcceptedAckGatesExecution(t *testing.T) {
 	}
 }
 
-func TestExpiredOfferCanReachAuthoritativeAcceptanceHandshake(t *testing.T) {
-	now := time.Now()
-	offer := protocol.OperationOffer{
-		NotBefore: now.Add(-2 * time.Minute), ExpiresAt: now.Add(-time.Minute),
+// A node clock behind Cloud's used to reject a due offer and end the session.
+func TestOfferAheadOfTheNodeClockKeepsTheSession(t *testing.T) {
+	client := &Client{
+		runtime:   holdingRuntime{},
+		lifecycle: lifecycle.New(), running: map[string]*lifecycle.Lease{},
+		pending: map[string]pendingOperation{},
 	}
-	if !offerHandshakeAllows(offer, now) {
-		t.Fatal("expired command was blocked before the Cloud acceptance acknowledgement")
+	err := client.acceptOffer(t.Context(), nil, protocol.OperationOffer{
+		CommandID:   "123e4567-e89b-42d3-a456-426614174009",
+		CommandType: "changeip.execute",
+		NotBefore:   time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("acceptOffer() error = %v", err)
 	}
 }
 
