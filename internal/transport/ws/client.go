@@ -302,10 +302,6 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 	if err != nil {
 		return err
 	}
-	expiresAt, _ := time.Parse(time.RFC3339Nano, challenge.ExpiresAt)
-	if time.Now().After(expiresAt) {
-		return errors.New("authentication challenge expired")
-	}
 	signature := ed25519.Sign(c.identity.Ed25519PrivateKey(), signingText)
 	if err := session.write(ctx, "auth.response", protocol.AuthResponseBody{
 		AgentID: c.identity.AgentID, ChallengeID: challenge.ChallengeID,
