@@ -85,7 +85,7 @@ HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或
 
 payload 只包含 `expected_ipv4`、`proxy_port`、`proxy_username`、`proxy_password` 和 `script_version`。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 或目标 ID 字段。登录来自目标节点的 `socks5` 模块，由 Cloud 在 offer 时解密放入；Runner 只在本次执行的内存中使用，不写入配置、操作日志或普通日志，Cloud 也不把 payload 存入数据库。只有公布 `ipquality.runner` version 2 的 Runner 会收到这种 payload。
 
-Runner 同一时间只允许一个 command。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
+Runner 同一时间只允许一个 command。Cloud 给每次检测 20 分钟期限，不论是否已接单，到期即判失败；此后送达的结果仍返回 `persisted=true` 的 ack，但不再采用。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
 
 ```text
 /bin/bash <script_path> -4 -n -x <local_socks5_relay_url>
@@ -113,7 +113,7 @@ Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`
 
 ## 自然 IPv4 变化
 
-没有活动 ChangeIP session 的 `ip.observed` 是自然变化。AkastrCloud 应用既有私聊订阅条件并重置该 IP 代际的 IPQuality 缓存；协议没有 Telegram channel delivery。
+没有活动 ChangeIP session 的 `ip.observed` 是自然变化。AkastrCloud 应用既有私聊订阅条件；IPQuality 缓存以 IP 变化记录为界自然失效；协议没有 Telegram channel delivery。
 
 ## 自然 IPv6 变化
 
