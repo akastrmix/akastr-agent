@@ -26,17 +26,17 @@ type Commands interface {
 	Recover(protocol.OperationOffer) protocol.ExecutionResult
 }
 
-// Publish sends one message on the current control session.
-type Publish func(messageType string, body any) error
+// Publish sends one report on the current control session.
+type Publish func(protocol.ReportBody) error
 
-// Reporter runs for the life of the process and delivers durable facts until
-// Cloud acknowledges them.
+// Reporter runs for the life of the process and sends facts it observes as
+// reports, resending each until Cloud acknowledges its report_id.
 type Reporter interface {
 	Run(ctx context.Context, publish Publish) error
 	// ControlReady wakes the reporter when a session becomes ready.
 	ControlReady()
-	// Acknowledge handles a Cloud acknowledgement; false means another module owns it.
-	Acknowledge(protocol.Envelope) (bool, error)
+	// Acknowledge settles a stored report; false means another module sent it.
+	Acknowledge(reportID string) (bool, error)
 	// UpdateSafe refuses a process replacement while its work must finish first.
 	UpdateSafe() error
 }

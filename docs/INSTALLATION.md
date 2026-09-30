@@ -46,7 +46,7 @@ apt-get install --yes ca-certificates curl
 
 “固定本机程序”填写节点上已有程序或脚本的干净绝对路径，例如 `/usr/local/bin/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。程序必须是 Agent service 可读取的非 symlink regular file 并具有执行权限；脚本需要有效 shebang。它不接受相对路径、控制字符、shell/env/busybox 入口，以及 sandbox 隐藏的 home、runtime user 或临时目录。主控以后只能触发这组固定 argv，不能远程换程序或参数。
 
-公布 SOCKS5 只描述已有代理，Agent 不安装、不配置代理服务。填写 1–65535 的监听端口和该代理的用户名、密码；登录只用于主控派发 IPQuality 检测，不进入安装命令、列表或 capability。主控始终使用 Agent 最近一次观测到的公网 IPv4，不接受 DDNS、固定主机名或手填 IP。尚未建立公网 IPv4 baseline 时不会派发 IPQuality。
+公布 SOCKS5 只描述已有代理，Agent 不安装、不配置代理服务。填写 1–65535 的监听端口和该代理的用户名、密码；登录只用于主控派发 IPQuality 检测，不进入安装命令或列表。主控始终使用 Agent 最近一次观测到的公网 IPv4，不接受 DDNS、固定主机名或手填 IP。节点尚未上报过公网 IPv4 时不会派发 IPQuality。
 
 ### IPQuality Runner
 
@@ -89,7 +89,7 @@ Akastr Agent <release-version> installed successfully.
 ```text
 /etc/akastr-agent/identity.json
 /var/lib/akastr-agent/state.json
-/var/lib/akastr-agent/ip-state.json
+/var/lib/akastr-agent/changeip-reconciliation.json（仅在换 IP 核对期间存在内容）
 /var/lib/akastr-agent/update-attempt.json（仅在更新失败后出现）
 /usr/local/lib/akastr-agent/current -> slots/a 或 slots/b
 /usr/local/lib/akastr-agent/slots/{a,b}/{akastr-agent,config.json}
@@ -111,15 +111,15 @@ systemctl show akastr-agent.service --property=MainPID,ActiveState,SubState,NRes
 journalctl -u akastr-agent.service -n 100 --no-pager
 ```
 
-正确结果是：系统中只有 `akastr-agent.service`，其状态为 `active`、`MainPID` 非 0、版本与后台批准的 release 一致、`prepare` 输出 capability 列表，日志出现 `control connection ready`。service 的 `active` 表示进程运行，不能单独证明业务连接可用。SOCKS5 capability 只应包含端口；任何 capability 都不应包含 token、密码、主机名或 provider secret。
+正确结果是：系统中只有 `akastr-agent.service`，其状态为 `active`、`MainPID` 非 0、版本与后台批准的 release 一致、`prepare` 成功退出，日志出现 `control connection ready`。service 的 `active` 表示进程运行，不能单独证明业务连接可用。
 
-再回到后台确认节点为“在线”，版本和类型正确；只有在线且 capability 完整的节点才能接收业务操作。
+再回到后台确认节点为“在线”，版本和类型正确；只有在线、且已按当前配置连接过的节点才能接收业务操作。
 
 ## 6. 日常使用
 
 Agent 没有供操作者绕过主控的本地换 IP 或 IPQuality 命令。用户从 AkastrCloud/Carpool 发起延迟立即更换、预设更换、自动定时更换和 IPQuality 查询。
 
-自然 IPv4 首次观察通过 WSS `ip.snapshot` 持久建立 Cloud baseline，之后的变化再以 `ip.observed` 上报。AkastrCloud 重置变化后的 IPQuality 缓存代际，并私聊所有仍满足订阅条件的用户；没有 Telegram channel 播报。
+Agent 每次连上都通过 WSS 上报当前公网地址，之后地址变化时再次上报。AkastrCloud 重置变化后的 IPQuality 缓存代际，并私聊所有仍满足订阅条件的用户；没有 Telegram channel 播报。
 
 常用只读或服务操作：
 

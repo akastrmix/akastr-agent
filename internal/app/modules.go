@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/layout"
 	changefeature "github.com/akastrmix/akastr-agent/internal/modules/changeip"
 	changecommand "github.com/akastrmix/akastr-agent/internal/modules/changeip/command"
@@ -74,23 +75,6 @@ func parseSection[T any](parse func(json.RawMessage) (T, error), raw json.RawMes
 	return &cfg, nil
 }
 
-func (m modules) capabilities() []capability.Descriptor {
-	var descriptors []capability.Descriptor
-	if m.ipWatch != nil {
-		descriptors = append(descriptors, m.ipWatch.Capability())
-	}
-	if m.changeIP != nil {
-		descriptors = append(descriptors, m.changeIP.Capability())
-	}
-	if m.socks5 != nil {
-		descriptors = append(descriptors, m.socks5.Capability())
-	}
-	if m.runner != nil {
-		descriptors = append(descriptors, m.runner.Capability())
-	}
-	return descriptors
-}
-
 // hostCommands and hostPackages are what the installer provides with apt.
 func (m modules) hostCommands() ([]string, []string) {
 	if m.runner == nil {
@@ -102,6 +86,12 @@ func (m modules) hostCommands() ([]string, []string) {
 // RemoveStaleAssets deletes pinned module assets that only earlier deployments
 // used. Call it once this deployment is committed.
 func RemoveStaleAssets(paths layout.Layout) error {
+	// Agents before protocol v8 kept IP facts in ip-state.json. This Agent reports
+	// the address again on connecting, and an update never leaves a ChangeIP
+	// reconciliation behind. Delete these lines once no node runs such an Agent.
+	if err := os.Remove(filepath.Join(paths.StateDir, "ip-state.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	return qualityscript.RemoveOtherScripts(filepath.Dir(paths.IPQualityScript(qualityscript.PinnedSHA256)))
 }
 
@@ -119,7 +109,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		if err != nil {
 			return err
 		}
-		monitor, err := ipwatch.OpenMonitor(paths.IPStateFile(), observer,
+		monitor, err := ipwatch.OpenMonitor(paths.ReconciliationFile(), observer,
 			time.Duration(m.ipWatch.IntervalSeconds)*time.Second, m.ipWatch.IPv6)
 		if err != nil {
 			return err

@@ -96,13 +96,15 @@ func (r *Runtime) ControlReady() {
 	}
 }
 
-func (r *Runtime) Handle(envelope protocol.Envelope) (bool, error) {
+// Acknowledge passes Cloud's acknowledgement to the module that sent the
+// report. One no module owns is a repeat of an earlier acknowledgement.
+func (r *Runtime) Acknowledge(reportID string) error {
 	for _, reporter := range r.reporters {
-		if handled, err := reporter.Acknowledge(envelope); handled {
-			return true, err
+		if handled, err := reporter.Acknowledge(reportID); handled {
+			return err
 		}
 	}
-	return false, nil
+	return nil
 }
 
 // UpdateSafe refuses to replace the process while an operation or module work

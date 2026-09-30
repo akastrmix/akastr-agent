@@ -19,6 +19,7 @@ import (
 
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/layout"
+	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 const testAgentID = "123e4567-e89b-42d3-a456-426614174102"
@@ -50,7 +51,7 @@ func (c *fakeControl) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		}
 		_ = json.NewDecoder(request.Body).Decode(&body)
 		c.enrolledKey = body.PublicKey
-		_ = json.NewEncoder(response).Encode(map[string]any{"ok": true, "agent_id": testAgentID, "protocol": "2026-09-28.v7"})
+		_ = json.NewEncoder(response).Encode(map[string]any{"ok": true, "agent_id": testAgentID, "protocol": protocol.Version})
 	default:
 		http.NotFound(response, request)
 	}
@@ -151,7 +152,7 @@ func TestInstallRefusesAnotherNodesMachine(t *testing.T) {
 func TestInstallRefusesStateWithoutIdentity(t *testing.T) {
 	root := t.TempDir()
 	options, control, _ := testInstall(t, root)
-	writeFile(t, options.Layout.IPStateFile(), `{}`)
+	writeFile(t, options.Layout.ReconciliationFile(), `{}`)
 	if err := Install(t.Context(), options); err == nil || control.enrolledKey != "" {
 		t.Fatalf("Install() error = %v enrolled=%q", err, control.enrolledKey)
 	}

@@ -36,9 +36,6 @@ func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protoc
 	if err != nil {
 		return h.failure("payload_invalid", "", "", "")
 	}
-	if payload.ScriptVersion != h.scriptVersion {
-		return h.failure("script_version_mismatch", "", "", "")
-	}
 	run := h.provider.Run(ctx, script.Request{
 		ProxyPort:    payload.ProxyPort,
 		Credentials:  script.Profile{Username: payload.ProxyUsername, Password: payload.ProxyPassword},

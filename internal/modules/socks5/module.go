@@ -1,15 +1,13 @@
 // Package socks5 describes an existing SOCKS5 proxy on a target node. The
-// Agent neither runs nor configures the proxy; Cloud pairs the port with the
-// node's observed public IPv4 and hands the login to the IPQuality Runner with
-// each check.
+// Agent neither runs nor configures the proxy; it only accepts the section of
+// its configuration. Cloud pairs the port with the node's observed public IPv4
+// and hands the login to the IPQuality Runner with each check.
 package socks5
 
 import (
 	"encoding/json"
 	"errors"
-	"strconv"
 
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
@@ -33,11 +31,4 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 		return Config{}, errors.New("SOCKS5 username and password must be 1-255 bytes without NUL")
 	}
 	return cfg, nil
-}
-
-// Capability advertises the port only; Cloud already holds the login.
-func (c Config) Capability() capability.Descriptor {
-	return capability.Descriptor{
-		Name: "proxy.socks5", Version: 1, Properties: map[string]any{"port": strconv.Itoa(c.Port)},
-	}
 }

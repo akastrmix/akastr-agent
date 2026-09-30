@@ -17,7 +17,7 @@ type Handler struct {
 }
 
 type changeReconciler interface {
-	SnapshotReady() bool
+	AddressSettled() bool
 	ArmChange(commandID, address string, startedAt time.Time) error
 	CancelChange(commandID string) error
 	ChangeAddress(commandID string) (string, bool)
@@ -38,10 +38,10 @@ func (h *Handler) Validate(payload json.RawMessage) error {
 	return err
 }
 
-// Accepting waits until Cloud has confirmed the IPv4 baseline, so the address a
-// command expects is the one Cloud also holds.
+// Accepting waits until Cloud has stored this node's current IPv4 address, so
+// the address a command expects is the one the node also sees.
 func (h *Handler) Accepting() bool {
-	return h.reconciler != nil && h.reconciler.SnapshotReady()
+	return h.reconciler != nil && h.reconciler.AddressSettled()
 }
 
 func (h *Handler) Recover(offer protocol.OperationOffer) protocol.ExecutionResult {

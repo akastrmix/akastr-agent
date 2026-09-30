@@ -18,7 +18,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 
 - 公网 IPv4 与可选 IPv6 定时观察；
 - HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
-- 不含凭据的 SOCKS5 端口描述；代理地址始终使用 Agent 观测到的公网 IPv4。
+- 已有 SOCKS5 代理的端口与登录（只供主控派发 IPQuality，Agent 不运行代理）；代理地址始终使用 Agent 观测到的公网 IPv4。
 
 Runner 使用主控随任务下发的目标 SOCKS5 登录，执行固定版本、经过摘要校验的官方 IPQuality 脚本，严格单并发，本身不保存代理密码。配置范围与固定版本入口见[安装教程](docs/INSTALLATION.md#ipquality-runner)。
 
@@ -30,7 +30,6 @@ Akastr Agent 只负责节点本地执行与观察：
 
 - 观察公网 IPv4，并在启用时独立观察 IPv6；
 - 执行本地固定的 ChangeIP provider；
-- 上报不含凭据的 SOCKS5 端点描述；
 - 在专用 Runner 上执行固定版本、固定 checksum 的 IPQuality 脚本。
 
 AkastrCloud 负责业务编排：

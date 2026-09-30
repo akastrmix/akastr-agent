@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
@@ -88,10 +87,6 @@ func validateProgram(value string) error {
 		}
 	}
 	return nil
-}
-
-func (Config) Capability() capability.Descriptor {
-	return capability.Descriptor{Name: "changeip.command", Version: 1, ExclusiveGroups: []string{"target-network"}}
 }
 
 type Payload struct {

@@ -49,7 +49,7 @@ type fakeReconciler struct {
 	address   string
 }
 
-func (r *fakeReconciler) SnapshotReady() bool { return true }
+func (r *fakeReconciler) AddressSettled() bool { return true }
 
 func (r *fakeReconciler) ArmChange(commandID, address string, _ time.Time) error {
 	r.commandID, r.address = commandID, address

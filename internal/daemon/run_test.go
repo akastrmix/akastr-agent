@@ -123,7 +123,7 @@ func TestCandidateActivatesItsSlotWhenCloudAcceptsIt(t *testing.T) {
 		if err != nil {
 			return
 		}
-		hello, err := protocol.DecodeBody[protocol.HelloBody](envelope, "agent_version", "configuration_revision", "capabilities")
+		hello, err := protocol.DecodeBody[protocol.HelloBody](envelope, "agent_version", "configuration_revision")
 		if err != nil {
 			return
 		}

@@ -39,7 +39,7 @@ type namedResponse struct {
 // Cloud tests read the same file; a mismatch in either side would stop every
 // node from updating.
 func TestMaintenanceContractMatchesSharedFixture(t *testing.T) {
-	raw, err := os.ReadFile("../protocol/testdata/agent-protocol-v7.json")
+	raw, err := os.ReadFile("../protocol/testdata/agent-protocol-v8.json")
 	if err != nil {
 		t.Fatal(err)
 	}

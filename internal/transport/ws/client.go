@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/module"
@@ -30,8 +29,8 @@ type Runtime interface {
 	// Run keeps module reporters running; they publish on the ready session.
 	Run(context.Context, module.Publish) error
 	ControlReady()
-	// Handle processes a module message; false means no module owns its type.
-	Handle(protocol.Envelope) (bool, error)
+	// Acknowledge settles the module report Cloud has stored.
+	Acknowledge(reportID string) error
 }
 
 type Client struct {
@@ -39,7 +38,6 @@ type Client struct {
 	identity              identity.Identity
 	version               string
 	configurationRevision int64
-	capabilities          []capability.Descriptor
 	runtime               Runtime
 	lifecycle             *lifecycle.Gate
 	onReady               func() error
@@ -71,7 +69,6 @@ type Options struct {
 	Identity              identity.Identity
 	Version               string
 	ConfigurationRevision int64
-	Capabilities          []capability.Descriptor
 	Runtime               Runtime
 	Lifecycle             *lifecycle.Gate
 	// OnReady runs after hello.accepted and before any business message.
@@ -106,7 +103,6 @@ func New(options Options) (*Client, error) {
 	return &Client{
 		endpoint: options.Endpoint, identity: options.Identity, version: options.Version,
 		configurationRevision: options.ConfigurationRevision,
-		capabilities:          append([]capability.Descriptor(nil), options.Capabilities...),
 		runtime:               options.Runtime,
 		lifecycle:             options.Lifecycle, onReady: options.OnReady,
 		onSessionEnd: options.OnSessionEnd, logger: options.Logger,
@@ -260,19 +256,24 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 			if !ack.Persisted {
 				return errors.New("operation result was not persisted")
 			}
-		default:
-			handled, err := c.runtime.Handle(envelope)
-			if err != nil {
+		case "report.ack":
+			ack, err := protocol.DecodeBody[protocol.ReportAckBody](envelope, "report_id")
+			if err != nil || !protocol.ValidUUID(ack.ReportID) {
+				if err == nil {
+					err = errors.New("invalid report acknowledgement identifier")
+				}
 				return err
 			}
-			if !handled {
-				return fmt.Errorf("unexpected control message %q", envelope.Type)
+			if err := c.runtime.Acknowledge(ack.ReportID); err != nil {
+				return err
 			}
+		default:
+			return fmt.Errorf("unexpected control message %q", envelope.Type)
 		}
 	}
 }
 
-func (c *Client) publish(messageType string, body any) error {
+func (c *Client) publish(report protocol.ReportBody) error {
 	c.mu.Lock()
 	active := c.active
 	c.mu.Unlock()
@@ -281,7 +282,7 @@ func (c *Client) publish(messageType string, body any) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return active.write(ctx, messageType, body)
+	return active.write(ctx, "report", report)
 }
 
 func (c *Client) authenticate(ctx context.Context, session *session) error {
@@ -319,7 +320,6 @@ func (c *Client) authenticate(ctx context.Context, session *session) error {
 	}
 	if err := session.write(ctx, "agent.hello", protocol.HelloBody{
 		AgentVersion: c.version, ConfigurationRevision: c.configurationRevision,
-		Capabilities: c.capabilities,
 	}); err != nil {
 		return err
 	}

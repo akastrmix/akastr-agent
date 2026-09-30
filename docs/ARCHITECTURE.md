@@ -40,9 +40,8 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 
 - `internal/config`：严格读取节点配置的外层；各模块的配置段由模块自己校验。
 - `internal/module`：模块接入接口——一次性任务（`Commands`）与持续上报（`Reporter`）。
-- `internal/modules/*`：每个模块一个目录，放齐它的全部代码：配置段、capability、命令、消息与确认，以及只供它使用的执行方式（子包）；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
+- `internal/modules/*`：每个模块一个目录，放齐它的全部代码：配置段、命令、上报与回执，以及只供它使用的执行方式（子包）；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
 - `internal/layout`：固定的磁盘布局——A/B 两个 slot、`current` 原子切换与安装/更新共用的锁。
-- `internal/capability`：生成确定性且不含秘密的能力描述。
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
 - `internal/operation`：统一拥有实时执行、终态重放、重启恢复、本地 exclusive group 和有界操作日志；不保存 command payload 或凭据。能力 handler 只提供执行和恢复结果，不各自维护 journal 流程。
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
@@ -56,7 +55,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/app`：解析启用的模块并组成运行时；连接层只收发消息，命令、上报与确认都交给对应模块。
 - `internal/daemon`：组织 WSS、更新循环、候选版本激活与退出；CLI 只负责参数和进程信号。
 
-新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands` 或 `module.Reporter`，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段与 capability。连接层、更新与安装都不需要改。
+新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands` 或 `module.Reporter`，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型或[上报 kind](PROTOCOL.md#上报与回执)。连接层、更新与安装都不需要改。
 
 节点配置只放模块开关和很少变化的设置：配置一变，整个进程就经第 8 节的更新路径重启，新配置先校验，失败回到旧 slot。经常变化的业务数据（例如防火墙规则、xray 用户）不进节点配置，否则每次修改都会重启节点；Cloud 通过 WSS 以操作下发完整的目标状态，模块对比本机现状，只改有差别的部分。同一目标状态重复下发结果不变，所以断线重放是安全的。
 
@@ -72,17 +71,17 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 
 观察器通过固定 HTTPS 来源 `api.ipify.org` 和 Cloudflare trace 获取公网地址，明确按 IPv4 或 IPv6 建立连接，拒绝重定向、非公网地址和过大响应。IPv4 的非公网范围包括 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 
-- Target 的 IPv4 watch 始终启用。首次观察把 baseline 与待确认 `ip.snapshot` 一起持久化，后续变化也先持久化再发 `ip.observed`；未获 Cloud 确认前跨重连、重启重发，重复或过期 ACK 不删除新事件。**未确认 IPv4 snapshot 时不接受 ChangeIP。** 重启后若 IPv4 已变，先上报变化再发当前 snapshot，避免与未结束 command 冲突。
-- `observe_ipv6=true` 时 IPv6 独立循环；无公网 IPv6 或探测失败只重试，不影响 IPv4 readiness、ChangeIP 或更新前的空闲判断。
+- Target 的 IPv4 watch 始终启用。地址历史只在 Cloud：每个进程与每次业务连接先观察并上报当前地址（`ip.address`），之后只在地址变化时上报；未确认的上报被新会话的上报取代，本地不保存地址。**当前会话的 IPv4 上报被确认前不接受 ChangeIP。**
+- `observe_ipv6=true` 时 IPv6 独立循环；无公网 IPv6 或探测失败只重试，不影响 IPv4、ChangeIP 或更新前的空闲判断。
 - 观察器出现不可恢复的状态错误时整个 Agent 退出、由 systemd 重启，避免出现“WSS 在线但已停止观察”的半失效进程。
 
-ChangeIP handler 在执行 provider 前把 command、旧 IP 和五分钟核对起点写入同一个 IP 状态文件。HTTP provider 只有收到 `200` 才返回 `change_triggered`；固定程序退出 `0` 也返回该结果。请求可能已经送达但响应、进程或 WSS 被换 IP 断开的情况返回 `change_trigger_unknown`，不会重发 provider。明确的非 `200`、非零退出或启动失败会取消核对并失败。
+ChangeIP handler 在执行 provider 前把 command、旧 IP 和核对起点写入 ChangeIP 核对文件（节点上唯一持久的 IP 状态）。HTTP provider 只有收到 `200` 才返回 `change_triggered`；固定程序退出 `0` 也返回该结果。请求可能已经送达但响应、进程或 WSS 被换 IP 断开的情况返回 `change_trigger_unknown`，不会重发 provider。明确的非 `200`、非零退出或启动失败会取消核对并失败。
 
-唯一的常驻 IPv4 monitor 随后负责事实判定：核对期间改为每 10 秒观察一次；观察到新 IP 时持久上报 `ip.observed`；触发两分钟后连续两次成功观察仍是旧 IP 时持久上报 `changeip.unchanged`。换 IP 通常伴随断网，恢复后看到的地址即为结果；网络或观察源失败不计次数。两类消息在主控确认前都会跨断线和进程重启重发；主控按 command ID 收敛同一 session，且不要求 `operation.result` 必须先到达。45 分钟兜底只由 AkastrCloud session 持有，Agent 不维护第二个业务计时器。
+唯一的常驻 IPv4 monitor 随后负责事实判定：核对期间改为每 10 秒观察一次；观察到新 IP 时上报带 command ID 的 `ip.address`；触发两分钟后连续两次成功观察仍是旧 IP 时上报 `changeip.unchanged`。换 IP 通常伴随断网，恢复后看到的地址即为结果；网络或观察源失败不计次数。结果先写入核对文件再发送，主控确认前跨断线和进程重启重发同一结果；主控按 command ID 收敛同一次换 IP，且不要求 `operation.result` 必须先到达。只有带 command ID 的变化才归因于换 IP。45 分钟兜底只由 AkastrCloud session 持有，Agent 不维护第二个业务计时器。
 
 ## 7. SOCKS5 与 IPQuality
 
-SOCKS5 的端口和登录都属于目标节点的 `socks5` 模块，目标节点的 capability metadata 只公布端口。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 没有任何代理配置：每次检测由 Cloud 把目标的登录放进任务，Runner 只在执行期间持有，因此增删目标或改密码都不需要改动或重启 Runner，多个 Runner 也无需各自配置。
+SOCKS5 的端口和登录都属于目标节点的 `socks5` 模块，由 Cloud 从自己保存的配置读取。AkastrCloud 始终把该端口与 Agent 最近一次上报的公网 IPv4 组合为 SOCKS5 入口；如果尚无有效公网 IPv4 观测，就不会派发 IPQuality。Runner 没有任何代理配置：每次检测由 Cloud 把目标的登录放进任务，Runner 只在执行期间持有，因此增删目标或改密码都不需要改动或重启 Runner，多个 Runner 也无需各自配置。
 
 Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/modules/ipqualityrunner/script/pin.go`），脚本按摘要存放，候选版本改变固定版本也不会影响可回退的旧版本；新部署确定生效后删除其他摘要的脚本；CI 会实际下载并验证固定输入与 Debian 依赖声明。Runner 使用指定目标的 SOCKS5 端点运行该脚本；执行前后都会通过 SOCKS5 观察 IPv4，并与任务中的预期目标 IPv4 代际比对。代际在完成前变化时，即使脚本退出成功，AkastrCloud 也不会把结果作为该代际的有效报告。
 

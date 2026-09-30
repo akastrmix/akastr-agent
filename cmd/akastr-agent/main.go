@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -66,12 +65,7 @@ func run(arguments []string, output io.Writer) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		if err := app.Prepare(ctx, model, layout.Default(), nil); err != nil {
-			return err
-		}
-		encoder := json.NewEncoder(output)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(model.Capabilities.List())
+		return app.Prepare(ctx, model, layout.Default(), nil)
 	case "run":
 		if *configPath == "" {
 			return errors.New("run requires --config")

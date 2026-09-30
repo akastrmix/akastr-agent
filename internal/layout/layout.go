@@ -10,7 +10,8 @@
 //	                              version must use this exact path
 //	/etc/akastr-agent/identity.json
 //	/var/lib/akastr-agent/
-//	  {state,ip-state}.json       execution journal and IP facts
+//	  state.json                  execution journal
+//	  changeip-reconciliation.json  open ChangeIP reconciliation
 //	  update-attempt.json         bounded candidate attempts for one target
 package layout
 
@@ -43,8 +44,10 @@ func Default() Layout {
 	}
 }
 
-func (l Layout) StateFile() string   { return filepath.Join(l.StateDir, "state.json") }
-func (l Layout) IPStateFile() string { return filepath.Join(l.StateDir, "ip-state.json") }
+func (l Layout) StateFile() string { return filepath.Join(l.StateDir, "state.json") }
+func (l Layout) ReconciliationFile() string {
+	return filepath.Join(l.StateDir, "changeip-reconciliation.json")
+}
 func (l Layout) AttemptFile() string { return filepath.Join(l.StateDir, "update-attempt.json") }
 func (l Layout) Current() string     { return filepath.Join(l.Root, "current") }
 

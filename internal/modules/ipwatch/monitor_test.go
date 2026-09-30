@@ -10,24 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/state"
+	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
-
-func TestOpenMonitorRejectsObsoleteStateSchema(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	if err := os.WriteFile(filePath, []byte(`{"schema_version":1}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := OpenMonitor(
-		filePath,
-		&sequenceObserver{values: []string{"8.8.8.8"}},
-		time.Minute,
-		false,
-	)
-	if err == nil || !strings.Contains(err.Error(), "schema is unsupported") {
-		t.Fatalf("obsolete state schema error = %v", err)
-	}
-}
 
 type familySequenceObserver struct {
 	v4      []string
@@ -71,452 +55,230 @@ func (o *sequenceObserver) Observe(_ context.Context, _ Family) (Observation, er
 	}, nil
 }
 
-func TestMonitorPersistsAndRetriesNaturalIPv4ChangeUntilAck(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	observer := &sequenceObserver{values: []string{"8.8.8.8", "8.8.4.4", "1.1.1.1"}}
-	monitor, err := OpenMonitor(filePath, observer, time.Minute, false)
+type recorder struct{ reports []protocol.ReportBody }
+
+func (r *recorder) publish(report protocol.ReportBody) error {
+	r.reports = append(r.reports, report)
+	return nil
+}
+
+func (r *recorder) last(t *testing.T) protocol.ReportBody {
+	t.Helper()
+	if len(r.reports) == 0 {
+		t.Fatal("nothing was reported")
+	}
+	return r.reports[len(r.reports)-1]
+}
+
+const commandID = "123e4567-e89b-42d3-a456-426614174000"
+
+func openMonitor(t *testing.T, filePath string, observer AddressObserver, ipv6 bool) *Monitor {
+	t.Helper()
+	monitor, err := OpenMonitor(filePath, observer, time.Minute, ipv6)
 	if err != nil {
 		t.Fatal(err)
 	}
-	published := []ObservationBody{}
-	snapshots := []SnapshotBody{}
-	publishSnapshot := func(event SnapshotBody) error {
-		snapshots = append(snapshots, event)
-		return nil
-	}
-	publish := func(event ObservationBody) error {
-		published = append(published, event)
-		return nil
-	}
-	publishUnchanged := func(UnchangedBody) error { return nil }
-	if err := monitor.step(context.Background(), publishSnapshot, publish, publishUnchanged); err != nil {
+	return monitor
+}
+
+func step(t *testing.T, monitor *Monitor, sent *recorder) {
+	t.Helper()
+	if err := monitor.stepIPv4(context.Background(), sent.publish); err != nil {
 		t.Fatal(err)
-	}
-	if len(published) != 0 || len(snapshots) != 1 || snapshots[0].Address != "8.8.8.8" {
-		t.Fatalf("initial snapshot = %#v, observations = %#v", snapshots, published)
-	}
-	if monitor.SnapshotReady() {
-		t.Fatal("monitor became ChangeIP-ready before snapshot acknowledgement")
-	}
-	if err := monitor.step(context.Background(), publishSnapshot, publish, publishUnchanged); err != nil {
-		t.Fatal(err)
-	}
-	if len(snapshots) != 2 || snapshots[1].SnapshotID != snapshots[0].SnapshotID {
-		t.Fatalf("pending snapshot was not retried: %#v", snapshots)
-	}
-	reopened, err := OpenMonitor(filePath, observer, time.Minute, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.AckSnapshot(snapshots[0].SnapshotID); err != nil {
-		t.Fatal(err)
-	}
-	if !reopened.SnapshotReady() {
-		t.Fatal("monitor did not become ChangeIP-ready after snapshot acknowledgement")
-	}
-	if err := reopened.step(context.Background(), publishSnapshot, publish, publishUnchanged); err != nil {
-		t.Fatal(err)
-	}
-	if len(published) != 1 || published[0].PreviousAddress != "8.8.8.8" || published[0].Address != "8.8.4.4" {
-		t.Fatalf("published = %#v", published)
-	}
-	if err := reopened.step(context.Background(), publishSnapshot, publish, publishUnchanged); err != nil {
-		t.Fatal(err)
-	}
-	if len(published) != 2 || published[1].ObservationID != published[0].ObservationID {
-		t.Fatalf("pending observation was not retried: %#v", published)
-	}
-	if err := reopened.Ack(published[0].ObservationID); err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.step(context.Background(), publishSnapshot, publish, publishUnchanged); err != nil {
-		t.Fatal(err)
-	}
-	if len(published) != 3 || published[2].PreviousAddress != "8.8.4.4" || published[2].Address != "1.1.1.1" {
-		t.Fatalf("next change = %#v", published)
 	}
 }
 
-func TestMonitorReestablishesIPv4SnapshotAfterProcessRestart(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	first, err := OpenMonitor(filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var initial SnapshotBody
-	if err := first.step(
-		context.Background(),
-		func(value SnapshotBody) error { initial = value; return nil },
-		func(ObservationBody) error { return nil },
-		func(UnchangedBody) error { return nil },
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.AckSnapshot(initial.SnapshotID); err != nil {
-		t.Fatal(err)
-	}
-	restarted, err := OpenMonitor(filePath, &sequenceObserver{values: []string{"8.8.4.4"}}, time.Minute, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if restarted.SnapshotReady() {
-		t.Fatal("restarted monitor was ready before its session snapshot acknowledgement")
-	}
-	var sessionSnapshot SnapshotBody
-	var observation ObservationBody
-	publishSnapshot := func(value SnapshotBody) error { sessionSnapshot = value; return nil }
-	publish := func(value ObservationBody) error { observation = value; return nil }
-	publishUnchanged := func(UnchangedBody) error { return nil }
-	if err := restarted.step(
-		context.Background(),
-		publishSnapshot, publish, publishUnchanged,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if sessionSnapshot.SnapshotID != "" || observation.PreviousAddress != "8.8.8.8" || observation.Address != "8.8.4.4" {
-		t.Fatalf("restart must reconcile the durable baseline first: snapshot=%+v observation=%+v", sessionSnapshot, observation)
-	}
-	if err := restarted.Ack(observation.ObservationID); err != nil {
-		t.Fatal(err)
-	}
-	if err := restarted.step(t.Context(), publishSnapshot, publish, publishUnchanged); err != nil {
-		t.Fatal(err)
-	}
-	if sessionSnapshot.SnapshotID == initial.SnapshotID || sessionSnapshot.Address != "8.8.4.4" {
-		t.Fatalf("session snapshot=%+v initial=%+v", sessionSnapshot, initial)
-	}
-	if err := restarted.AckSnapshot(sessionSnapshot.SnapshotID); err != nil {
-		t.Fatal(err)
-	}
-	if !restarted.SnapshotReady() {
-		t.Fatal("restarted monitor did not become ready after its session snapshot acknowledgement")
+func acknowledge(t *testing.T, monitor *Monitor, report protocol.ReportBody) {
+	t.Helper()
+	if handled, err := monitor.Acknowledge(report.ReportID); err != nil || !handled {
+		t.Fatalf("acknowledge %s: handled=%v err=%v", report.Kind, handled, err)
 	}
 }
 
-func TestControlReadinessWakesPendingSnapshotImmediately(t *testing.T) {
-	monitor, err := OpenMonitor(
-		filepath.Join(t.TempDir(), "ip-state.json"),
-		&sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false,
-	)
-	if err != nil {
+// settle reports the first address of a session and has Cloud store it.
+func settle(t *testing.T, monitor *Monitor, sent *recorder) {
+	t.Helper()
+	step(t, monitor, sent)
+	acknowledge(t, monitor, sent.last(t))
+	if !monitor.AddressSettled() {
+		t.Fatal("address is not settled after Cloud stored it")
+	}
+}
+
+func TestOpenMonitorRejectsUnknownReconciliationSchema(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "changeip-reconciliation.json")
+	if err := os.WriteFile(filePath, []byte(`{"schema_version":2}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	firstAttempt := make(chan struct{})
-	retried := make(chan struct{})
-	attempts := 0
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan error, 1)
-	go func() {
-		done <- monitor.Run(
-			ctx,
-			func(SnapshotBody) error {
-				attempts++
-				if attempts == 1 {
-					close(firstAttempt)
-					return context.DeadlineExceeded
-				}
-				close(retried)
-				return nil
-			},
-			func(ObservationBody) error { return nil },
-			func(UnchangedBody) error { return nil },
-		)
-	}()
-	select {
-	case <-firstAttempt:
-	case <-time.After(time.Second):
-		t.Fatal("initial snapshot publish did not run")
+	_, err := OpenMonitor(filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false)
+	if err == nil || !strings.Contains(err.Error(), "schema is unsupported") {
+		t.Fatalf("schema error = %v", err)
 	}
+}
+
+func TestEverySessionIsToldTheCurrentAddressAndChangesAreResentUntilStored(t *testing.T) {
+	sent := &recorder{}
+	monitor := openMonitor(t, filepath.Join(t.TempDir(), "state.json"),
+		&sequenceObserver{values: []string{"8.8.8.8", "8.8.8.8", "8.8.8.8", "1.1.1.1"}}, false)
+
+	step(t, monitor, sent)
+	first := sent.last(t)
+	data := first.Data.(AddressData)
+	if first.Kind != KindAddress || data.Address != "8.8.8.8" || data.Family != "ipv4" || data.CommandID != nil {
+		t.Fatalf("first report = %#v", first)
+	}
+	if monitor.AddressSettled() {
+		t.Fatal("address settled before Cloud stored it")
+	}
+	// Until it is stored the same report goes out again.
+	step(t, monitor, sent)
+	if sent.last(t).ReportID != first.ReportID {
+		t.Fatal("an unstored report was replaced")
+	}
+	acknowledge(t, monitor, first)
+	step(t, monitor, sent)
+	if len(sent.reports) != 2 {
+		t.Fatalf("an unchanged address was reported again: %#v", sent.reports)
+	}
+
+	// A new session gets the address again and waits for it to be stored.
 	monitor.NotifyControlReady()
-	select {
-	case <-retried:
-	case <-time.After(time.Second):
-		t.Fatal("control readiness did not wake the pending snapshot")
+	if monitor.AddressSettled() {
+		t.Fatal("address stayed settled across a new session")
 	}
-	cancel()
-	<-done
+	step(t, monitor, sent)
+	again := sent.last(t)
+	if again.ReportID == first.ReportID || again.Data.(AddressData).Address != "8.8.8.8" {
+		t.Fatalf("session report = %#v", again)
+	}
+	acknowledge(t, monitor, again)
+
+	step(t, monitor, sent)
+	changed := sent.last(t)
+	if data := changed.Data.(AddressData); data.Address != "1.1.1.1" || data.CommandID != nil {
+		t.Fatalf("natural change = %#v", changed)
+	}
+	// A repeated acknowledgement of an older report leaves the new one waiting.
+	if handled, _ := monitor.Acknowledge(again.ReportID); handled {
+		t.Fatal("a stale acknowledgement was taken")
+	}
+	if monitor.AddressSettled() {
+		t.Fatal("stale acknowledgement settled the new address")
+	}
 }
 
-func TestMonitorPersistsFastUnchangedReconciliation(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	observer := &sequenceObserver{values: []string{"8.8.8.8"}}
-	monitor, err := OpenMonitor(filePath, observer, time.Minute, false)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestChangedAddressDuringChangeIPIsReportedAsItsOutcomeAcrossRestart(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "state.json")
+	sent := &recorder{}
+	observer := &sequenceObserver{values: []string{"8.8.8.8", "8.8.4.4"}}
+	monitor := openMonitor(t, filePath, observer, false)
+	settle(t, monitor, sent)
 	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
 	monitor.now = func() time.Time { return now }
-	noObservation := func(ObservationBody) error { return nil }
-	snapshots := []SnapshotBody{}
-	publishSnapshot := func(event SnapshotBody) error {
-		snapshots = append(snapshots, event)
-		return nil
+	if err := monitor.ArmChange(commandID, "1.1.1.1", now); err == nil {
+		t.Fatal("ChangeIP armed from an address Cloud does not hold")
 	}
-	unchanged := []UnchangedBody{}
-	publishUnchanged := func(event UnchangedBody) error {
-		unchanged = append(unchanged, event)
-		return nil
-	}
-	if err := monitor.step(context.Background(), publishSnapshot, noObservation, publishUnchanged); err != nil {
+	if err := monitor.ArmChange(commandID, "8.8.8.8", now); err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshots) != 1 {
-		t.Fatalf("initial snapshots = %#v", snapshots)
+	if (Reporter{Monitor: monitor}).UpdateSafe() == nil {
+		t.Fatal("update allowed during a ChangeIP reconciliation")
 	}
-	if err := monitor.AckSnapshot(snapshots[0].SnapshotID); err != nil {
-		t.Fatal(err)
+	step(t, monitor, sent)
+	outcome := sent.last(t)
+	data := outcome.Data.(AddressData)
+	if outcome.Kind != KindAddress || data.Address != "8.8.4.4" || data.CommandID == nil || *data.CommandID != commandID {
+		t.Fatalf("ChangeIP outcome = %#v", outcome)
 	}
-	commandID := "123e4567-e89b-42d3-a456-426614174000"
+
+	// A restart before Cloud stores it resends the same outcome, not a natural change.
+	reopened := openMonitor(t, filePath, &sequenceObserver{values: []string{"8.8.4.4"}}, false)
+	if address, found := reopened.ChangeAddress(commandID); !found || address != "8.8.8.8" {
+		t.Fatalf("reconciliation address after restart = %q %v", address, found)
+	}
+	resent := &recorder{}
+	step(t, reopened, resent)
+	if resent.last(t).ReportID != outcome.ReportID {
+		t.Fatalf("outcome after restart = %#v", resent.reports)
+	}
+	acknowledge(t, reopened, outcome)
+	if (Reporter{Monitor: reopened}).UpdateSafe() != nil {
+		t.Fatal("stored outcome still blocks updates")
+	}
+	step(t, reopened, resent)
+	if len(resent.reports) != 2 || resent.last(t).Data.(AddressData).CommandID != nil {
+		t.Fatalf("first report of the restarted process = %#v", resent.reports)
+	}
+}
+
+func TestUnchangedAddressSettlesChangeIPAfterGraceAndTwoObservations(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "state.json")
+	sent := &recorder{}
+	monitor := openMonitor(t, filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, false)
+	settle(t, monitor, sent)
+	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
+	monitor.now = func() time.Time { return now }
 	if err := monitor.ArmChange(commandID, "8.8.8.8", now); err != nil {
 		t.Fatal(err)
 	}
 	// The old address before the grace ends does not settle the attempt.
 	now = now.Add(time.Minute)
-	if err := monitor.step(context.Background(), publishSnapshot, noObservation, publishUnchanged); err != nil {
-		t.Fatal(err)
-	}
+	step(t, monitor, sent)
 	now = now.Add(time.Minute)
-	for index := 0; index < 2; index++ {
-		if len(unchanged) != 0 {
-			t.Fatalf("attempt settled after %d confirmations: %#v", index, unchanged)
+	for index := 0; index < changeUnchangedConfirmations; index++ {
+		if len(sent.reports) != 1 {
+			t.Fatalf("attempt settled after %d confirmations: %#v", index, sent.reports)
 		}
-		if err := monitor.step(context.Background(), publishSnapshot, noObservation, publishUnchanged); err != nil {
-			t.Fatal(err)
-		}
+		step(t, monitor, sent)
 		now = now.Add(changeObserveInterval)
 	}
-	if len(unchanged) != 1 || unchanged[0].CommandID != commandID || unchanged[0].Address != "8.8.8.8" {
-		t.Fatalf("unchanged events = %#v", unchanged)
+	outcome := sent.last(t)
+	data, ok := outcome.Data.(UnchangedData)
+	if outcome.Kind != KindUnchanged || !ok || data.CommandID != commandID || data.Address != "8.8.8.8" {
+		t.Fatalf("unchanged outcome = %#v", outcome)
 	}
-	reopened, err := OpenMonitor(filePath, observer, time.Minute, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.AckUnchanged(commandID); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestMonitorArmsBeforeInitialCycleAndObservesChangedAddress(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	observer := &sequenceObserver{values: []string{"8.8.4.4"}}
-	monitor, err := OpenMonitor(filePath, observer, time.Minute, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Date(2026, 8, 17, 0, 0, 0, 0, time.UTC)
-	monitor.now = func() time.Time { return now }
-	commandID := "123e4567-e89b-42d3-a456-426614174000"
-	if err := monitor.ArmChange(commandID, "8.8.8.8", now); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(46 * time.Minute)
-	observed := []ObservationBody{}
-	unchanged := []UnchangedBody{}
-	if err := monitor.step(
-		context.Background(),
-		func(SnapshotBody) error { return nil },
-		func(event ObservationBody) error {
-			observed = append(observed, event)
-			return nil
-		},
-		func(event UnchangedBody) error {
-			unchanged = append(unchanged, event)
-			return nil
-		},
-	); err != nil {
-		t.Fatal(err)
-	}
-	if len(unchanged) != 0 {
-		t.Fatalf("changed address produced an unchanged result: %#v", unchanged)
-	}
-	if len(observed) != 1 || observed[0].PreviousAddress != "8.8.8.8" || observed[0].Address != "8.8.4.4" {
-		t.Fatalf("observed events = %#v", observed)
+	reopened := openMonitor(t, filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, false)
+	acknowledge(t, reopened, outcome)
+	if _, found := reopened.ChangeAddress(commandID); found {
+		t.Fatal("stored outcome left the reconciliation open")
 	}
 }
 
-func TestCheckIdleIncludesPendingIPState(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	monitor, err := OpenMonitor(
-		filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false,
-	)
-	if err != nil {
+func TestIPv6IsReportedWithoutSettlingIPv4(t *testing.T) {
+	sent := &recorder{}
+	monitor := openMonitor(t, filepath.Join(t.TempDir(), "state.json"),
+		&familySequenceObserver{v4: []string{"8.8.8.8"}, v6: []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}}, true)
+	if err := monitor.stepIPv6(context.Background(), sent.publish); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkIdle(filePath); err != nil {
-		t.Fatalf("empty IP state is not idle: %v", err)
+	first := sent.last(t)
+	if data := first.Data.(AddressData); data.Family != "ipv6" || data.Address != "2606:4700:4700::1111" {
+		t.Fatalf("IPv6 report = %#v", first)
 	}
-	if err := monitor.ArmChange(
-		"123e4567-e89b-42d3-a456-426614174000", "8.8.8.8", time.Now(),
-	); err != nil {
+	acknowledge(t, monitor, first)
+	if monitor.AddressSettled() {
+		t.Fatal("an IPv6 report settled the IPv4 address")
+	}
+	if err := monitor.stepIPv6(context.Background(), sent.publish); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkIdle(filePath); err == nil {
-		t.Fatal("CheckIdle accepted pending ChangeIP reconciliation")
-	}
-}
-
-func TestCheckMaintenanceSafeAllowsReplayableIPFacts(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	monitor, err := OpenMonitor(
-		filePath, &sequenceObserver{values: []string{"8.8.8.8", "8.8.4.4"}}, time.Minute, false,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var snapshotID string
-	if err := monitor.step(
-		context.Background(),
-		func(snapshot SnapshotBody) error {
-			snapshotID = snapshot.SnapshotID
-			return errors.New("ack lost")
-		},
-		func(ObservationBody) error { return nil },
-		func(UnchangedBody) error { return nil },
-	); err == nil {
-		t.Fatal("snapshot publication unexpectedly succeeded")
-	}
-	if err := (Reporter{monitor}).UpdateSafe(); err != nil {
-		t.Fatalf("replayable pending snapshot blocked configuration maintenance: %v", err)
-	}
-	if err := checkIdle(filePath); err == nil {
-		t.Fatal("full idle check accepted a pending snapshot")
-	}
-	if err := monitor.AckSnapshot(snapshotID); err != nil {
-		t.Fatal(err)
-	}
-	if err := monitor.step(
-		context.Background(),
-		func(SnapshotBody) error { return nil },
-		func(ObservationBody) error { return errors.New("ack lost") },
-		func(UnchangedBody) error { return nil },
-	); err == nil {
-		t.Fatal("observation publication unexpectedly succeeded")
-	}
-	if err := (Reporter{monitor}).UpdateSafe(); err != nil {
-		t.Fatalf("replayable pending observation blocked configuration maintenance: %v", err)
-	}
-}
-
-func TestCheckMaintenanceSafeRejectsChangeIPReconciliation(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	monitor, err := OpenMonitor(
-		filePath, &sequenceObserver{values: []string{"8.8.8.8"}}, time.Minute, false,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := monitor.ArmChange(
-		"123e4567-e89b-42d3-a456-426614174000", "8.8.8.8", time.Now(),
-	); err != nil {
-		t.Fatal(err)
-	}
-	if err := (Reporter{monitor}).UpdateSafe(); err == nil {
-		t.Fatal("maintenance safety check accepted pending ChangeIP reconciliation")
-	}
-}
-
-func TestOpenMonitorRejectsIntervalsLongerThanFiveMinutes(t *testing.T) {
-	_, err := OpenMonitor(
-		filepath.Join(t.TempDir(), "ip-state.json"),
-		&sequenceObserver{values: []string{"8.8.8.8"}}, 5*time.Minute+time.Second, false,
-	)
-	if err == nil {
-		t.Fatal("OpenMonitor accepted an interval longer than five minutes")
-	}
-}
-
-func TestMonitorPersistsIPv6IndependentlyFromIPv4Readiness(t *testing.T) {
-	filePath := filepath.Join(t.TempDir(), "ip-state.json")
-	observer := &familySequenceObserver{
-		v4: []string{"8.8.8.8"},
-		v6: []string{"2606:4700:4700::1111", "2001:4860:4860::8888"},
-	}
-	monitor, err := OpenMonitor(filePath, observer, time.Minute, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var snapshots []SnapshotBody
-	var observations []ObservationBody
-	publishSnapshot := func(value SnapshotBody) error {
-		snapshots = append(snapshots, value)
-		return nil
-	}
-	publish := func(value ObservationBody) error {
-		observations = append(observations, value)
-		return nil
-	}
-	if err := monitor.step(context.Background(), publishSnapshot, publish, func(UnchangedBody) error { return nil }); err != nil {
-		t.Fatal(err)
-	}
-	if err := monitor.stepIPv6(context.Background(), publishSnapshot, publish); err != nil {
-		t.Fatal(err)
-	}
-	if len(snapshots) != 2 || snapshots[0].Family != "ipv4" || snapshots[1].Family != "ipv6" {
-		t.Fatalf("snapshots = %#v", snapshots)
-	}
-	if err := monitor.AckSnapshot(snapshots[0].SnapshotID); err != nil {
-		t.Fatal(err)
-	}
-	if err := checkIdle(filePath); err != nil {
-		t.Fatalf("pending IPv6 blocked operation/configuration idle state: %v", err)
-	}
-	if err := monitor.AckSnapshot(snapshots[1].SnapshotID); err != nil {
-		t.Fatal(err)
-	}
-	if err := monitor.stepIPv6(context.Background(), publishSnapshot, publish); err != nil {
-		t.Fatal(err)
-	}
-	if len(observations) != 1 || observations[0].Family != "ipv6" ||
-		observations[0].PreviousAddress != "2606:4700:4700::1111" ||
-		observations[0].Address != "2001:4860:4860::8888" {
-		t.Fatalf("IPv6 observations = %#v", observations)
-	}
-	reopened, err := OpenMonitor(filePath, observer, time.Minute, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := reopened.stepIPv6(context.Background(), publishSnapshot, publish); err != nil {
-		t.Fatal(err)
-	}
-	if len(observations) != 2 || observations[1].ObservationID != observations[0].ObservationID {
-		t.Fatalf("pending IPv6 observation was not retried: %#v", observations)
+	if data := sent.last(t).Data.(AddressData); data.Address != "2001:4860:4860::8888" {
+		t.Fatalf("IPv6 change = %#v", sent.last(t))
 	}
 }
 
 func TestIPv6ProbeFailureIsTransient(t *testing.T) {
-	monitor, err := OpenMonitor(
-		filepath.Join(t.TempDir(), "ip-state.json"),
-		&familySequenceObserver{v4: []string{"8.8.8.8"}, v6Err: errors.New("no IPv6 route")},
-		time.Minute, true,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = monitor.stepIPv6(
-		context.Background(),
-		func(SnapshotBody) error { return nil },
-		func(ObservationBody) error { return nil },
-	)
+	monitor := openMonitor(t, filepath.Join(t.TempDir(), "state.json"),
+		&familySequenceObserver{v4: []string{"8.8.8.8"}, v6Err: errors.New("no IPv6 route")}, true)
+	err := monitor.stepIPv6(context.Background(), (&recorder{}).publish)
 	if !errors.Is(err, errTransientMonitor) {
 		t.Fatalf("IPv6 probe error = %v", err)
 	}
 }
 
-func checkIdle(filePath string) error {
-	snapshot := monitorSnapshot{SchemaVersion: 2}
-	found, err := state.NewJSONFile(filePath).Load(&snapshot)
-	if err != nil {
-		return err
+func TestOpenMonitorRejectsIntervalsLongerThanFiveMinutes(t *testing.T) {
+	if _, err := OpenMonitor(filepath.Join(t.TempDir(), "state.json"),
+		&sequenceObserver{values: []string{"8.8.8.8"}}, 5*time.Minute+time.Second, false); err == nil {
+		t.Fatal("an interval over five minutes was accepted")
 	}
-	if !found {
-		return nil
-	}
-	if err := validateMonitorSnapshot(snapshot); err != nil {
-		return err
-	}
-	if snapshot.PendingSnapshot != nil || snapshot.Pending != nil || snapshot.ChangeAttempt != nil || snapshot.PendingUnchanged != nil {
-		return errors.New("IP observation or ChangeIP reconciliation is pending")
-	}
-	return nil
 }

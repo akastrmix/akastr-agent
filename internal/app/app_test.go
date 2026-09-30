@@ -29,29 +29,6 @@ func model(t *testing.T, modules string) (*Model, error) {
 	return NewModel(cfg)
 }
 
-func TestCapabilitiesOmitSecretsAndLocalPaths(t *testing.T) {
-	target, err := model(t, `{"ip_watch":{"interval_seconds":60,"ipv6":true},
-"changeip":{"provider":"command","program":"/usr/local/bin/changeip","args":["secret-arg"]},
-"socks5":{"port":1080,"username":"proxy-user","password":"proxy-secret"}}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner, err := model(t, `{"ipquality_runner":{}}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	listed := append(target.Capabilities.List(), runner.Capabilities.List()...)
-	if len(listed) != 4 {
-		t.Fatalf("capabilities = %#v", listed)
-	}
-	encoded, _ := json.Marshal(listed)
-	for _, secret := range []string{"/usr/local/bin/changeip", "secret-arg", "proxy-user", "proxy-secret"} {
-		if strings.Contains(string(encoded), secret) {
-			t.Fatalf("capabilities leak %q: %s", secret, encoded)
-		}
-	}
-}
-
 func TestModuleConfigurationFailsClosed(t *testing.T) {
 	watch := `"ip_watch":{"interval_seconds":60,"ipv6":false}`
 	for name, modules := range map[string]string{
@@ -89,7 +66,7 @@ type fixtureEntry struct {
 
 // Cloud tests read the same file for the opposite direction.
 func TestPairedProtocolFixturesValidateCloudToAgentMessages(t *testing.T) {
-	data, err := os.ReadFile("../protocol/testdata/agent-protocol-v7.json")
+	data, err := os.ReadFile("../protocol/testdata/agent-protocol-v8.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +137,12 @@ func decodeCloudMessage(data []byte) error {
 		body, err := protocol.DecodeBody[protocol.AcceptedAckBody](envelope, "command_id", "accepted")
 		if err != nil || !protocol.ValidUUID(body.CommandID) {
 			return errors.New("invalid accepted acknowledgement")
+		}
+		return nil
+	case "report.ack":
+		body, err := protocol.DecodeBody[protocol.ReportAckBody](envelope, "report_id")
+		if err != nil || !protocol.ValidUUID(body.ReportID) {
+			return errors.New("invalid report acknowledgement")
 		}
 		return nil
 	default:

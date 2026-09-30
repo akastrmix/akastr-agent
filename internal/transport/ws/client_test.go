@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/module"
@@ -31,7 +30,7 @@ func (baseRuntime) Execute(context.Context, protocol.OperationOffer) (protocol.E
 }
 func (baseRuntime) Run(ctx context.Context, _ module.Publish) error { <-ctx.Done(); return ctx.Err() }
 func (baseRuntime) ControlReady()                                   {}
-func (baseRuntime) Handle(protocol.Envelope) (bool, error)          { return false, nil }
+func (baseRuntime) Acknowledge(string) error                        { return nil }
 
 type recordingExecutor struct {
 	baseRuntime
@@ -213,7 +212,7 @@ func TestReadyCallbackRunsAfterHelloAccepted(t *testing.T) {
 			return
 		}
 		if _, decodeError := protocol.DecodeBody[protocol.HelloBody](
-			helloEnvelope, "agent_version", "configuration_revision", "capabilities",
+			helloEnvelope, "agent_version", "configuration_revision",
 		); decodeError != nil {
 			serverErrors <- decodeError
 			return
@@ -235,8 +234,7 @@ func TestReadyCallbackRunsAfterHelloAccepted(t *testing.T) {
 	client, err := New(Options{
 		Endpoint: strings.Replace(server.URL, "https://", "wss://", 1) + "/internal/agents/ws",
 		Identity: credentials, Version: "v1.4.0", ConfigurationRevision: 2,
-		Capabilities: []capability.Descriptor{},
-		Runtime:      &recordingExecutor{executed: make(chan string, 1)}, Lifecycle: lifecycle.New(),
+		Runtime: &recordingExecutor{executed: make(chan string, 1)}, Lifecycle: lifecycle.New(),
 		OnReady: func() error {
 			select {
 			case <-helloAcknowledged:

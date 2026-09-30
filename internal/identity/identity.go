@@ -20,7 +20,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/state"
 )
@@ -130,7 +129,6 @@ type Enrollment struct {
 	MachineToken          string
 	AgentVersion          string
 	ConfigurationRevision int64
-	Capabilities          []capability.Descriptor
 	HTTPClient            *http.Client
 }
 
@@ -144,15 +142,13 @@ func (i Identity) Enroll(ctx context.Context, enrollment Enrollment) error {
 	}
 	endpoint.Scheme, endpoint.Path = "https", "/internal/agents/enroll"
 	body, err := json.Marshal(struct {
-		MachineToken          string                  `json:"machine_token"`
-		PublicKey             string                  `json:"public_key"`
-		AgentVersion          string                  `json:"agent_version"`
-		ConfigurationRevision int64                   `json:"configuration_revision"`
-		Capabilities          []capability.Descriptor `json:"capabilities"`
+		MachineToken          string `json:"machine_token"`
+		PublicKey             string `json:"public_key"`
+		AgentVersion          string `json:"agent_version"`
+		ConfigurationRevision int64  `json:"configuration_revision"`
 	}{
 		MachineToken: enrollment.MachineToken, PublicKey: i.PublicKey,
 		AgentVersion: enrollment.AgentVersion, ConfigurationRevision: enrollment.ConfigurationRevision,
-		Capabilities: enrollment.Capabilities,
 	})
 	if err != nil {
 		return err

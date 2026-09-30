@@ -5,16 +5,14 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/config"
 	"github.com/akastrmix/akastr-agent/internal/layout"
 )
 
 // Model is a validated configuration: the node envelope and its enabled modules.
 type Model struct {
-	Config       config.Config
-	Capabilities *capability.Registry
-	modules      modules
+	Config  config.Config
+	modules modules
 }
 
 func Load(configPath string) (*Model, error) {
@@ -30,11 +28,7 @@ func NewModel(cfg config.Config) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
-	registry, err := capability.New(parsed.capabilities()...)
-	if err != nil {
-		return nil, fmt.Errorf("build capability registry: %w", err)
-	}
-	return &Model{Config: cfg, Capabilities: registry, modules: parsed}, nil
+	return &Model{Config: cfg, modules: parsed}, nil
 }
 
 // HostRequirements lists the commands the enabled modules need and the Debian

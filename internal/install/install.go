@@ -105,7 +105,7 @@ func Install(ctx context.Context, o Options) error {
 	if err := fresh.Enroll(ctx, identity.Enrollment{
 		ControlEndpoint: cfg.ControlEndpoint, MachineToken: o.MachineToken,
 		AgentVersion: o.Version, ConfigurationRevision: cfg.ConfigurationRevision,
-		Capabilities: model.Capabilities.List(), HTTPClient: o.HTTPClient,
+		HTTPClient: o.HTTPClient,
 	}); err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func checkOwnership(paths layout.Layout, agentID string) error {
 		}
 		return nil
 	}
-	for _, path := range []string{paths.StateFile(), paths.IPStateFile()} {
+	for _, path := range []string{paths.StateFile(), paths.ReconciliationFile()} {
 		if _, err := os.Stat(path); err == nil {
 			return errors.New("existing Agent state has no identity; uninstall the old Agent before installing")
 		}

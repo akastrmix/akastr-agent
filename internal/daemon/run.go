@@ -119,7 +119,7 @@ func Run(ctx context.Context, options Options) error {
 	client, err := transportws.New(transportws.Options{
 		Endpoint: cfg.ControlEndpoint, Identity: credentials,
 		Version: options.Version, ConfigurationRevision: cfg.ConfigurationRevision,
-		Capabilities: model.Capabilities.List(), Runtime: runtime,
+		Runtime:   runtime,
 		Lifecycle: gate, OnReady: onReady, OnSessionEnd: nudge, Logger: logger,
 	})
 	if err != nil {

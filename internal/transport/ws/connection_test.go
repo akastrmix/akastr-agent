@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -36,8 +35,9 @@ func (r reportingRuntime) Run(ctx context.Context, publish module.Publish) error
 	return r.reporter.Run(ctx, publish)
 }
 func (r reportingRuntime) ControlReady() { r.reporter.ControlReady() }
-func (r reportingRuntime) Handle(envelope protocol.Envelope) (bool, error) {
-	return r.reporter.Acknowledge(envelope)
+func (r reportingRuntime) Acknowledge(reportID string) error {
+	_, err := r.reporter.Acknowledge(reportID)
+	return err
 }
 
 type changingAddressObserver struct{ calls int }
@@ -51,9 +51,15 @@ func (o *changingAddressObserver) Observe(context.Context, ipwatch.Family) (ipwa
 	return ipwatch.Observation{Address: netip.MustParseAddr(address), ObservedAt: time.Now().UTC()}, nil
 }
 
-// A peer accepts writes but suppresses Pongs and event ACKs. The client must
-// reconnect and replay the durable event without an incoming command to wake it.
-func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
+type wireReport struct {
+	ReportID string              `json:"report_id"`
+	Kind     string              `json:"kind"`
+	Data     ipwatch.AddressData `json:"data"`
+}
+
+// A peer accepts writes but suppresses Pongs and report ACKs. The client must
+// reconnect and tell the new session the current address without a command to wake it.
+func TestClientReconnectsAndReportsIPAfterHeartbeatFailure(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	public, private, err := ed25519.GenerateKey(rand.Reader)
@@ -65,23 +71,13 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 		AgentID:       "f40a6d7e-bc54-4c8a-a68f-9895674677b6",
 		PublicKey:     base64.RawURLEncoding.EncodeToString(public), PrivateKey: base64.RawURLEncoding.EncodeToString(private),
 	}
-	statePath := filepath.Join(t.TempDir(), "ip.json")
-	monitor, err := ipwatch.OpenMonitor(statePath, &changingAddressObserver{}, 10*time.Second, false)
+	monitor, err := ipwatch.OpenMonitor(filepath.Join(t.TempDir(), "ip.json"), &changingAddressObserver{}, 10*time.Second, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Start from an acknowledged baseline, as on an already-running TIME node.
-	baselineContext, cancelBaseline := context.WithCancel(ctx)
-	err = monitor.Run(baselineContext, func(body ipwatch.SnapshotBody) error {
-		defer cancelBaseline()
-		return monitor.AckSnapshot(body.SnapshotID)
-	}, func(ipwatch.ObservationBody) error { return nil }, func(ipwatch.UnchangedBody) error { return nil })
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("baseline setup: %v", err)
-	}
 	var connections atomic.Int32
-	events := make(chan ipwatch.ObservationBody, 16)
-	replayed := make(chan ipwatch.ObservationBody, 1)
+	unacknowledged := make(chan wireReport, 16)
+	stored := make(chan wireReport, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		number := connections.Add(1)
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -115,32 +111,21 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 		}
 		for {
 			envelope, err := readProtocolEnvelope(ctx, conn)
+			if err != nil || envelope.Type != "report" {
+				return
+			}
+			report, err := protocol.DecodeBody[wireReport](envelope, "report_id", "kind", "data")
 			if err != nil {
 				return
 			}
-			switch envelope.Type {
-			case "ip.snapshot":
-				body, err := protocol.DecodeBody[ipwatch.SnapshotBody](envelope, "snapshot_id", "family", "address", "observed_at")
-				if err != nil {
-					return
-				}
-				if s.write(ctx, "ip.snapshot_ack", map[string]any{"snapshot_id": body.SnapshotID, "persisted": true}) != nil {
-					return
-				}
-			case "ip.observed":
-				body, err := protocol.DecodeBody[ipwatch.ObservationBody](envelope, "observation_id", "family", "previous_address", "address", "observed_at")
-				if err != nil {
-					return
-				}
-				if number == 1 {
-					events <- body
-					continue
-				}
-				if s.write(ctx, "ip.observed_ack", map[string]any{"observation_id": body.ObservationID, "persisted": true}) != nil {
-					return
-				}
-				replayed <- body
+			if number == 1 {
+				unacknowledged <- report
+				continue
 			}
+			if s.write(ctx, "report.ack", protocol.ReportAckBody{ReportID: report.ReportID}) != nil {
+				return
+			}
+			stored <- report
 		}
 	}))
 	defer server.Close()
@@ -156,25 +141,25 @@ func TestClientReconnectsAndReplaysIPAfterHeartbeatFailure(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- client.Run(ctx) }()
 	defer func() { cancel(); <-done }()
-	var first, replay ipwatch.ObservationBody
+	var first, reported wireReport
 	select {
-	case first = <-events:
+	case first = <-unacknowledged:
 	case <-ctx.Done():
-		t.Fatal("no initial IP event")
+		t.Fatal("no initial IP report")
 	}
 	select {
-	case replay = <-replayed:
+	case reported = <-stored:
 	case <-ctx.Done():
-		t.Fatal("client failed to reconnect and replay")
+		t.Fatal("client failed to reconnect and report")
 	}
-	if first != replay || replay.Address != "8.8.4.4" || connections.Load() != 2 {
-		t.Fatalf("event changed during recovery: first=%+v replay=%+v connections=%d", first, replay, connections.Load())
+	if first.Kind != ipwatch.KindAddress || reported.Kind != ipwatch.KindAddress ||
+		reported.ReportID == first.ReportID || reported.Data.Address != "8.8.4.4" || connections.Load() != 2 {
+		t.Fatalf("reports during recovery: first=%+v reported=%+v connections=%d", first, reported, connections.Load())
 	}
-	// Wait for the real monitor to persist the ACK, not just a successful write.
-	for persisted, _ := os.ReadFile(statePath); strings.Contains(string(persisted), `"pending":`); persisted, _ = os.ReadFile(statePath) {
+	for !monitor.AddressSettled() {
 		select {
 		case <-ctx.Done():
-			t.Fatal("IP ACK was not persisted")
+			t.Fatal("stored report did not settle the address")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

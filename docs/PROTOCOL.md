@@ -1,12 +1,12 @@
-# Akastr Agent 协议 `2026-09-28.v7`
+# Akastr Agent 协议 `2026-09-30.v8`
 
-AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 64 KiB。未知字段、未知 message type、未知 capability 字段、binary frame、无效 UUID 和未来协议版本均会失败关闭。
+AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 64 KiB。未知字段、未知 message type、未知上报 kind、binary frame、无效 UUID 和未来协议版本均会失败关闭。
 
 ## Enrollment 与身份认证
 
 管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 `akastr-agent-bootstrap.v4` 信封中的节点配置（格式见下节），并生成版本化一键命令。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本机认证解密，并把这份明文原样保存为 root-only 的 slot 配置；Agent 没有第二种配置格式。
 
-`POST /internal/agents/enroll` 请求必须且只能包含 `machine_token`、raw 32-byte `public_key`、当前批准的语义化 `agent_version`、正整数 `configuration_revision` 和不含秘密的 `capabilities`。版本必须精确等于 Cloud 当前批准 release，revision 必须精确等于节点的 desired revision，否则分别返回 `agent_release_required` 或 `agent_configuration_stale`。每次安装都生成新的 Ed25519 keypair；注册成功即以新公钥替换该节点原有公钥，把 applied revision 推进到 desired revision，并断开既有 WSS。Agent 只在注册成功后才写入新 identity 并切换本机部署，注册失败时原部署继续运行；重跑同一安装命令即可修复。主控在该节点存在 pending、offered 或 accepted command，或 Target 对应服务器仍有 active ChangeIP session 时，以 `agent_node_busy` 拒绝注册。
+`POST /internal/agents/enroll` 请求必须且只能包含 `machine_token`、raw 32-byte `public_key`、当前批准的语义化 `agent_version`、正整数 `configuration_revision`。版本必须精确等于 Cloud 当前批准 release，revision 必须精确等于节点的 desired revision，否则分别返回 `agent_release_required` 或 `agent_configuration_stale`。每次安装都生成新的 Ed25519 keypair；注册成功即以新公钥替换该节点原有公钥，把 applied revision 推进到 desired revision，并断开既有 WSS。Agent 只在注册成功后才写入新 identity 并切换本机部署，注册失败时原部署继续运行；重跑同一安装命令即可修复。主控在该节点存在 pending、offered 或 accepted command，或 Target 对应服务器仍有 active ChangeIP session 时，以 `agent_node_busy` 拒绝注册。
 
 机器 token 是长期安装凭据，不是 WSS bearer，Agent 不在磁盘上保存它。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。HTTP ChangeIP 可含 `source_command`（最多 8192 字符），保存 Cloud 已解析校验的编辑原文，仅供回填，不作为 shell 执行；缺少该字段的既有配置仍有效。配置更新保持节点 ID、target/Runner 角色、服务器绑定、机器 token 和 identity 不变；Cloud 管理员添加/编辑共用完整配置，空字符串不表示保留；Runner 省略项表示移除，停用服务器仅可保留原有凭据。主控在一个事务中解封并比较完整配置，无变化不推进 revision、不打断连接；真实变更才递增 desired revision 并重新密封 bootstrap，随后断开业务连接；新 revision ready 前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受当前 bootstrap v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
 
@@ -14,14 +14,14 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 
 节点配置是 UTF-8 JSON：`schema_version=5`、正整数 `configuration_revision`、`agent_id`、`name`、`control_endpoint` 与 `modules`。`modules` 的每个键是一个启用的模块，缺少的键就是关闭；Agent 拒绝未知模块、模块内的未知或缺失字段。当前模块：
 
-| 模块 | 字段 | 公布的 capability |
+| 模块 | 字段 | 作用 |
 |---|---|---|
-| `ip_watch` | `interval_seconds`（10–300）、`ipv6` | `ip.observe` |
-| `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`、`args` | `changeip.command`；需要 `ip_watch` |
-| `socks5` | `port`、`username`、`password`（该代理的登录） | `proxy.socks5`（只公布端口） |
-| `ipquality_runner` | 无字段（`{}`） | `ipquality.runner` version 2 |
+| `ip_watch` | `interval_seconds`（10–300）、`ipv6` | 上报 `ip.address` 与 `changeip.unchanged` |
+| `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`、`args` | 执行 `changeip.execute`；需要 `ip_watch` |
+| `socks5` | `port`、`username`、`password`（该代理的登录） | 只供 Cloud 读取；Agent 不运行代理 |
+| `ipquality_runner` | 无字段（`{}`） | 执行 `ipquality.execute` |
 
-Agent 只检查模块自身与技术依赖；哪些模块可以组合（例如绑定服务器的节点必须开 `ip_watch`、Runner 只开 `ipquality_runner`）由 Cloud 决定。新增能力只增加一个模块键和对应 capability：Cloud 只向公布了该 capability 的节点派发它的命令、只接收这类节点的相应消息，所以旧节点不受影响，不需要改协议版本；改变已有消息的含义才需要新协议版本。
+Agent 只检查模块自身与技术依赖；哪些模块可以组合（例如绑定服务器的节点必须开 `ip_watch`、Runner 只开 `ipquality_runner`）由 Cloud 决定。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -36,7 +36,7 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version`、本地正整数 `configuration_revision` 与 capability。版本不得低于密封 bootstrap 的最低版本，也不得高于 Cloud 当前批准 release，并须精确匹配 desired revision 与 capability。校验后 Cloud 原子推进尚未收敛的 applied revision、版本与 capability，再返回 `hello.accepted` 并使连接进入 ready。不满足时 Cloud 以 close code `4001`（reason `agent update required`）关闭连接，Agent 随即检查更新。绑定服务节点的 Target 必须公布 `ip.observe` 且不得公布 `ipquality.runner`；不绑定服务节点的 Runner 只能公布 `ipquality.runner`，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version` 与本地正整数 `configuration_revision`。版本不得低于密封 bootstrap 的最低版本，也不得高于 Cloud 当前批准 release，并须精确匹配 desired revision。校验后 Cloud 原子推进尚未收敛的 applied revision 与版本，按自己保存的该 revision 配置记下节点运行的模块，再返回 `hello.accepted` 并使连接进入 ready。不满足时 Cloud 以 close code `4001`（reason `agent update required`）关闭连接，Agent 随即检查更新。绑定服务节点的 Target 与不绑定服务节点的 Runner 的模块组合由 Cloud 在保存配置时校验，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
 
 ## 更新检查
 
@@ -52,7 +52,7 @@ akastr-agent-maintenance-v2
 <sent_at>
 ```
 
-响应严格为 `akastr-agent-maintenance.v2`，必须且只能包含 `schema`、`status`（`current|busy|update_available`）、批准的 `version`、固定 GitHub release 地址 `binary_url` 与 `binary_sha256`、desired `configuration_revision` 和 `configuration`。版本与 revision 都和请求相同时为 `current`；否则节点已开始的工作未结束时为 `busy`，即存在已 accepted 的 command，或其 command 已被接受或已终结、仍在等待 IP 核对的 active ChangeIP session；尚未送达或未被接受的 command 不阻止更新，因为节点更新完成前它们本就无法送达，更新后重新下发。其余为 `update_available`。只有 `update_available` 且 revision 变化时，`configuration` 才是完整的节点配置（与 bootstrap 明文相同），其他情况为 `null`。主控不返回更低版本或更低 revision；Agent 版本高于批准版本时返回 409 `agent_release_required`。`error_code` 是本节点上一次未能应用目标的原因，主控把它记为节点的最近更新状态。签名与响应样例由双方测试共用，见 `internal/protocol/testdata/agent-protocol-v7.json`。
+响应严格为 `akastr-agent-maintenance.v2`，必须且只能包含 `schema`、`status`（`current|busy|update_available`）、批准的 `version`、固定 GitHub release 地址 `binary_url` 与 `binary_sha256`、desired `configuration_revision` 和 `configuration`。版本与 revision 都和请求相同时为 `current`；否则节点已开始的工作未结束时为 `busy`，即存在已 accepted 的 command，或其 command 已被接受或已终结、仍在等待 IP 核对的 active ChangeIP session；尚未送达或未被接受的 command 不阻止更新，因为节点更新完成前它们本就无法送达，更新后重新下发。其余为 `update_available`。只有 `update_available` 且 revision 变化时，`configuration` 才是完整的节点配置（与 bootstrap 明文相同），其他情况为 `null`。主控不返回更低版本或更低 revision；Agent 版本高于批准版本时返回 409 `agent_release_required`。`error_code` 是本节点上一次未能应用目标的原因，主控把它记为节点的最近更新状态。签名与响应样例由双方测试共用，见 `internal/protocol/testdata/agent-protocol-v8.json`。
 
 Agent 每 60 秒检查一次，并在业务连接每次结束或进入 ready 时立即检查。发布新版本会重启 Cloud 后端，所有连接断开重连，节点因此立即发现新版本；保存配置后主控断开该节点，节点重连时 hello 被拒绝，同样立即检查。
 
@@ -83,8 +83,7 @@ HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或
 
 ### `ipquality.execute`
 
-payload 只包含 `expected_ipv4`、`proxy_port`、`proxy_username`、`proxy_password` 和 `script_version`。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 或目标 ID 字段。登录来自目标节点的 `socks5` 模块，由 Cloud 在 offer 时解密放入；Runner 只在本次执行的内存中使用，不写入配置、操作日志或普通日志，Cloud 也不把 payload 存入数据库。只有公布 `ipquality.runner` version 2 的 Runner 会收到这种 payload。
-
+payload 只包含 `expected_ipv4`、`proxy_port`、`proxy_username` 和 `proxy_password`；结果中的 `script_version` 由 Runner 报告实际执行的固定脚本版本。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 或目标 ID 字段。登录来自目标节点的 `socks5` 模块，由 Cloud 在 offer 时解密放入；Runner 只在本次执行的内存中使用，不写入配置、操作日志或普通日志，Cloud 也不把 payload 存入数据库。
 Runner 同一时间只允许一个 command。Cloud 给每次检测 20 分钟期限，不论是否已接单，到期即判失败；此后送达的结果仍返回 `persisted=true` 的 ack，但不再采用。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
 
 ```text
@@ -95,37 +94,35 @@ Runner 同一时间只允许一个 command。Cloud 给每次检测 20 分钟期�
 
 只有精确来源 `https://report.check.place/...`、无用户信息和显式端口的 URL 加成功 postflight 才是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
 
+## 上报与回执
+
+节点主动告知的事实统一用 `report` 消息，body 必须且只能包含 `report_id`（UUID）、`kind` 与 `data`；Cloud 持久接纳后回 `report.ack`，body 只包含相同 `report_id`。Agent 在收到回执前重发同一上报；重复或过期回执是无副作用的确认。Cloud 对格式正确但无法使用的上报（服务器已停用、IPv6 未开启、`changeip.unchanged` 指向主控没有的 command 等）记录日志并照常回执，不断开连接；只有数据库故障等暂时性失败才结束连接，由 Agent 重连重试。新增的上报能力只增加一种 `kind`。当前 kind：
+
+| kind | data |
+|---|---|
+| `ip.address` | `family`（`ipv4`/`ipv6`）、`address`、`observed_at`、`command_id`（UUID 或 null） |
+| `changeip.unchanged` | `command_id`、`address`、`observed_at` |
+
 ## IP 观察、ChangeIP 与 IPv4 核对
 
-`ip.snapshot` 与 `ip.observed` 的 `family` 只允许 `ipv4` 或 `ipv6`，地址必须与 family 匹配且为对应协议族的公网地址。IPv6 在比较和持久化前规范化文本，并按固定 IANA special-purpose policy 拒绝非 globally reachable 地址；Cloud 还要求 active `ip.observe.properties.observe_ipv6=true`。IPv4 与 IPv6 各自使用独立 baseline、待确认事实和 UUID 幂等重放；任一 family 的 ack 不得清除另一 family 的状态。
+节点是自身地址的权威，Cloud 保存地址历史。`ip.address` 表示“节点现在的地址”：Cloud 采用它，与自己所持地址不同时以 Cloud 所持地址为 previous 记录一次变化；不因地址不一致或时间而拒绝。地址必须与 family 匹配且为对应协议族的公网地址；IPv6 在比较和持久化前规范化文本，并按固定 IANA special-purpose policy 拒绝非 globally reachable 地址，Cloud 还要求节点配置开启了 IPv6 观察。节点时间（`observed_at`、`checked_at`，包括 `operation.result` 中的）只用于同一节点事实的排序与展示，超前主控或不晚于上一条事实时改用主控时间。
 
-节点是自身地址的权威。`ip.snapshot` 与 `ip.observed` 都表示“节点现在的地址”：Cloud 采用该地址，与自己所持 baseline 不同时，以 Cloud 所持地址为 previous 记录一次变化，不论 `previous_address` 是什么；不因 baseline 不一致或时间而拒绝。节点时间（`observed_at`、`checked_at`，包括 `operation.result` 中的）只用于同一节点事实的排序与展示，超前主控或不晚于上一条事实时改用主控时间。Agent 会无限重发未确认的事实，因此 Cloud 对格式正确但无法使用的事实（服务器已停用、IPv6 capability 未开启、`changeip.unchanged` 指向主控没有的 command 等）记录日志并照常返回 `persisted=true` 的 ack，不断开连接；只有数据库故障等暂时性失败才结束连接，由 Agent 重连重试。
+每个 Agent 进程与每次业务连接进入 ready 后，Agent 都先重新观察并上报当前地址，此后只在地址变化时上报。Agent 不在本地保存地址；未确认的上报被新会话的上报取代。IPv4 地址上报在当前会话被确认前，Agent 不接受新的 ChangeIP，Cloud 收到 IPv4 上报后立即重新下发待执行 command。IPv4 与 IPv6 各自独立；IPv6 无地址、探测失败或暂时不可达不发送消失事件，也不影响 IPv4、ChangeIP、IPQuality 或 SOCKS5。
 
-Target 首次成功 IPv6 观察发送 `family=ipv6` 的 `ip.snapshot`，之后地址改变发送 `family=ipv6` 的 `ip.observed`。IPv6 snapshot 只建立主控 baseline，不设置 IPv4 readiness；无 IPv6、探测失败或暂时不可达不发送消失事件，也不影响 IPv4、ChangeIP、IPQuality 或 SOCKS5。
+`command_id` 只用于 IPv4：节点为某次 `changeip.execute` 触发 provider 后，核对期间看到的地址变化带上该 command，Cloud 在该次换 IP 仍进行且起始地址就是自己所持地址时把它记为这次换 IP 的结果；消息可以先于 `operation.result` 到达。不带 `command_id` 的变化都是自然变化，即使同时有换 IP 在进行；带了但对不上的变化也按自然变化记录并记日志。
 
-Agent 没有本地 IPv4 baseline 时，首次成功观察必须先持久化并发送 `ip.snapshot`；重启后已有 baseline 时先重放待确认事实，并把与该 baseline 不同的地址以 `ip.observed` 持久上报，确认后再发送当前 `ip.snapshot`。snapshot body 只包含 `snapshot_id`、`family=ipv4`、`address` 和 `observed_at`。Cloud 以同一 snapshot ID 幂等建立或刷新 baseline，再返回 `ip.snapshot_ack`；当前 identity 的 snapshot readiness 与该提交原子持久化，普通 WSS 重连保留，重新 enrollment 时清除。Agent 在确认前不得接受新的 ChangeIP，并跨重连、重启重发尚未确认的 snapshot。
+核对期间 Agent 每 10 秒观察一次；若触发两分钟后连续两次成功观察仍是触发前 IP，Agent 发送 `changeip.unchanged`。网络失败不计确认次数。核对状态持久保存在节点上，直到它的结果（带 `command_id` 的 `ip.address` 或 `changeip.unchanged`）被确认；进程重启后重发同一结果，不会变成自然变化。AkastrCloud 对已成功或未变化的换 IP 只投影一次终态；没有 Agent 结果时，业务换 IP 仍在 45 分钟到期时收敛，并同步终结尚未 accepted 的 command。
 
-`ip.observed` 包含 `observation_id`、`family=ipv4`、`previous_address`、`address` 和 `observed_at`。只有换 IP 仍在进行、节点已接过其 command（无论触发结果是否送达或可用）且变化前 Cloud 所持地址就是该次换 IP 的起始地址时，变化才归因于 ChangeIP（snapshot 带来的变化同样适用）；消息可以先于 `operation.result` 到达。尚未接受 command 时发生的变化仍是自然变化，不会被错误归因。
+## 自然 IP 变化
 
-核对期间 Agent 每 10 秒观察一次；若触发两分钟后连续两次成功观察仍是触发前 IP，Agent 发送 `changeip.unchanged`，body 必须且只能包含 `command_id`、`address` 和 `observed_at`。网络失败不计确认次数。AkastrCloud 持久接纳后返回 `changeip.unchanged_ack`，body 为相同 `command_id` 和 `persisted=true`；45 分钟兜底只属于 Cloud 业务 session。
-
-Agent 在本地只保留一个待确认 IPv4 事实或 ChangeIP 核对状态。`ip.snapshot`、`ip.observed` 和 `changeip.unchanged` 分别由相同 snapshot ID、observation ID 或 command ID 的 ack 清除，清除成功后立即继续对应 family 的观察；重复或过期 ack 是无副作用的确认，不清除其他待确认事件，也不导致断线。连接不可用时跨重连和进程重启重发。AkastrCloud 对已成功或未变化的 session 只投影一次终态；没有 Agent 快速结果时，业务 session 仍在 45 分钟到期时收敛，并同步终结尚未 accepted 的 command。
-
-## 自然 IPv4 变化
-
-没有活动 ChangeIP session 的 `ip.observed` 是自然变化。AkastrCloud 应用既有私聊订阅条件；IPQuality 缓存以 IP 变化记录为界自然失效；协议没有 Telegram channel delivery。
-
-## 自然 IPv6 变化
-
-`family=ipv6` 的 `ip.observed` 始终是独立自然变化，不归因于 ChangeIP，也不重置 IPQuality。AkastrCloud 只把变化写入 `/iplog` 数据源，不发送主动通知。
+自然 IPv4 变化按既有私聊订阅条件通知；IPQuality 缓存以 IP 变化记录为界自然失效；协议没有 Telegram channel delivery。IPv6 变化始终是自然变化，不重置 IPQuality，只写入 `/iplog` 数据源，不发送主动通知。
 
 ## 安全边界
 
-- 协议固定为 `2026-09-28.v7`，不自动降级，也不接受协议之外的字段。
-- SOCKS5 capability 只允许 `port`，不接受地址来源或自定义主机名字段。
+- 协议固定为 `2026-09-30.v8`，不自动降级，也不接受协议之外的字段。
 - bootstrap/enrollment 使用机器 token，WSS 与更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
-- capability list、journal 和日志不得含密码或脚本输出。
+- 上报、journal 和日志不得含密码或脚本输出。
 - 公网 IPv4 字段拒绝 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 - Agent 不实现任意命令、远程 shell 或 HTTP 控制端点。
 - 修改认证、消息字段、持久 payload 或发布边界时，仍须按 Cloud ADR 0024 在实施前批准；共享契约变化核对双方实现，仅修改实际受影响的一侧或双方。跨仓库验证范围见 Cloud `docs/AGENT_INTEGRATION.md`。

@@ -14,12 +14,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/capability"
 	"github.com/akastrmix/akastr-agent/internal/netpolicy"
 )
 
 const (
-	Version     = "2026-09-28.v7"
+	Version     = "2026-09-30.v8"
 	AuthContext = "akastr-agent-auth-v1"
 	MaxMessage  = 64 * 1024
 )
@@ -219,9 +218,20 @@ func AuthSigningText(challenge AuthChallenge) ([]byte, error) {
 }
 
 type HelloBody struct {
-	AgentVersion          string                  `json:"agent_version"`
-	ConfigurationRevision int64                   `json:"configuration_revision"`
-	Capabilities          []capability.Descriptor `json:"capabilities"`
+	AgentVersion          string `json:"agent_version"`
+	ConfigurationRevision int64  `json:"configuration_revision"`
+}
+
+// ReportBody carries a fact a module reports on its own; Cloud acknowledges it
+// by report_id once it is stored, and the module resends it until then.
+type ReportBody struct {
+	ReportID string `json:"report_id"`
+	Kind     string `json:"kind"`
+	Data     any    `json:"data"`
+}
+
+type ReportAckBody struct {
+	ReportID string `json:"report_id"`
 }
 
 type AuthResponseBody struct {
