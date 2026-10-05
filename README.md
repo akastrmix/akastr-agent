@@ -30,7 +30,8 @@ Akastr Agent 只负责节点本地执行与观察：
 
 - 观察公网 IPv4，并在启用时独立观察 IPv6；
 - 执行本地固定的 ChangeIP provider；
-- 在专用 Runner 上执行固定版本、固定 checksum 的 IPQuality 脚本。
+- 在专用 Runner 上执行固定版本、固定 checksum 的 IPQuality 脚本；
+- 可选的 `xui` 模块在本机 3x-ui 管理 Cloud 创建的套餐客户端；可与换 IP 同时开启。
 
 AkastrCloud 负责业务编排：
 

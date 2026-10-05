@@ -228,6 +228,133 @@
           }
         }
       }
+    },
+    {
+      "name": "cloud-xui-inbounds-list",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-09-30.v8",
+        "message_id": "123e4567-e89b-42d3-a456-426614174800",
+        "type": "operation.offer",
+        "sent_at": "2026-10-05T00:00:00.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174900",
+          "command_type": "xui.inbounds.list",
+          "payload_version": 1,
+          "payload": {
+            "after_id": 0
+          },
+          "not_before": "2026-10-05T00:00:00.000Z",
+          "expires_at": "2026-10-06T00:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-xui-client-ensure",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-09-30.v8",
+        "message_id": "123e4567-e89b-42d3-a456-426614174801",
+        "type": "operation.offer",
+        "sent_at": "2026-10-05T00:00:00.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174901",
+          "command_type": "xui.client.ensure",
+          "payload_version": 1,
+          "payload": {
+            "inbound_id": 1,
+            "protocol": "vless",
+            "method": "",
+            "email": "synthetic-client",
+            "sub_id": "synthetic-subscription",
+            "credential": "123e4567-e89b-42d3-a456-426614174150",
+            "flow": "xtls-rprx-vision",
+            "enable": true,
+            "total_bytes": 1073741824,
+            "tg_id": 0
+          },
+          "not_before": "2026-10-05T00:00:00.000Z",
+          "expires_at": "2026-10-06T00:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-xui-client-delete",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-09-30.v8",
+        "message_id": "123e4567-e89b-42d3-a456-426614174802",
+        "type": "operation.offer",
+        "sent_at": "2026-10-05T00:00:00.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174902",
+          "command_type": "xui.client.delete",
+          "payload_version": 1,
+          "payload": {
+            "inbound_id": 1,
+            "protocol": "vless",
+            "method": "",
+            "email": "synthetic-client",
+            "sub_id": "synthetic-subscription",
+            "credential": "123e4567-e89b-42d3-a456-426614174150",
+            "flow": "xtls-rprx-vision"
+          },
+          "not_before": "2026-10-05T00:00:00.000Z",
+          "expires_at": "2026-10-06T00:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-xui-client-read",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-09-30.v8",
+        "message_id": "123e4567-e89b-42d3-a456-426614174803",
+        "type": "operation.offer",
+        "sent_at": "2026-10-05T00:00:00.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174903",
+          "command_type": "xui.client.read",
+          "payload_version": 1,
+          "payload": {
+            "inbound_id": 1,
+            "protocol": "vless",
+            "method": "",
+            "email": "synthetic-client",
+            "sub_id": "synthetic-subscription",
+            "credential": "123e4567-e89b-42d3-a456-426614174150",
+            "flow": "xtls-rprx-vision"
+          },
+          "not_before": "2026-10-05T00:00:00.000Z",
+          "expires_at": "2026-10-06T00:00:00.000Z"
+        }
+      }
+    },
+    {
+      "name": "cloud-xui-client-reset_traffic",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-09-30.v8",
+        "message_id": "123e4567-e89b-42d3-a456-426614174804",
+        "type": "operation.offer",
+        "sent_at": "2026-10-05T00:00:00.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174904",
+          "command_type": "xui.client.reset_traffic",
+          "payload_version": 1,
+          "payload": {
+            "inbound_id": 1,
+            "protocol": "vless",
+            "method": "",
+            "email": "synthetic-client",
+            "sub_id": "synthetic-subscription",
+            "credential": "123e4567-e89b-42d3-a456-426614174150",
+            "flow": "xtls-rprx-vision"
+          },
+          "not_before": "2026-10-05T00:00:00.000Z",
+          "expires_at": "2026-10-06T00:00:00.000Z"
+        }
+      }
     }
   ],
   "malformed": [
@@ -427,6 +554,36 @@
           "report_id": "123e4567-e89b-42d3-a456-426614174139",
           "kind": "firewall.state",
           "data": {}
+        }
+      }
+    },
+    {
+      "name": "xui-reject-arbitrary-url",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-09-30.v8",
+        "message_id": "123e4567-e89b-42d3-a456-426614174801",
+        "type": "operation.offer",
+        "sent_at": "2026-10-05T00:00:00.000Z",
+        "body": {
+          "command_id": "123e4567-e89b-42d3-a456-426614174901",
+          "command_type": "xui.client.ensure",
+          "payload_version": 1,
+          "payload": {
+            "inbound_id": 1,
+            "protocol": "vless",
+            "method": "",
+            "email": "synthetic-client",
+            "sub_id": "synthetic-subscription",
+            "credential": "123e4567-e89b-42d3-a456-426614174150",
+            "flow": "xtls-rprx-vision",
+            "enable": true,
+            "total_bytes": 1073741824,
+            "tg_id": 0,
+            "url": "https://outside.example.net/"
+          },
+          "not_before": "2026-10-05T00:00:00.000Z",
+          "expires_at": "2026-10-06T00:00:00.000Z"
         }
       }
     }

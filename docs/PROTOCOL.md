@@ -8,7 +8,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 
 `POST /internal/agents/enroll` 请求必须且只能包含 `machine_token`、raw 32-byte `public_key`、当前批准的语义化 `agent_version`、正整数 `configuration_revision`。版本必须精确等于 Cloud 当前批准 release，revision 必须精确等于节点的 desired revision，否则分别返回 `agent_release_required` 或 `agent_configuration_stale`。每次安装都生成新的 Ed25519 keypair；注册成功即以新公钥替换该节点原有公钥，把 applied revision 推进到 desired revision，并断开既有 WSS。Agent 只在注册成功后才写入新 identity 并切换本机部署，注册失败时原部署继续运行；重跑同一安装命令即可修复。主控在该节点存在 pending、offered 或 accepted command，或 Target 对应服务器仍有 active ChangeIP session 时，以 `agent_node_busy` 拒绝注册。
 
-机器 token 是长期安装凭据，不是 WSS bearer，Agent 不在磁盘上保存它。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。HTTP ChangeIP 可含 `source_command`（最多 8192 字符），保存 Cloud 已解析校验的编辑原文，仅供回填，不作为 shell 执行；缺少该字段的既有配置仍有效。配置更新保持节点 ID、target/Runner 角色、服务器绑定、机器 token 和 identity 不变；Cloud 管理员添加/编辑共用完整配置，空字符串不表示保留；Runner 省略项表示移除，停用服务器仅可保留原有凭据。主控在一个事务中解封并比较完整配置，无变化不推进 revision、不打断连接；真实变更才递增 desired revision 并重新密封 bootstrap，随后断开业务连接；新 revision ready 前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受当前 bootstrap v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
+机器 token 是长期安装凭据，不是 WSS bearer，Agent 不在磁盘上保存它。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。HTTP ChangeIP 可含 `source_command`（最多 8192 字符），保存 Cloud 已解析校验的编辑原文，仅供回填，不作为 shell 执行；缺少该字段的既有配置仍有效。配置更新保持节点 ID、服务器绑定、机器 token 和 identity 不变；Cloud 管理员添加/编辑共用完整配置，空字符串不表示保留；Runner 省略项表示移除，停用服务器仅可保留原有凭据。主控在一个事务中解封并比较完整配置，无变化不推进 revision、不打断连接；真实变更才递增 desired revision 并重新密封 bootstrap，随后断开业务连接；新 revision ready 前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受当前 bootstrap v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
 
 ## 节点配置与模块
 
@@ -20,6 +20,9 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`、`args` | 执行 `changeip.execute`；需要 `ip_watch` |
 | `socks5` | `port`、`username`、`password`（该代理的登录） | 只供 Cloud 读取；Agent 不运行代理 |
 | `ipquality_runner` | 无字段（`{}`） | 执行 `ipquality.execute` |
+| `xui` | `panel_url`、`username`、`password`、`subscription_url`、`subscription_host` | 管理本机 3x-ui 的受管客户端 |
+
+`xui` 的两个 URL 只允许 literal loopback IP 的 HTTP(S)，包含面板或原生订阅 base path，不含查询、fragment 或 URL 凭据，拒绝重定向。只对这些回环 HTTPS 连接允许自签名证书。`subscription_host` 是管理员指定的对外域名或 IP，只作为订阅请求 Host；网络连接仍走回环，原生订阅应只监听本机，不改写返回链接。
 
 Agent 只检查模块自身与技术依赖；哪些模块可以组合（例如绑定服务器的节点必须开 `ip_watch`、Runner 只开 `ipquality_runner`）由 Cloud 决定。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
 
@@ -36,7 +39,7 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version` 与本地正整数 `configuration_revision`。版本不得低于密封 bootstrap 的最低版本，也不得高于 Cloud 当前批准 release，并须精确匹配 desired revision。校验后 Cloud 原子推进尚未收敛的 applied revision 与版本，按自己保存的该 revision 配置记下节点运行的模块，再返回 `hello.accepted` 并使连接进入 ready。不满足时 Cloud 以 close code `4001`（reason `agent update required`）关闭连接，Agent 随即检查更新。绑定服务节点的 Target 与不绑定服务节点的 Runner 的模块组合由 Cloud 在保存配置时校验，主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version` 与本地正整数 `configuration_revision`。版本不得低于密封 bootstrap 的最低版本，也不得高于 Cloud 当前批准 release，并须精确匹配 desired revision。校验后 Cloud 原子推进尚未收敛的 applied revision 与版本，按自己保存的该 revision 配置记下节点运行的模块，再返回 `hello.accepted` 并使连接进入 ready。不满足时 Cloud 以 close code `4001`（reason `agent update required`）关闭连接，Agent 随即检查更新。绑定服务器和不绑定服务器的节点都按模块组合校验，绑定节点可以同时运行换 IP 与 xui；主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
 
 ## 更新检查
 
@@ -65,7 +68,7 @@ Agent 每 60 秒检查一次，并在业务连接每次结束或进入 ready 时
 `operation.offer` 包含：
 
 - `command_id`：稳定 UUID，也是执行幂等键与本地 journal key；
-- `command_type`：runtime 只接受 `changeip.execute` 和 `ipquality.execute`；
+- `command_type`：runtime 只接受启用模块已登记的 `changeip.execute`、`ipquality.execute` 和下节的 `xui.*` 命令；
 - `payload_version=1` 与对应类型的严格 payload；
 - `not_before` 和 `expires_at`。
 
@@ -73,7 +76,7 @@ Agent 在进程没有准备替换为更新候选时发送 `operation.accepted`�
 
 已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时以及连接期间每 30 秒，主控继续发送相同 offer，并以 accepted ack 恢复执行权；这覆盖主控已提交 acceptance、但 ack 尚未到达节点便断线的窗口，也让节点已完成却未送达的结果在一个周期内重放。active ChangeIP journal 一律收敛为 `change_trigger_unknown`，recent 记录重放原终态，两者都不会再次执行 provider；首次 accepted ack 后尚无 journal 的 command 才开始一次本地执行。主控从未 accepted 的过期 command 不会获得执行权。
 
-offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件、凭据或任意 URL。
+offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件或任意 URL。凭据只允许下面列出的 IPQuality 临时登录与受管代理客户端身份，不得将面板账号密码放入 offer。
 
 ### `changeip.execute`
 
@@ -93,6 +96,30 @@ Runner 同一时间只允许一个 command。Cloud 给每次检测 20 分钟期�
 本地 relay 只监听 `127.0.0.1` 的随机端口，并使用 payload 中的登录连接上游 SOCKS5。脚本结束后 Runner 再做 postflight；代理地址改变、预期 IPv4 过期或 checksum 不一致都会失败。
 
 只有精确来源 `https://report.check.place/...`、无用户信息和显式端口的 URL 加成功 postflight 才是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
+
+### `xui.*`
+
+本模块适配原版 3x-ui **2.9.4**，Xray 固定为 **26.7.28**，不自动升级，不维护多版本兼容层；更换这些版本须先实测接口与真实连接行为。
+
+使用现有 `payload_version=1`、accepted/ACK 和终态重放，业务协议版本不变。命令只有在包含 `xui` 的配置完成 hello 后才能派发；同一面板的读写都属于独立的 `xui` exclusive group，与 ChangeIP group 分开。
+
+客户端身份 payload 必须包含 `inbound_id`（正整数）、`protocol`、`method`（非 SS 为空）、`email`、`sub_id`、`credential`、`flow`。VMess/VLESS 的 credential 是 UUID，Trojan 是 password，Hysteria 是 auth；SS2022 密钥按 method 生成 16 或 32 bytes 的标准 Base64。email/sub_id 是有界字母、数字、下划线或连字符。目标存在时必须同时核对 email、subId 和凭据，冲突失败，不接管现有客户端。
+
+| 命令 | payload | 成功 result |
+|---|---|---|
+| `xui.inbounds.list` | 只有非负整数 `after_id` | `inbounds`、`next_after_id`（结束为 null） |
+| `xui.client.ensure` | 客户端身份加 `enable`、`total_bytes`、`tg_id` | `observation` |
+| `xui.client.delete` | 客户端身份 | `observation`、`retained_disabled` |
+| `xui.client.read` | 客户端身份 | `observation`、`links`、`links_error`（成功读取为空串） |
+| `xui.client.reset_traffic` | 客户端身份 | `observation` |
+
+入站摘要每页不超过 20 条且按编码字节有界：`id`、`remark`、`protocol`、`port`、`clients`、`method`、`flow`。后两项用于正确生成密码长度和新客户端默认 flow，不含其他客户端资料。observation 是 `present`、`enable`（配置）、`traffic_enable`（统计）、`total_bytes`、`up`、`down`、`tg_id`、`checked_at`；计数均为非负安全整数，流量按 bytes。面板客户端 expiryTime 固定 0，Cloud 负责到期与宽限期。
+
+终态使用稳定 code，失败 result 为 `{}`。所有 ExecutionResult 连同 outcome/code 都保持在 journal 的 8192 bytes 内；链接超限返回明确的 links_error，不截断。读取链接前核对 subId 在整个面板唯一，避免混入其他客户端。链接暂不可用不撤销已建客户端，只重试读取。
+
+目标写入合并原客户端对象，保留未托管字段，无差异不调用客户端更新；写后回读才能确认。业务 enable=true 仍受已用流量与目标额度约束，更新 tgId 等字段不能重开已耗尽额度；提高额度或明确重置后才可恢复。删除最后一个客户端退为停用，并返回 retained_disabled。SS2022 写命令通过面板原生 restartXrayService 重启 Xray，可能使同机所有入站连接短暂中断；没有独立的任意重启 wire 命令。
+
+ensure/delete/read/list 的 active journal 恢复可以重新核对并执行同一幂等目标；已持久终态只重放。reset 的请求结果不明或 active journal 恢复返回 `xui_reset_unknown`，不再次清流量。Cloud 显式记录未确认；成功重置后另行按最新资格与手动停用收敛启用状态。面板重置统计 enable 不代表客户端已恢复。
 
 ## 上报与回执
 
@@ -122,7 +149,7 @@ Runner 同一时间只允许一个 command。Cloud 给每次检测 20 分钟期�
 - 协议固定为 `2026-09-30.v8`，不自动降级，也不接受协议之外的字段。
 - bootstrap/enrollment 使用机器 token，WSS 与更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
-- 上报、journal 和日志不得含密码或脚本输出。
+- 上报和普通日志不得含密码、原始链接或脚本输出。唯一例外是 `xui.client.read` 的受控结果：原始链接通过 WSS 回传并保存在 root-only journal 供重放；offer payload 和面板登录不进入 journal。
 - 公网 IPv4 字段拒绝 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 - Agent 不实现任意命令、远程 shell 或 HTTP 控制端点。
 - 修改认证、消息字段、持久 payload 或发布边界时，仍须按 Cloud ADR 0024 在实施前批准；共享契约变化核对双方实现，仅修改实际受影响的一侧或双方。跨仓库验证范围见 Cloud `docs/AGENT_INTEGRATION.md`。

@@ -43,7 +43,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/modules/*`：每个模块一个目录，放齐它的全部代码：配置段、命令、上报与回执，以及只供它使用的执行方式（子包）；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
 - `internal/layout`：固定的磁盘布局——A/B 两个 slot、`current` 原子切换与安装/更新共用的锁。
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
-- `internal/operation`：统一拥有实时执行、终态重放、重启恢复、本地 exclusive group 和有界操作日志；不保存 command payload 或凭据。能力 handler 只提供执行和恢复结果，不各自维护 journal 流程。
+- `internal/operation`：统一拥有实时执行、终态重放、重启恢复、本地 exclusive group 和有界操作日志；不保存 command payload；代理链接终态的受控例外见协议。能力 handler 只提供执行和恢复结果，不各自维护 journal 流程。
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
@@ -63,9 +63,9 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 
 同一进程的重复调用加入正在进行的执行；只有没有实时执行的 active journal 才按重启恢复处理。每个可执行操作都有一个 exclusive group。引擎在执行前持久化 active 记录，得到终态后再移动到有界 recent 历史。即使主控调度错误，同一组内的第二个操作也会被本地拒绝。
 
-日志只保存 operation ID、kind、exclusive group、时间、状态和稳定终态 code，不保存 payload、SOCKS5 凭据、脚本输出、客户信息或 Telegram 标识。
+操作记录保存 operation ID、kind、exclusive group、时间、状态、稳定终态 code 和最多 8 KiB 的终态结果，最近历史保持 64 条。xui 的状态、流量与原始链接是受控结果，允许进入 root-only journal 以重放；面板数据库同样持有这些凭据。普通日志不包含这些数据；操作记录不保存 offer payload、面板密码、IPQuality 临时 SOCKS5 凭据或脚本输出。
 
-终态记录只包含重发所需的有界安全结果。Cloud 的 accepted ack 是执行授权：Cloud 已持久 acceptance 但节点尚未收到 ack 就断线时，相同 offer 可在原窗口后重新握手并开始一次本地执行；从未 accepted 的过期 command 得不到授权。进程重启后的 active ChangeIP 记录直接收敛为 `change_trigger_unknown`，其他 active 操作按各自恢复语义终结，provider 都不会再次执行；recent 终态直接重放。未知或损坏的状态 schema 会被拒绝，不会被静默重置。
+终态记录只包含重发所需的有界安全结果。Cloud 的 accepted ack 是执行授权：Cloud 已持久 acceptance 但节点尚未收到 ack 就断线时，相同 offer 可在原窗口后重新握手并开始一次本地执行；从未 accepted 的过期 command 得不到授权。进程重启后的 active ChangeIP 记录直接收敛为 `change_trigger_unknown`，其他 active 操作按各自恢复语义处理；xui 的幂等目标可回读后再次收敛，清流量只能返回未确认，ChangeIP/IPQuality provider 不会再次执行；recent 终态直接重放。未知或损坏的状态 schema 会被拒绝，不会被静默重置。
 
 ## 6. 公网 IP 观察
 
@@ -107,6 +107,8 @@ Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/m
 **进程与 service。** 唯一主 service 为 `Type=notify`、`ProtectSystem=strict`，只可写状态目录与 `/usr/local/lib/akastr-agent`。本地依赖损坏导致运行时构建失败时记录 `runtime_initialization_failed`，只保留更新检查，以便接收修复版本或配置。不提供手工 `--update` 或本地回退 CLI；身份或部署损坏时用后台一键命令修复。
 
 更新检查的请求/响应与 `version`、`prepare`、`run` 三个 CLI 是旧版本升级到新版本所依赖的稳定契约，改变它们须单独设计迁移方案。
+
+本机 3x-ui HTTP 适配集中在 `internal/modules/xui`，不新增监听端口。Cloud 管理业务目标，Agent 验证客户端归属并执行，不接管或生成商业资格。长期边界见 [Cloud ADR 0082](https://github.com/akastrmix/AkastrCloud/blob/main/docs/ADR/0082-subscription-proxy-delivery.md)。
 
 ## 9. 节点接入边界
 

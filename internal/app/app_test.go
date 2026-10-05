@@ -11,6 +11,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/config"
 	changefeature "github.com/akastrmix/akastr-agent/internal/modules/changeip"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
@@ -125,6 +126,8 @@ func decodeCloudMessage(data []byte) error {
 			return err
 		}
 		switch offer.CommandType {
+		case "xui.inbounds.list", "xui.client.ensure", "xui.client.delete", "xui.client.read", "xui.client.reset_traffic":
+			err = xui.New(nil, offer.CommandType).Validate(offer.Payload)
 		case changefeature.CommandType:
 			_, err = changefeature.DecodePayload(offer.Payload)
 		case ipqualityrunner.CommandType:

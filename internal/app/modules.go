@@ -20,6 +20,7 @@ import (
 	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/modules/socks5"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 )
 
 // Fixed runtime limits. Cloud configures what a node does, not these bounds.
@@ -38,6 +39,7 @@ type modules struct {
 	changeIP *changefeature.Config
 	socks5   *socks5.Config
 	runner   *ipqualityrunner.Config
+	xui      *xui.Config
 }
 
 func parseModules(sections map[string]json.RawMessage) (modules, error) {
@@ -45,6 +47,8 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 	for name, raw := range sections {
 		var err error
 		switch name {
+		case xui.Name:
+			m.xui, err = parseSection(xui.ParseConfig, raw)
 		case ipwatch.Name:
 			m.ipWatch, err = parseSection(ipwatch.ParseConfig, raw)
 		case changefeature.Name:
@@ -104,6 +108,12 @@ func (m modules) prepare(ctx context.Context, paths layout.Layout, client *http.
 }
 
 func (m modules) build(paths layout.Layout, runtime *Runtime) error {
+	if m.xui != nil {
+		adapter := xui.NewAdapter(*m.xui)
+		for _, kind := range xui.CommandTypes {
+			runtime.addCommands(xui.New(adapter, kind))
+		}
+	}
 	if m.ipWatch != nil {
 		observer, err := ipwatch.New(observationTimeout, "Akastr-Agent")
 		if err != nil {
