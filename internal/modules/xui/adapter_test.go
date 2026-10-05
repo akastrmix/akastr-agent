@@ -169,3 +169,105 @@ func TestResetUnknownIsNeverReexecuted(t *testing.T) {
 		t.Fatal("interrupted reset was reexecuted")
 	}
 }
+
+func TestSS2022RestartsOnlyForWritesOrActiveRecovery(t *testing.T) {
+	for _, scenario := range []struct {
+		name   string
+		kind   string
+		state  string
+		writes int
+	}{
+		{"identical ensure", "xui.client.ensure", "enabled", 0},
+		{"changed ensure", "xui.client.ensure", "disabled", 1},
+		{"new ensure", "xui.client.ensure", "absent", 1},
+		{"absent delete", "xui.client.delete", "absent", 0},
+		{"retained delete", "xui.client.delete", "disabled", 0},
+		{"disable last client", "xui.client.delete", "enabled", 1},
+		{"delete among peers", "xui.client.delete", "peers", 1},
+		{"reset traffic", "xui.client.reset_traffic", "enabled", 1},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			p := testPayload()
+			p.Protocol, p.Method, p.Credential = "shadowsocks", "2022-blake3-aes-128-gcm", "MDEyMzQ1Njc4OWFiY2RlZg=="
+			clients := []map[string]any{}
+			if scenario.state != "absent" {
+				clients = append(clients, map[string]any{"password": p.Credential, "email": p.Email, "subId": p.SubID, "enable": scenario.state != "disabled", "totalGB": p.TotalBytes, "tgId": p.TgID, "expiryTime": 0})
+			}
+			if scenario.state == "peers" {
+				clients = append(clients, map[string]any{"password": "other", "email": "peer", "subId": "peer-sub"})
+			}
+			writes, restarts := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.Contains(r.URL.Path, "/get/1"):
+					raw, _ := json.Marshal(map[string]any{"clients": clients, "method": p.Method})
+					reply(w, map[string]any{"id": 1, "protocol": p.Protocol, "settings": string(raw)})
+				case strings.Contains(r.URL.Path, "/updateClient/"), strings.HasSuffix(r.URL.Path, "/addClient"):
+					writes++
+					var body struct {
+						Settings string `json:"settings"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					var s settings
+					_ = json.Unmarshal([]byte(body.Settings), &s)
+					clients = s.Clients
+					reply(w, nil)
+				case strings.Contains(r.URL.Path, "/delClient/"):
+					writes++
+					clients = clients[1:]
+					reply(w, nil)
+				case strings.Contains(r.URL.Path, "/resetClientTraffic/"):
+					writes++
+					reply(w, nil)
+				case strings.HasSuffix(r.URL.Path, "/restartXrayService"):
+					restarts++
+					reply(w, nil)
+				case strings.Contains(r.URL.Path, "/getClientTraffics/"):
+					reply(w, map[string]any{"enable": true, "up": 0, "down": 0})
+				default:
+					t.Errorf("unexpected endpoint %s", r.URL.Path)
+					w.WriteHeader(404)
+				}
+			}))
+			defer server.Close()
+			h := New(testAdapter(server), scenario.kind)
+			raw := identityJSON(p)
+			if scenario.kind == "xui.client.ensure" {
+				raw = payloadJSON(p)
+			}
+			offer := protocol.OperationOffer{CommandID: protocol.NewUUID(), CommandType: scenario.kind, Payload: raw, NotBefore: time.Now(), ExpiresAt: time.Now().Add(time.Minute)}
+			engine, err := operation.Open(operation.Options{StateFile: filepath.Join(t.TempDir(), "journal.json"), RecentLimit: 64})
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec := operation.NewExecutor(engine)
+			for range 2 {
+				result, err := exec.Execute(context.Background(), offer, h.ExclusiveGroup(), h)
+				if err != nil || result.Outcome != "succeeded" {
+					t.Fatalf("%s %v", result.Code, err)
+				}
+			}
+			if writes != scenario.writes || restarts != scenario.writes {
+				t.Fatalf("writes=%d restarts=%d expected=%d", writes, restarts, scenario.writes)
+			}
+			offer.CommandID = protocol.NewUUID()
+			if _, err := engine.Begin(offer.CommandID, offer.CommandType, h.ExclusiveGroup()); err != nil {
+				t.Fatal(err)
+			}
+			result, err := exec.Execute(context.Background(), offer, h.ExclusiveGroup(), h)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scenario.kind == "xui.client.reset_traffic" {
+				if result.Code != "xui_reset_unknown" || restarts != scenario.writes {
+					t.Fatal("active reset repeated a side effect")
+				}
+			} else if result.Outcome != "succeeded" || restarts != scenario.writes+1 {
+				t.Fatalf("active recovery did not reload: %s restarts=%d", result.Code, restarts)
+			}
+			if writes != scenario.writes {
+				t.Fatal("recovery rewrote identical panel state")
+			}
+		})
+	}
+}

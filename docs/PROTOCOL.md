@@ -117,7 +117,7 @@ Runner 同一时间只允许一个 command。Cloud 给每次检测 20 分钟期�
 
 终态使用稳定 code，失败 result 为 `{}`。所有 ExecutionResult 连同 outcome/code 都保持在 journal 的 8192 bytes 内；链接超限返回明确的 links_error，不截断。读取链接前核对 subId 在整个面板唯一，避免混入其他客户端。链接暂不可用不撤销已建客户端，只重试读取。
 
-目标写入合并原客户端对象，保留未托管字段，无差异不调用客户端更新；写后回读才能确认。业务 enable=true 仍受已用流量与目标额度约束，更新 tgId 等字段不能重开已耗尽额度；提高额度或明确重置后才可恢复。删除最后一个客户端退为停用，并返回 retained_disabled。SS2022 写命令通过面板原生 restartXrayService 重启 Xray，可能使同机所有入站连接短暂中断；没有独立的任意重启 wire 命令。
+目标写入合并原客户端对象，保留未托管字段，无差异不调用客户端更新；写后回读才能确认。业务 enable=true 仍受已用流量与目标额度约束，更新 tgId 等字段不能重开已耗尽额度；提高额度或明确重置后才可恢复。删除最后一个客户端退为停用，并返回 retained_disabled。SS2022 仅在本次实际写入或写命令的 active journal 恢复时，通过面板原生 restartXrayService 重启 Xray；普通无差异更新、删除已不存在或已停用的最后一个客户端不触发重启，可能使同机所有入站连接短暂中断；没有独立的任意重启 wire 命令。
 
 ensure/delete/read/list 的 active journal 恢复可以重新核对并执行同一幂等目标；已持久终态只重放。reset 的请求结果不明或 active journal 恢复返回 `xui_reset_unknown`，不再次清流量。Cloud 显式记录未确认；成功重置后另行按最新资格与手动停用收敛启用状态。面板重置统计 enable 不代表客户端已恢复。
 

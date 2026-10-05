@@ -41,7 +41,7 @@ func (h *Handler) Recover(offer protocol.OperationOffer) protocol.ExecutionResul
 	if h.kind == "xui.client.reset_traffic" {
 		return failure("xui_reset_unknown")
 	}
-	return h.Run(context.Background(), offer)
+	return h.run(context.Background(), offer, true)
 }
 func failure(code string) protocol.ExecutionResult {
 	return protocol.ExecutionResult{Outcome: "failed", Code: code, Result: map[string]any{}}
@@ -50,6 +50,9 @@ func success(code string, result map[string]any) protocol.ExecutionResult {
 	return protocol.ExecutionResult{Outcome: "succeeded", Code: code, Result: result}
 }
 func (h *Handler) Run(parent context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
+	return h.run(parent, offer, false)
+}
+func (h *Handler) run(parent context.Context, offer protocol.OperationOffer, recovering bool) protocol.ExecutionResult {
 	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
 	if h.Validate(offer.Payload) != nil {
@@ -60,7 +63,7 @@ func (h *Handler) Run(parent context.Context, offer protocol.OperationOffer) pro
 		result = h.discover(ctx, offer.Payload)
 	} else {
 		p, _ := decodePayload(h.kind, offer.Payload)
-		result = h.client(ctx, p)
+		result = h.client(ctx, p, recovering)
 	}
 	raw, err := json.Marshal(result)
 	if err != nil || len(raw) > 8192 {
@@ -121,7 +124,7 @@ func owned(s settings, p Payload) (map[string]any, error) {
 	}
 	return found, nil
 }
-func (h *Handler) client(ctx context.Context, p Payload) protocol.ExecutionResult {
+func (h *Handler) client(ctx context.Context, p Payload, recovering bool) protocol.ExecutionResult {
 	ib, s, err := h.adapter.get(ctx, p.InboundID)
 	if err != nil {
 		return failure(err.Error())
@@ -143,6 +146,7 @@ func (h *Handler) client(ctx context.Context, p Payload) protocol.ExecutionResul
 		return map[string]any{"id": p.InboundID, "settings": string(raw)}
 	}
 	retained := false
+	wrote := false
 	effectiveEnable := p.Enable
 	switch h.kind {
 	case "xui.client.ensure":
@@ -173,6 +177,7 @@ func (h *Handler) client(ctx context.Context, p Payload) protocol.ExecutionResul
 			}
 		}
 		if changed {
+			wrote = true
 			path := updatePath
 			if fresh {
 				path = "addClient"
@@ -184,10 +189,14 @@ func (h *Handler) client(ctx context.Context, p Payload) protocol.ExecutionResul
 	case "xui.client.delete":
 		if c != nil {
 			if len(s.Clients) == 1 {
-				c["enable"] = false
 				retained = true
-				err = h.adapter.write(ctx, updatePath, body(c))
+				if c["enable"] != false {
+					c["enable"] = false
+					wrote = true
+					err = h.adapter.write(ctx, updatePath, body(c))
+				}
 			} else {
+				wrote = true
 				err = h.adapter.write(ctx, strconv.Itoa(p.InboundID)+"/delClient/"+url.PathEscape(identity), map[string]any{})
 			}
 			if err != nil {
@@ -198,6 +207,7 @@ func (h *Handler) client(ctx context.Context, p Payload) protocol.ExecutionResul
 		if c == nil {
 			return failure("xui_client_missing")
 		}
+		wrote = true
 		if err = h.adapter.write(ctx, strconv.Itoa(p.InboundID)+"/resetClientTraffic/"+url.PathEscape(p.Email), map[string]any{}); err != nil {
 			if err.Error() == "xui_request_unknown" {
 				return failure("xui_reset_unknown")
@@ -209,9 +219,9 @@ func (h *Handler) client(ctx context.Context, p Payload) protocol.ExecutionResul
 		return failure("xui_payload_invalid")
 	}
 	// SS2022 hot updates can report success while leaving the user unusable.
-	// Even a recovery finding identical config must reload it. A journal terminal
-	// replay does not reach this code. No new generic shell/restart command is exposed.
-	if h.kind != "xui.client.read" && p.Protocol == "shadowsocks" && strings.HasPrefix(p.Method, "2022-") {
+	// Active journal recovery must reload even identical config: an interrupted write
+	// may not have reached restart. Ordinary no-ops and terminal replay do not restart.
+	if (wrote || recovering) && h.kind != "xui.client.read" && p.Protocol == "shadowsocks" && strings.HasPrefix(p.Method, "2022-") {
 		if err = h.adapter.restart(ctx); err != nil {
 			return failure("xui_restart_unknown")
 		}
