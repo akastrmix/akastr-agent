@@ -45,7 +45,7 @@ func Default() Layout {
 	}
 }
 
-func (l Layout) StateFile() string { return filepath.Join(l.StateDir, "state.json") }
+func (l Layout) StateFile() string   { return filepath.Join(l.StateDir, "state.json") }
 func (l Layout) AttemptFile() string { return filepath.Join(l.StateDir, "update-attempt.json") }
 func (l Layout) Current() string     { return filepath.Join(l.Root, "current") }
 
