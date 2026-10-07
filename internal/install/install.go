@@ -153,10 +153,12 @@ func checkOwnership(paths layout.Layout, agentID string) error {
 		}
 		return nil
 	}
-	for _, path := range []string{paths.StateFile(), paths.ReconciliationFile()} {
-		if _, err := os.Stat(path); err == nil {
-			return errors.New("existing Agent state has no identity; uninstall the old Agent before installing")
-		}
+	entries, err := os.ReadDir(paths.StateDir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if len(entries) != 0 {
+		return errors.New("existing Agent state has no identity; uninstall the old Agent before installing")
 	}
 	return nil
 }

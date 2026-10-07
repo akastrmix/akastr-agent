@@ -152,7 +152,7 @@ func TestInstallRefusesAnotherNodesMachine(t *testing.T) {
 func TestInstallRefusesStateWithoutIdentity(t *testing.T) {
 	root := t.TempDir()
 	options, control, _ := testInstall(t, root)
-	writeFile(t, options.Layout.ReconciliationFile(), `{}`)
+	writeFile(t, filepath.Join(options.Layout.StateDir, "changeip-reconciliation.json"), `{}`)
 	if err := Install(t.Context(), options); err == nil || control.enrolledKey != "" {
 		t.Fatalf("Install() error = %v enrolled=%q", err, control.enrolledKey)
 	}

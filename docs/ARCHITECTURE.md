@@ -39,14 +39,16 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 ## 4. 包职责
 
 - `internal/config`：严格读取节点配置的外层；各模块的配置段由模块自己校验。
-- `internal/module`：模块接入接口——一次性任务（`Commands`）与持续上报（`Reporter`）。
-- `internal/modules/*`：每个模块一个目录，放齐它的全部代码：配置段、命令、上报与回执，以及只供它使用的执行方式（子包）；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
-- `internal/layout`：固定的磁盘布局——A/B 两个 slot、`current` 原子切换与安装/更新共用的锁。
+- `internal/module`：模块接入的三种形态——不可重复的一次性任务（`Commands`）、Cloud 下发并可反复应用的目标状态（`Desired`）、节点主动上报的事实（`Reporter`）。
+- `internal/modules/*`：每个模块一个目录，放齐它的全部代码：配置段、命令、目标、上报与回执、它在 Root/StateDir 下的文件，以及只供它使用的执行方式（子包）；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
+- `internal/layout`：固定的磁盘布局——A/B 两个 slot、`current` 原子切换、安装/更新共用的锁，以及交给模块的 Root 与 StateDir；不认识任何模块的文件。
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
-- `internal/operation`：统一拥有实时执行、终态重放、重启恢复、本地 exclusive group 和有界操作日志；不保存 command payload；代理链接终态的受控例外见协议。能力 handler 只提供执行和恢复结果，不各自维护 journal 流程。
+- `internal/operation`：统一拥有实时执行、终态重放、重启恢复、本地 exclusive group 和有界操作日志；不保存 command payload。能力 handler 只提供执行和恢复结果，不各自维护 journal 流程。
+- `internal/desired`：保存各 `Desired` 模块的目标（只在内存）、决定何时应用（变化后、定期、失败退避）并回报状态；不认识任何模块。
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
+- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，并上报入站与受管客户端流量的快照。
 - `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/bootstrap`：安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。
@@ -55,17 +57,17 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/app`：解析启用的模块并组成运行时；连接层只收发消息，命令、上报与确认都交给对应模块。
 - `internal/daemon`：组织 WSS、更新循环、候选版本激活与退出；CLI 只负责参数和进程信号。
 
-新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands` 或 `module.Reporter`，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型或[上报 kind](PROTOCOL.md#上报与回执)。连接层、更新与安装都不需要改。
+新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands`、`module.Desired` 或 `module.Reporter` 中合适的形态，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型、[目标格式](PROTOCOL.md#目标状态)或[上报 kind](PROTOCOL.md#上报与回执)。连接层、更新与安装都不需要改。
 
-节点配置只放模块开关和很少变化的设置：配置一变，整个进程就经第 8 节的更新路径重启，新配置先校验，失败回到旧 slot。经常变化的业务数据（例如防火墙规则、xray 用户）不进节点配置，否则每次修改都会重启节点；Cloud 通过 WSS 以操作下发完整的目标状态，模块对比本机现状，只改有差别的部分。同一目标状态重复下发结果不变，所以断线重放是安全的。
+节点配置只放模块开关和很少变化的设置：配置一变，整个进程就经第 8 节的更新路径重启，新配置先校验，失败回到旧 slot。经常变化的业务数据（例如防火墙规则、xray 用户）不进节点配置，否则每次修改都会重启节点；Cloud 通过 WSS 以[目标状态](PROTOCOL.md#目标状态)下发，`Desired` 模块对比本机现状，只改有差别的部分。同一目标重复应用结果不变，所以断线后全量重发、定期纠正手工改动都是安全的；只有不可重复的动作才用 operation。
 
 ## 5. 本地操作状态
 
 同一进程的重复调用加入正在进行的执行；只有没有实时执行的 active journal 才按重启恢复处理。每个可执行操作都有一个 exclusive group。引擎在执行前持久化 active 记录，得到终态后再移动到有界 recent 历史。即使主控调度错误，同一组内的第二个操作也会被本地拒绝。
 
-操作记录保存 operation ID、kind、exclusive group、时间、状态、稳定终态 code 和最多 8 KiB 的终态结果，最近历史保持 64 条。xui 的状态、流量与原始链接是受控结果，允许进入 root-only journal 以重放；面板数据库同样持有这些凭据。普通日志不包含这些数据；操作记录不保存 offer payload、面板密码、IPQuality 临时 SOCKS5 凭据或脚本输出。
+操作记录保存 operation ID、kind、exclusive group、时间、状态、稳定终态 code 和最多 8 KiB 的终态结果，最近历史保持 64 条。操作记录不保存 offer payload、面板密码、IPQuality 临时 SOCKS5 凭据或脚本输出。
 
-终态记录只包含重发所需的有界安全结果。Cloud 的 accepted ack 是执行授权：Cloud 已持久 acceptance 但节点尚未收到 ack 就断线时，相同 offer 可在原窗口后重新握手并开始一次本地执行；从未 accepted 的过期 command 得不到授权。进程重启后的 active ChangeIP 记录直接收敛为 `change_trigger_unknown`，其他 active 操作按各自恢复语义处理；xui 的幂等目标可回读后再次收敛，清流量只能返回未确认，ChangeIP/IPQuality provider 不会再次执行；recent 终态直接重放。未知或损坏的状态 schema 会被拒绝，不会被静默重置。
+终态记录只包含重发所需的有界安全结果。Cloud 的 accepted ack 是执行授权：Cloud 已持久 acceptance 但节点尚未收到 ack 就断线时，相同 offer 可在原窗口后重新握手并开始一次本地执行；从未 accepted 的过期 command 得不到授权。进程重启后的 active ChangeIP 记录直接收敛为 `change_trigger_unknown`，其他 active 操作按各自恢复语义处理，ChangeIP/IPQuality provider 不会再次执行；recent 终态直接重放。未知或损坏的状态 schema 会被拒绝，不会被静默重置。
 
 ## 6. 公网 IP 观察
 
@@ -108,7 +110,7 @@ Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/m
 
 更新检查的请求/响应与 `version`、`prepare`、`run` 三个 CLI 是旧版本升级到新版本所依赖的稳定契约，改变它们须单独设计迁移方案。
 
-本机 3x-ui HTTP 适配集中在 `internal/modules/xui`，不新增监听端口。Cloud 管理业务目标，Agent 验证客户端归属并执行，不接管或生成商业资格。长期边界见 [Cloud ADR 0082](https://github.com/akastrmix/AkastrCloud/blob/main/docs/ADR/0082-subscription-proxy-delivery.md)。
+本机 3x-ui HTTP 适配集中在 `internal/modules/xui`，不新增监听端口。Cloud 计算每个受管客户端的业务目标（启停、上限、重置），Agent 只对齐 `ak-` 前缀的客户端，不接管其他客户端，也不生成链接。xui 唯一的持久文件是 `StateDir/xui/resets.json`，记录每个客户端已执行的流量重置序号，防止重复清零。
 
 ## 9. 节点接入边界
 

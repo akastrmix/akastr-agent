@@ -3,6 +3,7 @@ package ipqualityrunner
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
@@ -35,8 +36,14 @@ func DecodePayload(raw json.RawMessage) (Payload, error) {
 		return Payload{}, err
 	}
 	if !protocol.PublicIPv4(payload.ExpectedIPv4) || payload.ProxyPort < 1 || payload.ProxyPort > 65535 ||
-		!protocol.SOCKSCredential(payload.ProxyUsername) || !protocol.SOCKSCredential(payload.ProxyPassword) {
+		!validLogin(payload.ProxyUsername) || !validLogin(payload.ProxyPassword) {
 		return Payload{}, errors.New("ipquality.execute payload is invalid")
 	}
 	return payload, nil
+}
+
+// validLogin reports whether value is a usable SOCKS5 username or password
+// (RFC 1929 allows up to 255 bytes).
+func validLogin(value string) bool {
+	return value != "" && len(value) <= 255 && !strings.ContainsRune(value, '\x00')
 }

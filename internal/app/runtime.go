@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/akastrmix/akastr-agent/internal/desired"
 	"github.com/akastrmix/akastr-agent/internal/layout"
 	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/operation"
@@ -14,11 +15,13 @@ import (
 const recentOperationLimit = 64
 
 // Runtime is the running set of enabled modules. The control connection only
-// moves messages; every command, report and acknowledgement goes to a module.
+// moves messages; every command, target, report and acknowledgement goes to a
+// module.
 type Runtime struct {
 	journal    *operation.Engine
 	operations *operation.Executor
 	commands   map[string]module.Commands
+	desired    *desired.Engine
 	reporters  []module.Reporter
 }
 
@@ -31,7 +34,7 @@ func BuildRuntime(model *Model, paths layout.Layout) (*Runtime, error) {
 	}
 	runtime := &Runtime{
 		journal: journal, operations: operation.NewExecutor(journal),
-		commands: map[string]module.Commands{},
+		commands: map[string]module.Commands{}, desired: desired.New(),
 	}
 	if err := model.modules.build(paths, runtime); err != nil {
 		return nil, err
@@ -63,15 +66,28 @@ func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 	return r.operations.Execute(ctx, offer, commands.ExclusiveGroup(), commands)
 }
 
-// Run keeps every reporter running; one stopping stops the process, so a node
-// is never online while silently no longer observing.
-func (r *Runtime) Run(ctx context.Context, publish module.Publish) error {
+// PutState and SetStateKeys pass Cloud's targets to the Desired modules.
+func (r *Runtime) PutState(put protocol.StatePut) error       { return r.desired.Put(put) }
+func (r *Runtime) SetStateKeys(keys protocol.StateKeys) error { return r.desired.Keys(keys) }
+
+// Run applies Desired modules and keeps every reporter running; a reporter
+// stopping stops the process, so a node is never online while silently no
+// longer observing.
+func (r *Runtime) Run(ctx context.Context, publish module.Publish, status desired.Send) error {
+	runContext, cancel := context.WithCancel(ctx)
+	applied := make(chan struct{})
+	go func() {
+		defer close(applied)
+		r.desired.Run(runContext, status)
+	}()
+	defer func() {
+		cancel()
+		<-applied
+	}()
 	if len(r.reporters) == 0 {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	runContext, cancel := context.WithCancel(ctx)
-	defer cancel()
 	done := make(chan error, len(r.reporters))
 	for _, reporter := range r.reporters {
 		go func() { done <- reporter.Run(runContext, publish) }()
@@ -91,6 +107,7 @@ func (r *Runtime) Run(ctx context.Context, publish module.Publish) error {
 }
 
 func (r *Runtime) ControlReady() {
+	r.desired.ControlReady()
 	for _, reporter := range r.reporters {
 		reporter.ControlReady()
 	}

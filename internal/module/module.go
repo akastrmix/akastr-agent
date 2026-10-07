@@ -1,7 +1,11 @@
 // Package module defines how a node capability plugs into the Agent. Each
 // capability is a module under internal/modules, holding all of its code, that
 // Cloud switches on by including its configuration section; internal/app wires
-// the enabled modules.
+// the enabled modules. A module takes any of three shapes:
+//
+//   - Commands: one-off work that must not run twice, such as ChangeIP;
+//   - Desired: Cloud-owned targets the module converges to and may reapply;
+//   - Reporter: facts the node observes and reports on its own.
 package module
 
 import (
@@ -24,6 +28,18 @@ type Commands interface {
 	// Recover finishes a command whose process stopped while it was running,
 	// without repeating its side effect.
 	Recover(protocol.OperationOffer) protocol.ExecutionResult
+}
+
+// Desired handles a module whose Cloud-owned settings are keyed targets that
+// Cloud replaces as a whole. internal/desired keeps the targets and decides
+// when to apply them; applying the same targets again must change nothing.
+type Desired interface {
+	// Validate rejects a malformed target before it replaces the previous one.
+	Validate(key string, state json.RawMessage) error
+	// Apply converges the node to every current target of the module, removing
+	// whatever the module owns that no target names. It returns a stable error
+	// code for each key that is not in its target; a missing key succeeded.
+	Apply(ctx context.Context, targets map[string]json.RawMessage) map[string]string
 }
 
 // Publish sends one report on the current control session.

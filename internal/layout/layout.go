@@ -5,14 +5,15 @@
 //	  current -> slots/a          active slot, switched by one atomic rename
 //	  slots/{a,b}/akastr-agent    binary of that slot
 //	  slots/{a,b}/config.json     Cloud configuration of that slot (root-only)
-//	  ipquality/<sha256>.sh       pinned Runner script, one file per pin
 //	  .maintenance.lock           flock guarding this directory; every Agent
 //	                              version must use this exact path
 //	/etc/akastr-agent/identity.json
 //	/var/lib/akastr-agent/
 //	  state.json                  execution journal
-//	  changeip-reconciliation.json  open ChangeIP reconciliation
 //	  update-attempt.json         bounded candidate attempts for one target
+//
+// Modules keep their own files under Root and StateDir; internal/app passes
+// these directories and each module names its files.
 package layout
 
 import (
@@ -45,17 +46,10 @@ func Default() Layout {
 }
 
 func (l Layout) StateFile() string { return filepath.Join(l.StateDir, "state.json") }
-func (l Layout) ReconciliationFile() string {
-	return filepath.Join(l.StateDir, "changeip-reconciliation.json")
-}
 func (l Layout) AttemptFile() string { return filepath.Join(l.StateDir, "update-attempt.json") }
 func (l Layout) Current() string     { return filepath.Join(l.Root, "current") }
 
 func (l Layout) Slot(name string) string { return filepath.Join(l.Root, "slots", name) }
-
-func (l Layout) IPQualityScript(sha256Hex string) string {
-	return filepath.Join(l.Root, "ipquality", sha256Hex+".sh")
-}
 
 func SlotBinary(slot string) string { return filepath.Join(slot, BinaryName) }
 func SlotConfig(slot string) string { return filepath.Join(slot, ConfigName) }

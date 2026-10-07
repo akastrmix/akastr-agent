@@ -1,4 +1,7 @@
-// Package xui manages only Cloud-owned clients in existing local 3x-ui inbounds.
+// Package xui keeps the Cloud-owned clients of the local 3x-ui panel in their
+// target state and reports the panel's inbounds with those clients' traffic.
+// Cloud owns a client exactly when its email starts with ak-; the module never
+// creates or edits an inbound and never touches any other client.
 package xui
 
 import (
@@ -8,108 +11,88 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
-const Name = "xui"
+const (
+	Name = "xui"
+	// KindSnapshot reports the panel's inbounds and the owned clients' traffic.
+	KindSnapshot = "xui.snapshot"
+	ownedPrefix  = "ak-"
+	visionFlow   = "xtls-rprx-vision"
+	maxSafeInt   = 1<<53 - 1
+)
 
-var CommandTypes = []string{"xui.inbounds.list", "xui.client.ensure", "xui.client.delete", "xui.client.read", "xui.client.reset_traffic"}
-var identityText = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+var ownedEmail = regexp.MustCompile(`^ak-[a-z0-9]{1,61}$`)
 
 type Config struct {
-	PanelURL         string `json:"panel_url"`
-	Username         string `json:"username"`
-	Password         string `json:"password"`
-	SubscriptionURL  string `json:"subscription_url"`
-	SubscriptionHost string `json:"subscription_host"`
+	PanelURL string `json:"panel_url"`
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 func ParseConfig(raw json.RawMessage) (Config, error) {
-	c, err := protocol.DecodeStrict[Config](raw, Name, "panel_url", "username", "password", "subscription_url", "subscription_host")
+	c, err := protocol.DecodeStrict[Config](raw, Name, "panel_url", "username", "password")
 	if err != nil {
 		return c, err
 	}
-	for _, value := range []string{c.PanelURL, c.SubscriptionURL} {
-		u, err := url.Parse(value)
-		if err != nil || len(value) > 2048 || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
-			return c, errors.New("xui URL must be an absolute loopback HTTP URL")
-		}
-		ip, err := netip.ParseAddr(u.Hostname())
-		if err != nil || !ip.IsLoopback() {
-			return c, errors.New("xui URL requires a literal loopback address")
-		}
+	u, err := url.Parse(c.PanelURL)
+	if err != nil || len(c.PanelURL) > 2048 || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return c, errors.New("xui panel_url must be an absolute loopback HTTP URL")
+	}
+	if ip, err := netip.ParseAddr(u.Hostname()); err != nil || !ip.IsLoopback() {
+		return c, errors.New("xui panel_url requires a literal loopback address")
 	}
 	if c.Username == "" || len(c.Username) > 128 || c.Password == "" || len(c.Password) > 1024 || strings.ContainsAny(c.Username+c.Password, "\x00\r\n") {
 		return c, errors.New("xui login is invalid")
 	}
-	u, err := url.Parse("http://" + c.SubscriptionHost)
-	if err != nil || c.SubscriptionHost == "" || len(c.SubscriptionHost) > 253 || u.User != nil || u.Hostname() == "" || u.Port() != "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(c.SubscriptionHost, "\r\n\t /\\") {
-		return c, errors.New("xui subscription host must be a domain or IP, without a port")
-	}
 	return c, nil
 }
 
-type Payload struct {
-	InboundID  int    `json:"inbound_id"`
-	Protocol   string `json:"protocol"`
-	Method     string `json:"method"`
+// Target is what Cloud wants in one inbound, keyed by the inbound's panel id:
+// exactly these owned clients. Expiry stays with Cloud, which disables a
+// client instead; the panel enforces only the traffic limit.
+type Target struct {
+	Clients []Client `json:"clients"`
+}
+
+type Client struct {
 	Email      string `json:"email"`
-	SubID      string `json:"sub_id"`
 	Credential string `json:"credential"`
 	Flow       string `json:"flow"`
-	Enable     bool   `json:"enable,omitempty"`
-	TotalBytes int64  `json:"total_bytes,omitempty"`
-	TgID       int64  `json:"tg_id,omitempty"`
+	Enable     bool   `json:"enable"`
+	TotalBytes int64  `json:"total_bytes"`
+	// ResetSeq rises each time Cloud wants the client's traffic cleared once.
+	ResetSeq int64 `json:"reset_seq"`
 }
 
-func decodePayload(kind string, raw json.RawMessage) (Payload, error) {
-	fields := []string{"inbound_id", "protocol", "method", "email", "sub_id", "credential", "flow"}
-	if kind == "xui.client.ensure" {
-		fields = append(fields, "enable", "total_bytes", "tg_id")
+func decodeTarget(key string, raw json.RawMessage) (int, Target, error) {
+	id, err := strconv.Atoi(key)
+	if err != nil || id < 1 || strconv.Itoa(id) != key {
+		return 0, Target{}, errors.New("xui target key must be a panel inbound id")
 	}
-	p, err := protocol.DecodeStrict[Payload](raw, kind, fields...)
-	if err != nil {
-		return p, err
+	target, err := protocol.DecodeStrict[Target](raw, "xui target", "clients")
+	if err != nil || target.Clients == nil {
+		return 0, Target{}, errors.New("xui target is invalid")
 	}
-	if p.InboundID < 1 || !identityText.MatchString(p.Email) || !identityText.MatchString(p.SubID) || p.TotalBytes < 0 || p.TotalBytes > 9007199254740991 || p.TgID < 0 || p.TgID > 9007199254740991 {
-		return p, errors.New("xui client identity or limit is invalid")
-	}
-	if p.Flow != "" && p.Flow != "xtls-rprx-vision" {
-		return p, errors.New("xui flow is invalid")
-	}
-	switch p.Protocol {
-	case "vmess", "vless":
-		if !protocol.ValidUUID(p.Credential) || p.Method != "" {
-			return p, errors.New("xui UUID credential is invalid")
+	emails, credentials := map[string]bool{}, map[string]bool{}
+	for _, c := range target.Clients {
+		if !ownedEmail.MatchString(c.Email) || emails[c.Email] || credentials[c.Credential] ||
+			len(c.Credential) < 16 || len(c.Credential) > 256 || strings.ContainsAny(c.Credential, "\x00\r\n\"") ||
+			(c.Flow != "" && c.Flow != visionFlow) ||
+			c.TotalBytes < 0 || c.TotalBytes > maxSafeInt || c.ResetSeq < 0 || c.ResetSeq > maxSafeInt {
+			return 0, Target{}, errors.New("xui target client is invalid")
 		}
-	case "shadowsocks":
-		n := 32
-		if p.Method == "2022-blake3-aes-128-gcm" {
-			n = 16
-		} else if p.Method != "2022-blake3-aes-256-gcm" && p.Method != "2022-blake3-chacha20-poly1305" && p.Method != "chacha20-ietf-poly1305" && p.Method != "aes-128-gcm" && p.Method != "aes-256-gcm" {
-			return p, errors.New("xui Shadowsocks method is unsupported")
-		}
-		if strings.HasPrefix(p.Method, "2022-") {
-			b, e := base64.StdEncoding.DecodeString(p.Credential)
-			if e != nil || len(b) != n {
-				return p, errors.New("xui Shadowsocks key size is invalid")
-			}
-		}
-	case "trojan", "hysteria", "hysteria2":
-		if p.Method != "" {
-			return p, errors.New("xui method is invalid")
-		}
-	default:
-		return p, errors.New("xui protocol is unsupported")
+		emails[c.Email], credentials[c.Credential] = true, true
 	}
-	if len(p.Credential) < 16 || len(p.Credential) > 256 || strings.ContainsAny(p.Credential, "\x00\r\n") {
-		return p, errors.New("xui credential is invalid")
-	}
-	return p, nil
+	return id, target, nil
 }
 
+// credentialField names the client field that holds the secret, which the
+// panel also uses to address the client, except Shadowsocks (by email).
 func credentialField(proto string) string {
 	switch proto {
 	case "trojan", "shadowsocks":
@@ -119,4 +102,37 @@ func credentialField(proto string) string {
 	default:
 		return "id"
 	}
+}
+
+func ss2022(proto, method string) bool {
+	return proto == "shadowsocks" && strings.HasPrefix(method, "2022-")
+}
+
+// compatible rejects a target whose credentials the inbound cannot use, which
+// means the inbound was changed in the panel after Cloud read it.
+func compatible(proto, method string, target Target) error {
+	for _, c := range target.Clients {
+		if c.Flow != "" && proto != "vless" {
+			return errors.New("xui_inbound_changed")
+		}
+		switch {
+		case proto == "vless":
+			if !protocol.ValidUUID(c.Credential) {
+				return errors.New("xui_inbound_changed")
+			}
+		case ss2022(proto, method):
+			size := 32
+			if method == "2022-blake3-aes-128-gcm" {
+				size = 16
+			}
+			key, err := base64.StdEncoding.DecodeString(c.Credential)
+			if err != nil || len(key) != size {
+				return errors.New("xui_inbound_changed")
+			}
+		case proto == "hysteria" || proto == "hysteria2":
+		default:
+			return errors.New("xui_inbound_changed")
+		}
+	}
+	return nil
 }

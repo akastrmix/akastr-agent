@@ -67,7 +67,7 @@ type fixtureEntry struct {
 
 // Cloud tests read the same file for the opposite direction.
 func TestPairedProtocolFixturesValidateCloudToAgentMessages(t *testing.T) {
-	data, err := os.ReadFile("../protocol/testdata/agent-protocol-v8.json")
+	data, err := os.ReadFile("../protocol/testdata/agent-protocol-v9.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,8 +126,6 @@ func decodeCloudMessage(data []byte) error {
 			return err
 		}
 		switch offer.CommandType {
-		case "xui.inbounds.list", "xui.client.ensure", "xui.client.delete", "xui.client.read", "xui.client.reset_traffic":
-			err = xui.New(nil, offer.CommandType).Validate(offer.Payload)
 		case changefeature.CommandType:
 			_, err = changefeature.DecodePayload(offer.Payload)
 		case ipqualityrunner.CommandType:
@@ -135,6 +133,18 @@ func decodeCloudMessage(data []byte) error {
 		default:
 			err = fmt.Errorf("unsupported command %q", offer.CommandType)
 		}
+		return err
+	case "state.put":
+		put, err := protocol.DecodeStatePut(envelope)
+		if err != nil {
+			return err
+		}
+		if put.Module != xui.Name {
+			return fmt.Errorf("unsupported state module %q", put.Module)
+		}
+		return new(xui.Panel).Validate(put.Key, put.State)
+	case "state.keys":
+		_, err := protocol.DecodeStateKeys(envelope)
 		return err
 	case "operation.accepted_ack":
 		body, err := protocol.DecodeBody[protocol.AcceptedAckBody](envelope, "command_id", "accepted")

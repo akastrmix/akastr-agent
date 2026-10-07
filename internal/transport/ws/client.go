@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/desired"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/module"
@@ -26,8 +27,12 @@ type Runtime interface {
 	// Accepting validates an offer and reports whether it may be accepted now.
 	Accepting(protocol.OperationOffer) (bool, error)
 	Execute(context.Context, protocol.OperationOffer) (protocol.ExecutionResult, error)
-	// Run keeps module reporters running; they publish on the ready session.
-	Run(context.Context, module.Publish) error
+	// PutState and SetStateKeys hand Cloud's targets to the Desired modules.
+	PutState(protocol.StatePut) error
+	SetStateKeys(protocol.StateKeys) error
+	// Run keeps modules running; they publish reports and target statuses on
+	// the ready session.
+	Run(context.Context, module.Publish, desired.Send) error
 	ControlReady()
 	// Acknowledge settles the module report Cloud has stored.
 	Acknowledge(reportID string) error
@@ -116,7 +121,7 @@ func (c *Client) Run(ctx context.Context) error {
 	defer cancel()
 	modulesDone := make(chan error, 1)
 	controlDone := make(chan error, 1)
-	go func() { modulesDone <- c.runtime.Run(runContext, c.publish) }()
+	go func() { modulesDone <- c.runtime.Run(runContext, c.publish, c.sendStatus) }()
 	go func() { controlDone <- c.runControlLoop(runContext) }()
 	select {
 	case err := <-modulesDone:
@@ -256,6 +261,22 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 			if !ack.Persisted {
 				return errors.New("operation result was not persisted")
 			}
+		case "state.put":
+			put, err := protocol.DecodeStatePut(envelope)
+			if err != nil {
+				return err
+			}
+			if err := c.runtime.PutState(put); err != nil {
+				return err
+			}
+		case "state.keys":
+			keys, err := protocol.DecodeStateKeys(envelope)
+			if err != nil {
+				return err
+			}
+			if err := c.runtime.SetStateKeys(keys); err != nil {
+				return err
+			}
 		case "report.ack":
 			ack, err := protocol.DecodeBody[protocol.ReportAckBody](envelope, "report_id")
 			if err != nil || !protocol.ValidUUID(ack.ReportID) {
@@ -274,6 +295,14 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 }
 
 func (c *Client) publish(report protocol.ReportBody) error {
+	return c.send("report", report)
+}
+
+func (c *Client) sendStatus(status protocol.StateStatus) error {
+	return c.send("state.status", status)
+}
+
+func (c *Client) send(messageType string, body any) error {
 	c.mu.Lock()
 	active := c.active
 	c.mu.Unlock()
@@ -282,7 +311,7 @@ func (c *Client) publish(report protocol.ReportBody) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return active.write(ctx, "report", report)
+	return active.write(ctx, messageType, body)
 }
 
 func (c *Client) authenticate(ctx context.Context, session *session) error {

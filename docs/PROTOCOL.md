@@ -1,6 +1,6 @@
-# Akastr Agent 协议 `2026-09-30.v8`
+# Akastr Agent 协议 `2026-10-07.v9`
 
-AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 64 KiB。未知字段、未知 message type、未知上报 kind、binary frame、无效 UUID 和未来协议版本均会失败关闭。
+AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 1 MiB。未知字段、未知 message type、未知上报 kind、binary frame、无效 UUID 和未来协议版本均会失败关闭。
 
 ## Enrollment 与身份认证
 
@@ -20,11 +20,11 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`、`args` | 执行 `changeip.execute`；需要 `ip_watch` |
 | `socks5` | `port`、`username`、`password`（该代理的登录） | 只供 Cloud 读取；Agent 不运行代理 |
 | `ipquality_runner` | 无字段（`{}`） | 执行 `ipquality.execute` |
-| `xui` | `panel_url`、`username`、`password`、`subscription_url`、`subscription_host` | 管理本机 3x-ui 的受管客户端 |
+| `xui` | `panel_url`、`username`、`password` | 按目标状态管理本机 3x-ui 的受管客户端，上报 `xui.snapshot` |
 
-`xui` 的两个 URL 只允许 literal loopback IP 的 HTTP(S)，包含面板或原生订阅 base path，不含查询、fragment 或 URL 凭据，拒绝重定向。只对这些回环 HTTPS 连接允许自签名证书。`subscription_host` 是管理员指定的对外域名或 IP，只作为订阅请求 Host；网络连接仍走回环，原生订阅应只监听本机，不改写返回链接。
+`xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
 
-Agent 只检查模块自身与技术依赖；哪些模块可以组合（例如绑定服务器的节点必须开 `ip_watch`、Runner 只开 `ipquality_runner`）由 Cloud 决定。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
+Agent 只检查模块自身与技术依赖；哪些模块可以组合（例如绑定服务器的节点必须开 `ip_watch`、Runner 只开 `ipquality_runner`）由 Cloud 决定。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -55,7 +55,7 @@ akastr-agent-maintenance-v2
 <sent_at>
 ```
 
-响应严格为 `akastr-agent-maintenance.v2`，必须且只能包含 `schema`、`status`（`current|busy|update_available`）、批准的 `version`、固定 GitHub release 地址 `binary_url` 与 `binary_sha256`、desired `configuration_revision` 和 `configuration`。版本与 revision 都和请求相同时为 `current`；否则节点已开始的工作未结束时为 `busy`，即存在已 accepted 的 command，或其 command 已被接受或已终结、仍在等待 IP 核对的 active ChangeIP session；尚未送达或未被接受的 command 不阻止更新，因为节点更新完成前它们本就无法送达，更新后重新下发。其余为 `update_available`。只有 `update_available` 且 revision 变化时，`configuration` 才是完整的节点配置（与 bootstrap 明文相同），其他情况为 `null`。主控不返回更低版本或更低 revision；Agent 版本高于批准版本时返回 409 `agent_release_required`。`error_code` 是本节点上一次未能应用目标的原因，主控把它记为节点的最近更新状态。签名与响应样例由双方测试共用，见 `internal/protocol/testdata/agent-protocol-v8.json`。
+响应严格为 `akastr-agent-maintenance.v2`，必须且只能包含 `schema`、`status`（`current|busy|update_available`）、批准的 `version`、固定 GitHub release 地址 `binary_url` 与 `binary_sha256`、desired `configuration_revision` 和 `configuration`。版本与 revision 都和请求相同时为 `current`；否则节点已开始的工作未结束时为 `busy`，即存在已 accepted 的 command，或其 command 已被接受或已终结、仍在等待 IP 核对的 active ChangeIP session；尚未送达或未被接受的 command 不阻止更新，因为节点更新完成前它们本就无法送达，更新后重新下发。其余为 `update_available`。只有 `update_available` 且 revision 变化时，`configuration` 才是完整的节点配置（与 bootstrap 明文相同），其他情况为 `null`。主控不返回更低版本或更低 revision；Agent 版本高于批准版本时返回 409 `agent_release_required`。`error_code` 是本节点上一次未能应用目标的原因，主控把它记为节点的最近更新状态。签名与响应样例由双方测试共用，见 `internal/protocol/testdata/agent-protocol-v9.json`。
 
 Agent 每 60 秒检查一次，并在业务连接每次结束或进入 ready 时立即检查。发布新版本会重启 Cloud 后端，所有连接断开重连，节点因此立即发现新版本；保存配置后主控断开该节点，节点重连时 hello 被拒绝，同样立即检查。
 
@@ -68,7 +68,7 @@ Agent 每 60 秒检查一次，并在业务连接每次结束或进入 ready 时
 `operation.offer` 包含：
 
 - `command_id`：稳定 UUID，也是执行幂等键与本地 journal key；
-- `command_type`：runtime 只接受启用模块已登记的 `changeip.execute`、`ipquality.execute` 和下节的 `xui.*` 命令；
+- `command_type`：runtime 只接受启用模块已登记的 `changeip.execute`、`ipquality.execute`；
 - `payload_version=1` 与对应类型的严格 payload；
 - `not_before` 和 `expires_at`。
 
@@ -76,7 +76,7 @@ Agent 在进程没有准备替换为更新候选时发送 `operation.accepted`�
 
 已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时以及连接期间每 30 秒，主控继续发送相同 offer，并以 accepted ack 恢复执行权；这覆盖主控已提交 acceptance、但 ack 尚未到达节点便断线的窗口，也让节点已完成却未送达的结果在一个周期内重放。active ChangeIP journal 一律收敛为 `change_trigger_unknown`，recent 记录重放原终态，两者都不会再次执行 provider；首次 accepted ack 后尚无 journal 的 command 才开始一次本地执行。主控从未 accepted 的过期 command 不会获得执行权。
 
-offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件或任意 URL。凭据只允许下面列出的 IPQuality 临时登录与受管代理客户端身份，不得将面板账号密码放入 offer。
+offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件或任意 URL。凭据只允许下面列出的 IPQuality 临时登录，不得将面板账号密码放入 offer。
 
 ### `changeip.execute`
 
@@ -97,29 +97,44 @@ Runner 同一时间只允许一个 command。Cloud 给每次检测 20 分钟期�
 
 只有精确来源 `https://report.check.place/...`、无用户信息和显式端口的 URL 加成功 postflight 才是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
 
-### `xui.*`
+## 目标状态
+
+Operation 只用于不能重复执行的一次性动作。Cloud 拥有、经常变化、可以反复应用的设置（3x-ui 受管客户端，以后的防火墙规则等）用目标状态：Cloud 按 `(module, key)` 下发完整目标，Agent 反复对齐。
+
+| 方向 | type | body |
+|---|---|---|
+| Cloud → Agent | `state.put` | `module`、`key`（1–128 位 `[A-Za-z0-9_.-]`）、`version`（1 到 2^53−1）、`state`（JSON object） |
+| Cloud → Agent | `state.keys` | `module`、`keys`（该模块当前完整的 key 列表，不重复） |
+| Agent → Cloud | `state.status` | `module`、`key`、`version`、`error_code`（空串表示节点已处于该版本的目标；否则为稳定错误码） |
+
+- 每次连接进入 ready，Cloud 先为每个 key 发送当前 `state.put`，再发送 `state.keys`；之后目标变化即发 `state.put`，key 集合变化时再发 `state.keys`。同一连接上的消息有序，后到的 `state.put` 取代先前的。
+- Agent 只在内存中保存目标。进程启动后，在收到某模块的第一条 `state.keys` 之前不应用该模块，避免用不完整的集合删除仍被需要的东西；`state.keys` 未列出的 key 立即退役，模块应移除它拥有、却没有任何目标指名的东西。
+- 未启用模块的 state 消息、格式错误的消息结束连接。模块拒绝的目标不取代该 key 原有的目标，并以 `target_invalid` 回报。
+- Agent 在变化后约 2 秒、此后每 5 分钟以及失败后按 30 秒起、最多 5 分钟的退避重新应用，并在 `(version, error_code)` 与本会话上次发送的不同时发送 `state.status`；Cloud 只记录 version 等于当前版本的状态。`state.*` 没有回执：丢失的消息由下一次 ready 时的全量重发补上。
+- 目标状态不阻止 Agent 更新：重复应用同一目标不改变结果。
+
+### `xui`
 
 本模块适配原版 3x-ui **2.9.4**，Xray 固定为 **26.7.28**，不自动升级，不维护多版本兼容层；更换这些版本须先实测接口与真实连接行为。
 
-使用现有 `payload_version=1`、accepted/ACK 和终态重放，业务协议版本不变。命令只有在包含 `xui` 的配置完成 hello 后才能派发；同一面板的读写都属于独立的 `xui` exclusive group，与 ChangeIP group 分开。
+key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `clients`，每项必须且只能包含：
 
-客户端身份 payload 必须包含 `inbound_id`（正整数）、`protocol`、`method`（非 SS 为空）、`email`、`sub_id`、`credential`、`flow`。VMess/VLESS 的 credential 是 UUID，Trojan 是 password，Hysteria 是 auth；SS2022 密钥按 method 生成 16 或 32 bytes 的标准 Base64。email/sub_id 是有界字母、数字、下划线或连字符。目标存在时必须同时核对 email、subId 和凭据，冲突失败，不接管现有客户端。
+| 字段 | 含义 |
+|---|---|
+| `email` | `ak-` 加 1–61 位小写字母或数字；Cloud 以这一前缀拥有客户端 |
+| `credential` | VLESS 为 UUID；Shadowsocks 2022 为按 method 的 16 或 32 字节标准 Base64；Hysteria2 为 16–256 字节文本 |
+| `flow` | 空，或仅 VLESS 的 `xtls-rprx-vision` |
+| `enable` | Cloud 的业务启停（到期、额度、手动停用等都在 Cloud 计算） |
+| `total_bytes` | 写入 `totalGB` 的流量上限，0 为不限 |
+| `reset_seq` | 每当 Cloud 要求清零一次流量就增加 |
 
-| 命令 | payload | 成功 result |
-|---|---|---|
-| `xui.inbounds.list` | 只有非负整数 `after_id` | `inbounds`、`next_after_id`（结束为 null） |
-| `xui.client.ensure` | 客户端身份加 `enable`、`total_bytes`、`tg_id` | `observation` |
-| `xui.client.delete` | 客户端身份 | `observation`、`retained_disabled` |
-| `xui.client.read` | 客户端身份 | `observation`、`links`、`links_error`（成功读取为空串） |
-| `xui.client.reset_traffic` | 客户端身份 | `observation` |
+同一目标内 email 与 credential 都不重复。对齐规则：
 
-入站摘要每页不超过 20 条且按编码字节有界：`id`、`remark`、`protocol`、`port`、`clients`、`method`、`flow`。后两项用于正确生成密码长度和新客户端默认 flow，不含其他客户端资料。observation 是 `present`、`enable`（配置）、`traffic_enable`（统计）、`total_bytes`、`up`、`down`、`tg_id`、`checked_at`；计数均为非负安全整数，流量按 bytes。面板客户端 expiryTime 固定 0，Cloud 负责到期与宽限期。
-
-终态使用稳定 code，失败 result 为 `{}`。所有 ExecutionResult 连同 outcome/code 都保持在 journal 的 8192 bytes 内；链接超限返回明确的 links_error，不截断。读取链接前核对 subId 在整个面板唯一，避免混入其他客户端。链接暂不可用不撤销已建客户端，只重试读取。
-
-目标写入合并原客户端对象，保留未托管字段，无差异不调用客户端更新；写后回读才能确认。业务 enable=true 仍受已用流量与目标额度约束，更新 tgId 等字段不能重开已耗尽额度；提高额度或明确重置后才可恢复。删除最后一个客户端退为停用，并返回 retained_disabled。SS2022 仅在本次实际写入或写命令的 active journal 恢复时，通过面板原生 restartXrayService 重启 Xray；普通无差异更新、删除已不存在或已停用的最后一个客户端不触发重启，可能使同机所有入站连接短暂中断；没有独立的任意重启 wire 命令。
-
-ensure/delete/read/list 的 active journal 恢复可以重新核对并执行同一幂等目标；已持久终态只重放。reset 的请求结果不明或 active journal 恢复返回 `xui_reset_unknown`，不再次清流量。Cloud 显式记录未确认；成功重置后另行按最新资格与手动停用收敛启用状态。面板重置统计 enable 不代表客户端已恢复。
+- 只管理 email 以 `ak-` 开头的客户端，绝不改动其他客户端；也不创建或修改入站。目标中缺少的受管客户端新建，字段不一致的合并更新（保留未托管字段），多余的删除；任何 key 都未指名的入站中的受管客户端也删除。面板拒绝删除入站的最后一个客户端，此时改为停用，视为一致。`expiryTime` 固定为 0。
+- 已有上限且已用流量达到上限的客户端，即使目标 `enable=true` 也保持停用：面板会在流量耗尽时同时停用流量记录与客户端配置，写回启用只会被面板再次停用。提高上限或重置后自动恢复启用。
+- `reset_seq` 大于本机已执行的序号时，先调用面板的重置流量，再记录序号（`/var/lib/akastr-agent/xui/resets.json`）；面板的重置只恢复流量记录的启用，客户端配置的启用随后按目标写入。重置与记录之间进程中断会再重置一次，最多丢失这一瞬间的计数。不存在的客户端只记录序号。
+- 本轮对任何 Shadowsocks 2022 入站有写入时，最后经面板原生 `restartXrayService` 重启一次 Xray：该组合的动态写入可能报告成功却不可用。重启会使同机所有连接短暂中断。
+- 有写入时重新读取面板核对，不一致返回 `xui_unconfirmed`。其他错误码：面板请求类（`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`）、`xui_inbound_missing`、`xui_inbound_changed`（入站协议、method 与目标凭据不再匹配）、`xui_inbound_invalid`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`。
 
 ## 上报与回执
 
@@ -129,6 +144,11 @@ ensure/delete/read/list 的 active journal 恢复可以重新核对并执行同�
 |---|---|
 | `ip.address` | `family`（`ipv4`/`ipv6`）、`address`、`observed_at`、`command_id`（UUID 或 null） |
 | `changeip.unchanged` | `command_id`、`address`、`observed_at` |
+| `xui.snapshot` | `inbounds`、`traffic`，见下 |
+
+`xui.snapshot` 每分钟读取一次面板，内容变化时发送，至少每 10 分钟发送一次，每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照被新快照取代。`inbounds` 每项为 `id`、`remark`、`protocol`、`listen`、`port`、`enable`、`settings`、`stream_settings`（后两者为 JSON object）；`traffic` 每项为受管客户端的 `email`、`up`、`down`（bytes）与本机已执行的 `reset_seq`，Cloud 只采用与其当前序号相同的计数。
+
+VLESS、Shadowsocks 与 Hysteria 入站的 settings 去掉 `clients`、`decryption`、`fallbacks`，stream_settings 去掉 `realitySettings.privateKey`、`realitySettings.mldsa65Seed` 与 `tlsSettings.certificates`；其他协议的 settings 为空对象，stream_settings 只有 `network` 与 `security`。其他用户的凭据与服务端私钥不离开节点。
 
 ## IP 观察、ChangeIP 与 IPv4 核对
 
@@ -146,10 +166,10 @@ ensure/delete/read/list 的 active journal 恢复可以重新核对并执行同�
 
 ## 安全边界
 
-- 协议固定为 `2026-09-30.v8`，不自动降级，也不接受协议之外的字段。
+- 协议固定为 `2026-10-07.v9`，不自动降级，也不接受协议之外的字段。
 - bootstrap/enrollment 使用机器 token，WSS 与更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
-- 上报和普通日志不得含密码、原始链接或脚本输出。唯一例外是 `xui.client.read` 的受控结果：原始链接通过 WSS 回传并保存在 root-only journal 供重放；offer payload 和面板登录不进入 journal。
+- 上报和普通日志不得含密码、原始链接或脚本输出。受管客户端凭据只出现在 Cloud 下发的 `state.put` 中，Agent 不写入磁盘或日志。
 - 公网 IPv4 字段拒绝 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
 - Agent 不实现任意命令、远程 shell 或 HTTP 控制端点。
 - 修改认证、消息字段、持久 payload 或发布边界时，仍须按 Cloud ADR 0024 在实施前批准；共享契约变化核对双方实现，仅修改实际受影响的一侧或双方。跨仓库验证范围见 Cloud `docs/AGENT_INTEGRATION.md`。

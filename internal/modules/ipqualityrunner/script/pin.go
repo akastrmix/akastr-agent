@@ -30,6 +30,11 @@ const (
 	RunnerCommands = "/bin/bash bc curl dig ip jq nc"
 )
 
+// PinnedPath is where the pinned script lives under the Agent root.
+func PinnedPath(root string) string {
+	return filepath.Join(root, "ipquality", PinnedSHA256+".sh")
+}
+
 // EnsurePinnedScript downloads and verifies the pinned script when path does
 // not already hold it.
 func EnsurePinnedScript(ctx context.Context, client *http.Client, path string) error {

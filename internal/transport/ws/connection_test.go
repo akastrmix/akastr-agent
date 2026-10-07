@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/desired"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
 	"github.com/akastrmix/akastr-agent/internal/module"
@@ -31,7 +32,7 @@ type reportingRuntime struct {
 	reporter ipwatch.Reporter
 }
 
-func (r reportingRuntime) Run(ctx context.Context, publish module.Publish) error {
+func (r reportingRuntime) Run(ctx context.Context, publish module.Publish, _ desired.Send) error {
 	return r.reporter.Run(ctx, publish)
 }
 func (r reportingRuntime) ControlReady() { r.reporter.ControlReady() }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -78,6 +79,11 @@ const (
 	changeUnchangedConfirmations = 2
 	changeObserveInterval        = 10 * time.Second
 )
+
+// ReconciliationFile is where an open ChangeIP reconciliation is kept.
+func ReconciliationFile(stateDir string) string {
+	return filepath.Join(stateDir, "changeip-reconciliation.json")
+}
 
 func OpenMonitor(filePath string, observer AddressObserver, interval time.Duration, observeIPv6 bool) (*Monitor, error) {
 	if observer == nil || interval < 10*time.Second || interval > 5*time.Minute {

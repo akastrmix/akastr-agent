@@ -18,15 +18,20 @@ import (
 )
 
 const (
-	Version     = "2026-09-30.v8"
+	Version     = "2026-10-07.v9"
 	AuthContext = "akastr-agent-auth-v1"
-	MaxMessage  = 64 * 1024
+	MaxMessage  = 1 << 20
 )
 
 var (
 	canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	stableToken   = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	moduleName    = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	stateKey      = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 )
+
+// maxStateVersion keeps versions exact in JavaScript numbers on the Cloud side.
+const maxStateVersion = 1<<53 - 1
 
 type Envelope struct {
 	Protocol  string          `json:"protocol"`
@@ -173,10 +178,9 @@ func PublicIPv4(value string) bool {
 	return err == nil && address.String() == value && netpolicy.IsPublicIPv4(address)
 }
 
-// SOCKSCredential reports whether value is a usable SOCKS5 username or password
-// (RFC 1929 allows up to 255 bytes).
-func SOCKSCredential(value string) bool {
-	return value != "" && len(value) <= 255 && !strings.ContainsRune(value, '\x00')
+// StableCode reports whether value is a stable lower-case result code.
+func StableCode(value string) bool {
+	return stableToken.MatchString(value)
 }
 
 func ValidUUID(value string) bool {
@@ -270,4 +274,55 @@ func NewUUID() string {
 	value[8] = (value[8] & 0x3f) | 0x80
 	hexValue := hex.EncodeToString(value)
 	return hexValue[0:8] + "-" + hexValue[8:12] + "-" + hexValue[12:16] + "-" + hexValue[16:20] + "-" + hexValue[20:32]
+}
+
+// StatePut replaces the whole target of one key of a module.
+type StatePut struct {
+	Module  string          `json:"module"`
+	Key     string          `json:"key"`
+	Version int64           `json:"version"`
+	State   json.RawMessage `json:"state"`
+}
+
+// StateKeys names every key a module currently has; keys missing from it are retired.
+type StateKeys struct {
+	Module string   `json:"module"`
+	Keys   []string `json:"keys"`
+}
+
+// StateStatus tells Cloud whether the node is in the target of a key version.
+type StateStatus struct {
+	Module    string `json:"module"`
+	Key       string `json:"key"`
+	Version   int64  `json:"version"`
+	ErrorCode string `json:"error_code"`
+}
+
+func DecodeStatePut(envelope Envelope) (StatePut, error) {
+	body, err := DecodeBody[StatePut](envelope, "module", "key", "version", "state")
+	if err != nil || !moduleName.MatchString(body.Module) || !stateKey.MatchString(body.Key) ||
+		body.Version < 1 || body.Version > maxStateVersion || !jsonObject(body.State) {
+		return StatePut{}, errors.New("state put is invalid")
+	}
+	return body, nil
+}
+
+func DecodeStateKeys(envelope Envelope) (StateKeys, error) {
+	body, err := DecodeBody[StateKeys](envelope, "module", "keys")
+	if err != nil || !moduleName.MatchString(body.Module) || body.Keys == nil {
+		return StateKeys{}, errors.New("state keys are invalid")
+	}
+	seen := make(map[string]bool, len(body.Keys))
+	for _, key := range body.Keys {
+		if !stateKey.MatchString(key) || seen[key] {
+			return StateKeys{}, errors.New("state keys are invalid")
+		}
+		seen[key] = true
+	}
+	return body, nil
+}
+
+func jsonObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 1 && trimmed[0] == '{' && json.Valid(trimmed)
 }

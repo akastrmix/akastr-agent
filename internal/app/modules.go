@@ -96,30 +96,32 @@ func RemoveStaleAssets(paths layout.Layout) error {
 	if err := os.Remove(filepath.Join(paths.StateDir, "ip-state.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return qualityscript.RemoveOtherScripts(filepath.Dir(paths.IPQualityScript(qualityscript.PinnedSHA256)))
+	return qualityscript.RemoveOtherScripts(filepath.Dir(qualityscript.PinnedPath(paths.Root)))
 }
 
 // prepare fetches pinned module assets before the runtime is built.
 func (m modules) prepare(ctx context.Context, paths layout.Layout, client *http.Client) error {
 	if m.runner != nil {
-		return qualityscript.EnsurePinnedScript(ctx, client, paths.IPQualityScript(qualityscript.PinnedSHA256))
+		return qualityscript.EnsurePinnedScript(ctx, client, qualityscript.PinnedPath(paths.Root))
 	}
 	return nil
 }
 
 func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	if m.xui != nil {
-		adapter := xui.NewAdapter(*m.xui)
-		for _, kind := range xui.CommandTypes {
-			runtime.addCommands(xui.New(adapter, kind))
+		panel, err := xui.NewPanel(*m.xui, filepath.Join(paths.StateDir, xui.Name))
+		if err != nil {
+			return err
 		}
+		runtime.desired.Add(xui.Name, panel)
+		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel))
 	}
 	if m.ipWatch != nil {
 		observer, err := ipwatch.New(observationTimeout, "Akastr-Agent")
 		if err != nil {
 			return err
 		}
-		monitor, err := ipwatch.OpenMonitor(paths.ReconciliationFile(), observer,
+		monitor, err := ipwatch.OpenMonitor(ipwatch.ReconciliationFile(paths.StateDir), observer,
 			time.Duration(m.ipWatch.IntervalSeconds)*time.Second, m.ipWatch.IPv6)
 		if err != nil {
 			return err
@@ -145,7 +147,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	}
 	if m.runner != nil {
 		provider, err := qualityscript.New(qualityscript.Config{
-			ScriptPath: paths.IPQualityScript(qualityscript.PinnedSHA256), Timeout: ipQualityTimeout,
+			ScriptPath: qualityscript.PinnedPath(paths.Root), Timeout: ipQualityTimeout,
 			ScriptVersion: qualityscript.PinnedVersion, ExpectedSHA256Hex: qualityscript.PinnedSHA256,
 		})
 		if err != nil {
