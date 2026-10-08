@@ -78,6 +78,10 @@ func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[
 		}
 		return codes, errors.New(code)
 	}
+	// Records a failed save left in memory reach the disk before more work.
+	if err := p.state.flush(); err != nil {
+		return fail("xui_state_failed")
+	}
 	inbounds, err := p.adapter.list(ctx)
 	if err != nil {
 		return fail(err.Error())
@@ -108,7 +112,7 @@ func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[
 	// A Shadowsocks 2022 user added or changed through the panel can be
 	// reported as written yet refuse connections until Xray reloads. The
 	// pending mark survives a failed restart and a stop before it.
-	if p.state.stored.RestartPending {
+	if p.state.restartPending {
 		if err := p.adapter.restart(ctx); err != nil {
 			return fail("xui_restart_failed")
 		}

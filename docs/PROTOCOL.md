@@ -1,6 +1,6 @@
 # Akastr Agent 协议 `2026-10-07.v9`
 
-AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 1 MiB。未知字段、未知 message type、未知上报 kind、binary frame、无效 UUID 和未来协议版本均会失败关闭。
+AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 1 MiB。未知字段、未知 message type、未知上报 kind、binary frame、无效 UUID 和未来协议版本均会失败关闭；Agent 收到的消息、模块配置与目标中，必填字段为 null 视同缺失。
 
 ## Enrollment 与身份认证
 
@@ -128,11 +128,11 @@ key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `cl
 | `total_bytes` | 写入 `totalGB` 的流量上限，0 为不限 |
 | `reset_seq` | 每当 Cloud 要求清零一次流量就增加 |
 
-六个字段都必须出现；同一目标内 email 与 credential 都不重复。对齐规则：
+六个字段都必须出现且不为 null；同一目标内 email 与 credential 都不重复。对齐规则：
 
 - 只管理 email 以 `ak-` 开头的客户端，绝不改动其他客户端。面板按凭据（Shadowsocks 按 email）定位客户端，并作用于所有匹配项，所以受管客户端或目标的凭据与非受管客户端相同时，该入站返回 `xui_client_conflict`，不做任何写入；也不创建或修改入站。目标中缺少的受管客户端新建，字段不一致的合并更新（保留未托管字段），多余的删除；任何 key 都未指名的入站中的受管客户端也删除。面板拒绝删除入站的最后一个客户端，此时改为停用，视为一致。`expiryTime` 固定为 0。
 - 已有上限且已用流量达到上限的客户端，即使目标 `enable=true` 也保持停用：面板会在流量耗尽时同时停用流量记录与客户端配置，写回启用只会被面板再次停用。提高上限或重置后自动恢复启用。
-- 目标先与入站核对（协议、method、凭据与冲突），通过后才执行重置。`reset_seq` 大于本机已执行的序号时，先调用面板的重置流量，再记录序号（`/var/lib/akastr-agent/xui/state.json`，写盘成功后才生效）；面板的重置只恢复流量记录的启用，客户端配置的启用随后按目标写入。重置与记录之间进程中断会再重置一次，最多丢失这一瞬间的计数。不存在的客户端只记录序号。
+- 目标先与入站核对（协议、method、凭据与冲突），通过后才执行重置。`reset_seq` 大于本机已执行的序号时，先调用面板的重置流量，再记录序号（`/var/lib/akastr-agent/xui/state.json`）；写盘失败时记录留在内存，后续每轮先补写，不再重复重置；面板的重置只恢复流量记录的启用，客户端配置的启用随后按目标写入。重置与记录之间进程中断会再重置一次，最多丢失这一瞬间的计数。不存在的客户端只记录序号。
 - 写入任何 Shadowsocks 2022 入站前先在 `state.json` 记下“待重启”，本轮最后经面板原生 `restartXrayService` 重启一次 Xray，成功后清除：该组合的动态写入可能报告成功却不可用。重启失败或进程在重启前停止时，下一轮即使面板已一致也会补做重启。重启会使同机所有连接短暂中断。
 - 有写入时重新读取面板核对，不一致返回 `xui_unconfirmed`。其他错误码：面板请求类（`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`）、`xui_inbound_missing`、`xui_inbound_changed`（入站协议、method 与目标凭据不再匹配）、`xui_inbound_invalid`、`xui_client_conflict`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`。
 
@@ -148,7 +148,7 @@ key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `cl
 
 `xui.snapshot` 每分钟读取一次面板，内容变化时发送，至少每 10 分钟发送一次，每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照被新快照取代。`inbounds` 每项为 `id`、`remark`、`protocol`、`listen`、`port`、`enable`、`settings`、`stream_settings`（后两者为 JSON object）；`traffic` 每项为受管客户端的 `email`、`up`、`down`（bytes）与本机已执行的 `reset_seq`，Cloud 只采用与其当前序号相同的计数。
 
-秘密集中的部分按白名单复制，3x-ui 以后新增的字段也不会带出：settings 只保留 VLESS 的 `encryption`，Shadowsocks 的 `method`、`password`、`network`，Hysteria 的 `version`；stream_settings 的 `tlsSettings` 只保留 `serverName`、`alpn` 和 `settings` 中的 `fingerprint`、`allowInsecure`、`echConfigList`，`realitySettings` 只保留 `serverNames`、`shortIds` 和 `settings` 中的 `publicKey`、`fingerprint`、`serverName`、`spiderX`、`mldsa65Verify`，其余传输字段原样保留，以便 Cloud 判断是否支持。其他协议的 settings 为空对象，stream_settings 只有 `network` 与 `security`。其他用户的凭据、服务端私钥、ECH 服务端密钥、Reality 种子与证书不离开节点。
+秘密集中的部分按白名单复制，3x-ui 以后新增的字段也不会带出：settings 只保留 VLESS 的 `encryption`，Shadowsocks 的 `method`、`password`、`network`，Hysteria 的 `version`；stream_settings 的 `tlsSettings` 只保留 `serverName`、`alpn` 和 `settings` 中的 `fingerprint`、`allowInsecure`、`echConfigList`，`realitySettings` 只保留 `serverNames`、`shortIds` 和 `settings` 中的 `publicKey`、`fingerprint`、`serverName`、`spiderX`、`mldsa65Verify`；其余传输字段只保留 `externalProxy`、`finalmask`（客户端也须使用的混淆设置）和 `tcpSettings.header.type`，其他（例如服务端的 `hysteriaSettings.auth`）都不上报。其他协议的 settings 为空对象，stream_settings 只有 `network` 与 `security`。其他用户的凭据、服务端私钥与密码、ECH 服务端密钥、Reality 种子与证书不离开节点。
 
 ## IP 观察、ChangeIP 与 IPv4 核对
 

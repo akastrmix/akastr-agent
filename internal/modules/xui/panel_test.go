@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -339,8 +340,11 @@ func TestSnapshotKeepsSecretsOnTheNode(t *testing.T) {
 	ib.settings["decryption"] = "mlkem768x25519plus.private"
 	ib.stream["realitySettings"] = map[string]any{"privateKey": "reality-private", "mldsa65Seed": "seed", "settings": map[string]any{"publicKey": "pub"}}
 	ib.stream["tlsSettings"] = map[string]any{"certificates": []any{map[string]any{"key": "inline-private"}}, "echServerKeys": "ech-private", "serverName": "a.example"}
+	hy := &fakeInbound{id: 3, protocol: "hysteria", settings: map[string]any{"version": 2},
+		stream: map[string]any{"network": "hysteria", "security": "tls", "hysteriaSettings": map[string]any{"auth": "hy-private"},
+			"finalmask": map[string]any{"udp": []any{map[string]any{"type": "salamander", "settings": map[string]any{"password": "obfs-shared"}}}}}}
 	wg := &fakeInbound{id: 2, protocol: "wireguard", settings: map[string]any{"secretKey": "wg-private"}, stream: map[string]any{"network": "udp"}}
-	fake := newFakePanel(ib, wg)
+	fake := newFakePanel(ib, wg, hy)
 	panel := startPanel(t, fake)
 	c := owned("ak-a")
 	c.ResetSeq = 2
@@ -354,7 +358,7 @@ func TestSnapshotKeepsSecretsOnTheNode(t *testing.T) {
 			t.Fatalf("snapshot contains %s: %s", secret, data)
 		}
 	}
-	if !strings.Contains(string(data), `"publicKey":"pub"`) || !strings.Contains(string(data), `{"email":"ak-a","up":0,"down":0,"reset_seq":2}`) {
+	if !strings.Contains(string(data), `"publicKey":"pub"`) || !strings.Contains(string(data), "obfs-shared") || !strings.Contains(string(data), `{"email":"ak-a","up":0,"down":0,"reset_seq":2}`) {
 		t.Fatalf("snapshot lacks public fields or traffic: %s", data)
 	}
 }
@@ -438,24 +442,71 @@ func TestIncompatibleTargetNeverResetsTraffic(t *testing.T) {
 	}
 }
 
-func TestResetRecordIsAdoptedOnlyOnceSaved(t *testing.T) {
+func TestFailedSaveNeverRepeatsAReset(t *testing.T) {
+	c := owned("ak-x")
+	fake := newFakePanel(vlessInbound(1, map[string]any{"id": c.Credential, "email": "ak-x", "flow": visionFlow, "enable": true},
+		map[string]any{"id": protocol.NewUUID(), "email": "admin", "enable": true}))
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	cfg, stateDir := Config{PanelURL: server.URL + "/panel/", Username: "synthetic", Password: "synthetic"}, t.TempDir()
+	panel := openPanel(t, cfg, stateDir)
+	working := panel.state.file
 	blocker := t.TempDir() + "/file"
 	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	local := &localState{file: state.NewJSONFile(blocker + "/state.json"), stored: stateFile{Schema: 1, Resets: map[string]int64{}}}
-	if local.setReset("ak-x", 3) == nil || local.reset("ak-x") != 0 {
-		t.Fatal("an unsaved reset was remembered, so it would be executed again after a restart")
+	panel.state.file = state.NewJSONFile(blocker + "/state.json")
+	c.ResetSeq = 1
+	desired := targets(t, map[string][]Client{"1": {c}})
+	for range 2 {
+		if codes, _ := panel.Apply(context.Background(), desired); codes["1"] != "xui_state_failed" {
+			t.Fatalf("codes %v", codes)
+		}
+	}
+	if writes := fake.takeWrites(); strings.Join(writes, ",") != "reset ak-x" {
+		t.Fatalf("the reset ran again while its record could not be saved: %v", writes)
+	}
+	panel.state.file = working
+	if codes, _ := panel.Apply(context.Background(), desired); len(codes) != 0 {
+		t.Fatal(codes)
+	}
+	if writes := fake.takeWrites(); slices.Contains(writes, "reset ak-x") {
+		t.Fatalf("the reset ran again once saving worked: %v", writes)
+	}
+	openPanel(t, cfg, stateDir).Apply(context.Background(), desired)
+	if writes := fake.takeWrites(); len(writes) != 0 {
+		t.Fatalf("the saved reset ran again: %v", writes)
+	}
+}
+
+func TestIncompleteStateFileStopsTheModule(t *testing.T) {
+	for _, contents := range []string{`{}`, `null`, `{"schema":1}`, `{"schema":1,"resets":{},"restart_pending":null}`} {
+		dir := t.TempDir()
+		if err := os.WriteFile(dir+"/state.json", []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewPanel(Config{}, dir); err == nil {
+			t.Errorf("state %s accepted", contents)
+		}
+	}
+	if _, err := NewPanel(Config{}, t.TempDir()); err != nil {
+		t.Fatalf("a node without state must start empty: %v", err)
 	}
 }
 
 func TestTargetClientsNeedEveryField(t *testing.T) {
-	for _, missing := range []string{"total_bytes", "enable", "reset_seq", "flow"} {
-		client := map[string]any{"email": "ak-a", "credential": protocol.NewUUID(), "flow": "", "enable": true, "total_bytes": 100, "reset_seq": 0}
-		delete(client, missing)
-		raw, _ := json.Marshal(map[string]any{"clients": []any{client}})
-		if new(Panel).Validate("1", raw) == nil {
-			t.Errorf("target without %s accepted", missing)
+	for _, field := range []string{"total_bytes", "enable", "reset_seq", "flow"} {
+		for _, null := range []bool{false, true} {
+			client := map[string]any{"email": "ak-a", "credential": protocol.NewUUID(), "flow": "", "enable": true, "total_bytes": 100, "reset_seq": 0}
+			if null {
+				client[field] = nil
+			} else {
+				delete(client, field)
+			}
+			raw, _ := json.Marshal(map[string]any{"clients": []any{client}})
+			if new(Panel).Validate("1", raw) == nil {
+				t.Errorf("target with %s missing or null accepted", field)
+			}
 		}
 	}
 }

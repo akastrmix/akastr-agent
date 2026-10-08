@@ -140,7 +140,8 @@ func DecodeKnown[T any](data []byte, description string) (T, error) {
 	return decodeJSONBody[T](data, description)
 }
 
-// DecodeStrict decodes a JSON object that must contain exactly fields.
+// DecodeStrict decodes a JSON object that must contain exactly fields, none of
+// them null: a required value never silently becomes its zero value.
 func DecodeStrict[T any](data []byte, description string, fields ...string) (T, error) {
 	return decodeRequiredJSON[T](data, description, fields...)
 }
@@ -152,7 +153,8 @@ func decodeRequiredJSON[T any](data []byte, description string, fields ...string
 		return result, fmt.Errorf("decode %s body: required fields are missing", description)
 	}
 	for _, field := range fields {
-		if _, found := object[field]; !found {
+		value, found := object[field]
+		if !found || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 			return result, fmt.Errorf("decode %s body: required field %s is missing", description, field)
 		}
 	}

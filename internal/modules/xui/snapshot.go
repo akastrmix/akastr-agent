@@ -136,11 +136,12 @@ func (s *Snapshots) read(ctx context.Context) ([]byte, error) {
 }
 
 // publicConfig keeps what a client needs to connect to an inbound Cloud can
-// deliver, and only network and security of any other. The protocol settings
-// and the TLS and Reality blocks, which hold the secrets, are copied from an
-// allowlist, so other users' credentials, private keys, ECH server keys,
-// seeds and certificates never leave the node, including fields 3x-ui adds
-// later. The rest of the transport is kept so Cloud can tell what it is.
+// deliver, and only network and security of any other. Everything is copied
+// from an allowlist, so other users' credentials, private keys, ECH server
+// keys, seeds, certificates and server-side passwords never leave the node,
+// including fields 3x-ui adds later. finalmask holds obfuscation every client
+// must also use; tcpSettings is reduced to its header type, which tells Cloud
+// whether the TCP transport is plain.
 func publicConfig(ib inbound) (json.RawMessage, json.RawMessage) {
 	var settings, stream map[string]any
 	_ = json.Unmarshal([]byte(ib.Settings), &settings)
@@ -157,10 +158,15 @@ func publicConfig(ib inbound) (json.RawMessage, json.RawMessage) {
 	default:
 		return encode(public), encode(transport)
 	}
-	for key, value := range stream {
-		if key != "tlsSettings" && key != "realitySettings" {
-			transport[key] = value
+	for key, value := range pick(stream, "externalProxy", "finalmask") {
+		transport[key] = value
+	}
+	if tcp, ok := stream["tcpSettings"].(map[string]any); ok {
+		block := map[string]any{}
+		if header, ok := tcp["header"].(map[string]any); ok {
+			block["header"] = pick(header, "type")
 		}
+		transport["tcpSettings"] = block
 	}
 	if tls, ok := stream["tlsSettings"].(map[string]any); ok {
 		block := pick(tls, "serverName", "alpn")
