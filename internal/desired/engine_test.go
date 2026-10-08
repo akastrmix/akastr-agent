@@ -186,3 +186,58 @@ func TestStateForAModuleNotEnabledIsRejected(t *testing.T) {
 		t.Fatal("accepted state for a module this node does not run")
 	}
 }
+
+func TestARetiredKeyNamedAgainIsReportedAgain(t *testing.T) {
+	m := &recordingModule{}
+	engine, log := startEngine(t, m)
+	_ = engine.Put(put("1", 1, `{"a":1}`))
+	_ = engine.Keys(protocol.StateKeys{Module: "xui", Keys: []string{"1"}})
+	eventually(t, func() bool { return len(log.take()) == 1 })
+	_ = engine.Keys(protocol.StateKeys{Module: "xui", Keys: []string{}})
+	eventually(t, func() bool { return len(m.passes()) == 2 })
+	_ = engine.Put(put("1", 5, `{"a":2}`))
+	_ = engine.Keys(protocol.StateKeys{Module: "xui", Keys: []string{"1"}})
+	eventually(t, func() bool {
+		sent := log.take()
+		return len(sent) == 1 && sent[0].Version == 5
+	})
+}
+
+// blockingModule holds its first Apply until released.
+type blockingModule struct {
+	recordingModule
+	started, release chan struct{}
+	once             sync.Once
+}
+
+func (m *blockingModule) Apply(ctx context.Context, targets map[string]json.RawMessage) (map[string]string, error) {
+	first := false
+	m.once.Do(func() { first = true })
+	if first {
+		close(m.started)
+		<-m.release
+	}
+	return m.recordingModule.Apply(ctx, targets)
+}
+
+func TestResultOfAKeyRetiredDuringApplyIsNotReported(t *testing.T) {
+	m := &blockingModule{started: make(chan struct{}), release: make(chan struct{})}
+	engine := New()
+	engine.Add("xui", m)
+	u := engine.units["xui"]
+	u.settle, u.recheck, u.retry = 10*time.Millisecond, time.Hour, time.Hour
+	log := &statusLog{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go engine.Run(ctx, log.send)
+	_ = engine.Put(put("1", 1, `{"a":1}`))
+	_ = engine.Keys(protocol.StateKeys{Module: "xui", Keys: []string{"1"}})
+	<-m.started
+	_ = engine.Keys(protocol.StateKeys{Module: "xui", Keys: []string{}})
+	close(m.release)
+	eventually(t, func() bool { return len(m.passes()) == 2 })
+	time.Sleep(20 * time.Millisecond)
+	if sent := log.take(); len(sent) != 0 {
+		t.Fatalf("status of a retired key was sent: %v", sent)
+	}
+}

@@ -103,14 +103,14 @@ Operation 只用于不能重复执行的一次性动作。Cloud 拥有、经常�
 
 | 方向 | type | body |
 |---|---|---|
-| Cloud → Agent | `state.put` | `module`、`key`（1–128 位 `[A-Za-z0-9_.-]`）、`version`（1 到 2^53−1）、`state`（JSON object） |
+| Cloud → Agent | `state.put` | `module`、`key`（1–128 位 `[A-Za-z0-9_.-]`）、`version`（1 到 2^53−1，同一节点的同一 `(module, key)` 永不重复使用，即使该 key 曾退役后重新出现）、`state`（JSON object） |
 | Cloud → Agent | `state.keys` | `module`、`keys`（该模块当前完整的 key 列表，不重复） |
 | Agent → Cloud | `state.status` | `module`、`key`、`version`、`error_code`（空串表示节点已处于该版本的目标；否则为稳定错误码） |
 
 - 每次连接进入 ready，Cloud 先为每个 key 发送当前 `state.put`，再发送 `state.keys`；之后目标变化即发 `state.put`，key 集合变化时再发 `state.keys`。同一连接上的消息有序，后到的 `state.put` 取代先前的。
 - Agent 只在内存中保存目标。进程启动后，在收到某模块的第一条 `state.keys` 之前不应用该模块，避免用不完整的集合删除仍被需要的东西；`state.keys` 未列出的 key 立即退役，模块应移除它拥有、却没有任何目标指名的东西。
 - 未启用模块的 state 消息、格式错误的消息结束连接。模块拒绝的目标不取代该 key 原有的目标，并以 `target_invalid` 回报；该 key 此前没有可用目标时，它覆盖的东西保持原样，不当作已退役而清理。
-- Agent 在变化后约 2 秒、此后每 5 分钟以及失败后（某个 key 失败，或不属于任何 key 的清理失败）按 30 秒起、最多 5 分钟的退避重新应用，并在 `(version, error_code)` 与本会话上次发送的不同时发送 `state.status`；Cloud 只记录 version 等于当前版本的状态。`state.*` 没有回执：丢失的消息由下一次 ready 时的全量重发补上。
+- Agent 在变化后约 2 秒、此后每 5 分钟以及失败后（某个 key 失败，或不属于任何 key 的清理失败）按 30 秒起、最多 5 分钟的退避重新应用，并在 `(version, error_code)` 与本会话上次发送的不同时发送 `state.status`；Cloud 只记录 version 等于当前版本的状态；version 不重复使用，所以退役前仍在途中的旧状态不会被当成新目标的结果。Agent 不为已退役的 key 发送状态。`state.*` 没有回执：丢失的消息由下一次 ready 时的全量重发补上。
 - 目标状态不阻止 Agent 更新：重复应用同一目标不改变结果。
 
 ### `xui`

@@ -122,6 +122,13 @@ func (e *Engine) Keys(keys protocol.StateKeys) error {
 			delete(u.invalid, key)
 		}
 	}
+	// A key Cloud names again later gets a version never used before, but its
+	// status must not be suppressed by what was sent for the retired key.
+	for key := range u.sent {
+		if !named[key] {
+			delete(u.sent, key)
+		}
+	}
 	u.complete = true
 	u.mu.Unlock()
 	u.signal()
@@ -149,6 +156,19 @@ func (e *Engine) Run(ctx context.Context, send Send) {
 		}()
 	}
 	wg.Wait()
+}
+
+// named reports whether Cloud still names key; u.mu must be held.
+func (u *unit) named(key string) bool {
+	_, target := u.targets[key]
+	_, invalid := u.invalid[key]
+	return target || invalid
+}
+
+func (u *unit) reportable(key string, result status) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.named(key) && u.sent[key] != result
 }
 
 func (u *unit) signal() {
@@ -239,17 +259,17 @@ func (u *unit) pass(ctx context.Context, send Send) bool {
 	}
 
 	for key, result := range results {
-		u.mu.Lock()
-		unchanged := u.sent[key] == result
-		u.mu.Unlock()
-		if unchanged {
+		// A key retired while Apply ran gets no status; its result is stale.
+		if !u.reportable(key, result) {
 			continue
 		}
 		if send(protocol.StateStatus{Module: u.name, Key: key, Version: result.version, ErrorCode: result.code}) != nil {
 			continue
 		}
 		u.mu.Lock()
-		u.sent[key] = result
+		if u.named(key) {
+			u.sent[key] = result
+		}
 		u.mu.Unlock()
 	}
 	return failed
