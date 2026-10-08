@@ -104,8 +104,10 @@ func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[
 			cleanup = err
 		}
 	}
-	for id := range targets {
-		if !present[id] {
+	// An inbound deleted from the panel holds none of our clients, so a target
+	// that wants none there (a retiring key) is already met.
+	for id, target := range targets {
+		if !present[id] && len(target.Clients) > 0 {
 			codes[keys[id]] = "xui_inbound_missing"
 		}
 	}

@@ -333,6 +333,10 @@ func TestApplyReportsMissingAndChangedInbounds(t *testing.T) {
 	if codes["1"] != "xui_inbound_changed" || codes["9"] != "xui_inbound_missing" || len(fake.takeWrites()) != 0 {
 		t.Fatalf("codes %v", codes)
 	}
+	// Cloud retires a key by asking for no clients; a deleted inbound already has none.
+	if codes, _ := panel.Apply(context.Background(), targets(t, map[string][]Client{"9": {}})); len(codes) != 0 {
+		t.Fatalf("retiring a deleted inbound failed: %v", codes)
+	}
 }
 
 func TestSnapshotKeepsSecretsOnTheNode(t *testing.T) {

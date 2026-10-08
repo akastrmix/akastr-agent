@@ -109,6 +109,7 @@ Operation 只用于不能重复执行的一次性动作。Cloud 拥有、经常�
 
 - 每次连接进入 ready，Cloud 先为每个 key 发送当前 `state.put`，再发送 `state.keys`；之后目标变化即发 `state.put`，key 集合变化时再发 `state.keys`。同一连接上的消息有序，后到的 `state.put` 取代先前的。
 - Agent 只在内存中保存目标。进程启动后，在收到某模块的第一条 `state.keys` 之前不应用该模块，避免用不完整的集合删除仍被需要的东西；`state.keys` 未列出的 key 立即退役，模块应移除它拥有、却没有任何目标指名的东西。
+- Cloud 退役一个 key 时，先下发该 key 的“空”目标（xui 为 `clients: []`），收到该版本无错误的 `state.status` 后才把它移出 `state.keys`，因此 Cloud 能确认节点上的东西已清理。
 - 未启用模块的 state 消息、格式错误的消息结束连接。模块拒绝的目标不取代该 key 原有的目标，并以 `target_invalid` 回报；该 key 此前没有可用目标时，它覆盖的东西保持原样，不当作已退役而清理。
 - Agent 在变化后约 2 秒、此后每 5 分钟以及失败后（某个 key 失败，或不属于任何 key 的清理失败）按 30 秒起、最多 5 分钟的退避重新应用，并在 `(version, error_code)` 与本会话上次发送的不同时发送 `state.status`；Cloud 只记录 version 等于当前版本的状态；version 不重复使用，所以退役前仍在途中的旧状态不会被当成新目标的结果。Agent 不为已退役的 key 发送状态。`state.*` 没有回执：丢失的消息由下一次 ready 时的全量重发补上。
 - 目标状态不阻止 Agent 更新：重复应用同一目标不改变结果。
@@ -134,6 +135,7 @@ key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `cl
 - 已有上限且已用流量达到上限的客户端，即使目标 `enable=true` 也保持停用：面板会在流量耗尽时同时停用流量记录与客户端配置，写回启用只会被面板再次停用。提高上限或重置后自动恢复启用。
 - 目标先与入站核对（协议、method、凭据与冲突），通过后才执行重置。`reset_seq` 大于本机已执行的序号时，先调用面板的重置流量，再记录序号（`/var/lib/akastr-agent/xui/state.json`）；写盘失败时记录留在内存，后续每轮先补写，不再重复重置；面板的重置只恢复流量记录的启用，客户端配置的启用随后按目标写入。重置与记录之间进程中断会再重置一次，最多丢失这一瞬间的计数。不存在的客户端只记录序号。
 - 写入任何 Shadowsocks 2022 入站前先在 `state.json` 记下“待重启”，本轮最后经面板原生 `restartXrayService` 重启一次 Xray，成功后清除：该组合的动态写入可能报告成功却不可用。重启失败或进程在重启前停止时，下一轮即使面板已一致也会补做重启。重启会使同机所有连接短暂中断。
+- 目标为空时，面板中已不存在的入站视为一致（不报 `xui_inbound_missing`），使已删除入站的 key 也能完成退役。
 - 有写入时重新读取面板核对，不一致返回 `xui_unconfirmed`。其他错误码：面板请求类（`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`）、`xui_inbound_missing`、`xui_inbound_changed`（入站协议、method 与目标凭据不再匹配）、`xui_inbound_invalid`、`xui_client_conflict`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`。
 
 ## 上报与回执
