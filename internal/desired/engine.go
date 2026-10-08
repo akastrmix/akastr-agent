@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -80,7 +81,8 @@ func (e *Engine) unit(name string) (*unit, error) {
 }
 
 // Put replaces the target of one key. A target the module rejects leaves the
-// previous one in place and is reported as invalid.
+// previous one in place, or the key untouched when it has none, and is
+// reported as invalid.
 func (e *Engine) Put(put protocol.StatePut) error {
 	u, err := e.unit(put.Module)
 	if err != nil {
@@ -211,13 +213,20 @@ func (u *unit) pass(ctx context.Context, send Send) bool {
 	invalid := make(map[string]int64, len(u.invalid))
 	for key, version := range u.invalid {
 		invalid[key] = version
+		if _, found := states[key]; !found {
+			// Still named, so what the key covers must not be removed.
+			states[key] = nil
+		}
 	}
 	u.mu.Unlock()
 
 	applyContext, cancel := context.WithTimeout(ctx, applyTimeout)
-	codes := u.module.Apply(applyContext, states)
+	codes, err := u.module.Apply(applyContext, states)
 	cancel()
-	failed := false
+	failed := err != nil
+	if err != nil {
+		slog.Warn("target state not fully applied", "module", u.name, "code", err.Error())
+	}
 	for key, result := range results {
 		if code := codes[key]; code != "" {
 			result.code = code

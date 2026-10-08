@@ -110,7 +110,7 @@ Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/m
 
 更新检查的请求/响应与 `version`、`prepare`、`run` 三个 CLI 是旧版本升级到新版本所依赖的稳定契约，改变它们须单独设计迁移方案。
 
-本机 3x-ui HTTP 适配集中在 `internal/modules/xui`，不新增监听端口。Cloud 计算每个受管客户端的业务目标（启停、上限、重置），Agent 只对齐 `ak-` 前缀的客户端，不接管其他客户端，也不生成链接。xui 唯一的持久文件是 `StateDir/xui/resets.json`，记录每个客户端已执行的流量重置序号，防止重复清零。
+本机 3x-ui HTTP 适配集中在 `internal/modules/xui`，不新增监听端口。Cloud 计算每个受管客户端的业务目标（启停、上限、重置），Agent 只对齐 `ak-` 前缀的客户端，不接管其他客户端，也不生成链接。xui 唯一的持久文件是 `StateDir/xui/state.json`：每个客户端已执行的流量重置序号（防止重复清零），以及 Shadowsocks 2022 写入后尚未完成的 Xray 重启；两者都先写盘再生效。
 
 ## 9. 节点接入边界
 

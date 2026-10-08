@@ -15,6 +15,7 @@ type recordingModule struct {
 	mu      sync.Mutex
 	applied []map[string]string
 	fail    map[string]string
+	err     error
 }
 
 func (m *recordingModule) Validate(_ string, state json.RawMessage) error {
@@ -24,7 +25,7 @@ func (m *recordingModule) Validate(_ string, state json.RawMessage) error {
 	return nil
 }
 
-func (m *recordingModule) Apply(_ context.Context, targets map[string]json.RawMessage) map[string]string {
+func (m *recordingModule) Apply(_ context.Context, targets map[string]json.RawMessage) (map[string]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	seen := map[string]string{}
@@ -32,7 +33,7 @@ func (m *recordingModule) Apply(_ context.Context, targets map[string]json.RawMe
 		seen[key] = string(state)
 	}
 	m.applied = append(m.applied, seen)
-	return m.fail
+	return m.fail, m.err
 }
 
 func (m *recordingModule) passes() []map[string]string {
@@ -154,12 +155,29 @@ func TestInvalidTargetKeepsThePreviousOne(t *testing.T) {
 	})
 }
 
-func TestFailedKeysAreRetried(t *testing.T) {
-	m := &recordingModule{fail: map[string]string{"1": "xui_login_failed"}}
+func TestInvalidFirstTargetLeavesTheKeyUntouched(t *testing.T) {
+	m := &recordingModule{}
 	engine, _ := startEngine(t, m)
-	_ = engine.Put(put("1", 1, `{"a":1}`))
+	_ = engine.Put(put("1", 1, `{"bad":true}`))
 	_ = engine.Keys(protocol.StateKeys{Module: "xui", Keys: []string{"1"}})
-	eventually(t, func() bool { return len(m.passes()) >= 3 })
+	eventually(t, func() bool { return len(m.passes()) == 1 })
+	if state, named := m.passes()[0]["1"]; !named || state != "" {
+		t.Fatalf("a key named without a usable target must reach the module as nil: %q %v", state, named)
+	}
+}
+
+func TestFailuresAreRetried(t *testing.T) {
+	for name, m := range map[string]*recordingModule{
+		"key":     {fail: map[string]string{"1": "xui_login_failed"}},
+		"cleanup": {err: errors.New("xui_cleanup_failed")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			engine, _ := startEngine(t, m)
+			_ = engine.Put(put("1", 1, `{"a":1}`))
+			_ = engine.Keys(protocol.StateKeys{Module: "xui", Keys: []string{"1"}})
+			eventually(t, func() bool { return len(m.passes()) >= 3 })
+		})
+	}
 }
 
 func TestStateForAModuleNotEnabledIsRejected(t *testing.T) {

@@ -17,19 +17,19 @@ import (
 // share one lock, so reported traffic always matches the recorded resets.
 type Panel struct {
 	adapter *Adapter
-	resets  *resetMarks
+	state   *localState
 	mu      sync.Mutex
 }
 
 var _ module.Desired = (*Panel)(nil)
 
-// NewPanel keeps the record of executed traffic resets in stateDir.
+// NewPanel keeps the module's durable state in stateDir.
 func NewPanel(cfg Config, stateDir string) (*Panel, error) {
-	resets, err := openResetMarks(stateDir)
+	local, err := openState(stateDir)
 	if err != nil {
 		return nil, err
 	}
-	return &Panel{adapter: NewAdapter(cfg), resets: resets}, nil
+	return &Panel{adapter: NewAdapter(cfg), state: local}, nil
 }
 
 func (p *Panel) Validate(key string, raw json.RawMessage) error {
@@ -44,57 +44,76 @@ type action struct {
 	client   map[string]any
 }
 
-func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) map[string]string {
+func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[string]string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	codes := map[string]string{}
 	targets := map[int]Target{}
 	keys := map[int]string{}
+	// held inbounds are named without a usable target: left exactly as they are.
+	held := map[int]bool{}
 	for key, state := range raw {
-		id, target, err := decodeTarget(key, state)
+		id, err := strconv.Atoi(key)
 		if err != nil {
 			codes[key] = "xui_target_invalid"
 			continue
 		}
-		targets[id], keys[id] = target, key
+		keys[id] = key
+		if state == nil {
+			held[id] = true
+			continue
+		}
+		if _, target, err := decodeTarget(key, state); err != nil {
+			codes[key] = "xui_target_invalid"
+			held[id] = true
+		} else {
+			targets[id] = target
+		}
 	}
-	fail := func(code string) map[string]string {
-		for key := range raw {
-			if codes[key] == "" {
-				codes[key] = code
+	fail := func(code string) (map[string]string, error) {
+		for id := range targets {
+			if codes[keys[id]] == "" {
+				codes[keys[id]] = code
 			}
 		}
-		return codes
+		return codes, errors.New(code)
 	}
 	inbounds, err := p.adapter.list(ctx)
 	if err != nil {
 		return fail(err.Error())
 	}
 	present := map[int]bool{}
-	restart := false
 	wrote := false
+	var cleanup error
 	for _, ib := range inbounds {
 		present[ib.ID] = true
+		if held[ib.ID] {
+			continue
+		}
 		target, named := targets[ib.ID]
 		changed, err := p.converge(ctx, ib, target, named)
 		wrote = wrote || changed
-		if changed && ss2022(ib.Protocol, method(ib)) {
-			restart = true
-		}
-		if err != nil && named {
+		switch {
+		case err != nil && named:
 			codes[keys[ib.ID]] = err.Error()
+		case err != nil && cleanup == nil:
+			cleanup = err
 		}
 	}
-	for id, key := range keys {
+	for id := range targets {
 		if !present[id] {
-			codes[key] = "xui_inbound_missing"
+			codes[keys[id]] = "xui_inbound_missing"
 		}
 	}
 	// A Shadowsocks 2022 user added or changed through the panel can be
-	// reported as written yet refuse connections until Xray reloads.
-	if restart {
+	// reported as written yet refuse connections until Xray reloads. The
+	// pending mark survives a failed restart and a stop before it.
+	if p.state.stored.RestartPending {
 		if err := p.adapter.restart(ctx); err != nil {
 			return fail("xui_restart_failed")
+		}
+		if err := p.state.setRestartPending(false); err != nil {
+			return fail("xui_state_failed")
 		}
 	}
 	if wrote {
@@ -103,42 +122,54 @@ func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) map[s
 			return fail(err.Error())
 		}
 		for _, ib := range inbounds {
-			key, named := keys[ib.ID]
-			if !named || codes[key] != "" {
+			target, named := targets[ib.ID]
+			if !named || codes[keys[ib.ID]] != "" {
 				continue
 			}
-			if actions, err := plan(ib, targets[ib.ID]); err != nil || len(actions) != 0 {
-				codes[key] = "xui_unconfirmed"
+			if actions, err := plan(ib, target); err != nil || len(actions) != 0 {
+				codes[keys[ib.ID]] = "xui_unconfirmed"
 			}
 		}
 	}
-	emails := map[string]bool{}
-	for _, target := range targets {
-		for _, c := range target.Clients {
-			emails[c.Email] = true
+	// Reset marks of a held inbound's clients are unknown here; keep them all.
+	if len(held) == 0 {
+		emails := map[string]bool{}
+		for _, target := range targets {
+			for _, c := range target.Clients {
+				emails[c.Email] = true
+			}
+		}
+		if err := p.state.keepOnly(emails); err != nil {
+			return fail("xui_state_failed")
 		}
 	}
-	if err := p.resets.keepOnly(emails); err != nil {
-		return fail("xui_state_failed")
-	}
-	return codes
+	return codes, cleanup
 }
 
-// converge brings one inbound to its target; an inbound no target names keeps
-// no owned client. It reports whether it wrote client settings.
+// converge brings one inbound to its target; an inbound no key names keeps no
+// owned client. It reports whether it wrote client settings. The target is
+// checked against the inbound before any reset clears traffic.
 func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named bool) (bool, error) {
-	if named {
-		if err := p.resetDue(ctx, &ib, target); err != nil {
-			return false, err
-		}
+	if !named && !hasClients(ib) {
+		// Protocols without clients hold nothing of ours.
+		return false, nil
 	}
 	actions, err := plan(ib, target)
 	if err != nil {
-		if !named {
-			// Inbounds of protocols without clients have nothing of ours.
-			return false, nil
-		}
 		return false, err
+	}
+	if named && p.resetsDue(ib, target) {
+		if err := p.reset(ctx, &ib, target); err != nil {
+			return false, err
+		}
+		if actions, err = plan(ib, target); err != nil {
+			return false, err
+		}
+	}
+	if len(actions) > 0 && ss2022(ib.Protocol, method(ib)) {
+		if err := p.state.setRestartPending(true); err != nil {
+			return false, errors.New("xui_state_failed")
+		}
 	}
 	for i, a := range actions {
 		switch a.kind {
@@ -156,16 +187,30 @@ func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named b
 	return len(actions) > 0, nil
 }
 
-// resetDue clears the traffic of each client whose reset Cloud asked for and
+func hasClients(ib inbound) bool {
+	var s settings
+	return json.Unmarshal([]byte(ib.Settings), &s) == nil && len(s.Clients) > 0
+}
+
+func (p *Panel) resetsDue(ib inbound, target Target) bool {
+	for _, c := range target.Clients {
+		if c.ResetSeq > p.state.reset(c.Email) {
+			return true
+		}
+	}
+	return false
+}
+
+// reset clears the traffic of each client whose reset Cloud asked for and
 // this node has not executed yet. The panel's reset re-enables only its
 // traffic record, never the client, so plan still decides enable afterwards.
-func (p *Panel) resetDue(ctx context.Context, ib *inbound, target Target) error {
+func (p *Panel) reset(ctx context.Context, ib *inbound, target Target) error {
 	existing := map[string]int{}
 	for i, stat := range ib.ClientStats {
 		existing[stat.Email] = i
 	}
 	for _, c := range target.Clients {
-		if c.ResetSeq <= p.resets.get(c.Email) {
+		if c.ResetSeq <= p.state.reset(c.Email) {
 			continue
 		}
 		// A client created later starts empty, so only an existing one is reset.
@@ -177,7 +222,7 @@ func (p *Panel) resetDue(ctx context.Context, ib *inbound, target Target) error 
 			}
 			ib.ClientStats[i].Up, ib.ClientStats[i].Down = 0, 0
 		}
-		if err := p.resets.set(c.Email, c.ResetSeq); err != nil {
+		if err := p.state.setReset(c.Email, c.ResetSeq); err != nil {
 			return errors.New("xui_state_failed")
 		}
 	}
@@ -216,9 +261,28 @@ func plan(ib inbound, target Target) ([]action, error) {
 		used[stat.Email] = stat.Up + stat.Down
 	}
 	owned := map[string]map[string]any{}
+	foreign := map[string]bool{}
 	for _, c := range s.Clients {
 		if email, _ := c["email"].(string); strings.HasPrefix(email, ownedPrefix) {
 			owned[email] = c
+		} else {
+			foreign[identity(c)] = true
+			if secret, _ := c[field].(string); secret != "" {
+				foreign[secret] = true
+			}
+		}
+	}
+	// The panel addresses a client by its secret (Shadowsocks: email) and acts
+	// on every client that matches, so a shared secret would reach a client
+	// Cloud does not own.
+	for _, c := range owned {
+		if foreign[identity(c)] {
+			return nil, errors.New("xui_client_conflict")
+		}
+	}
+	for _, c := range target.Clients {
+		if foreign[c.Credential] {
+			return nil, errors.New("xui_client_conflict")
 		}
 	}
 	var actions []action

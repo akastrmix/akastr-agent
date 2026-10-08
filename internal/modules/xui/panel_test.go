@@ -6,12 +6,14 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	"github.com/akastrmix/akastr-agent/internal/state"
 )
 
 func jsonEncode(w io.Writer, value any) error { return json.NewEncoder(w).Encode(value) }
@@ -33,10 +35,11 @@ type fakeInbound struct {
 // list carries traffic, the last client cannot be deleted, a reset clears the
 // counters and re-enables only the traffic record.
 type fakePanel struct {
-	mu       sync.Mutex
-	inbounds []*fakeInbound
-	stats    map[string]*fakeStat
-	writes   []string
+	mu           sync.Mutex
+	inbounds     []*fakeInbound
+	stats        map[string]*fakeStat
+	writes       []string
+	restartFails bool
 }
 
 func newFakePanel(inbounds ...*fakeInbound) *fakePanel {
@@ -144,9 +147,17 @@ func (p *fakePanel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(`{"success":false,"msg":"no client remained in Inbound"}`))
 			return
 		}
-		p.writes = append(p.writes, "delete "+ib.clients[i]["email"].(string))
-		delete(p.stats, ib.clients[i]["email"].(string))
-		ib.clients = append(ib.clients[:i], ib.clients[i+1:]...)
+		// 3x-ui removes every client the identity matches.
+		kept := []map[string]any{}
+		for _, c := range ib.clients {
+			if p.identityIndex(&fakeInbound{protocol: ib.protocol, clients: []map[string]any{c}}, parts[5]) == 0 {
+				p.writes = append(p.writes, "delete "+c["email"].(string))
+				delete(p.stats, c["email"].(string))
+			} else {
+				kept = append(kept, c)
+			}
+		}
+		ib.clients = kept
 		reply(w, nil)
 	case len(parts) == 6 && parts[4] == "resetClientTraffic":
 		st := p.stats[parts[5]]
@@ -154,6 +165,10 @@ func (p *fakePanel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.writes = append(p.writes, "reset "+parts[5])
 		reply(w, nil)
 	case path == "panel/api/server/restartXrayService":
+		if p.restartFails {
+			w.Write([]byte(`{"success":false}`))
+			return
+		}
 		p.writes = append(p.writes, "restart")
 		reply(w, nil)
 	default:
@@ -212,7 +227,7 @@ func TestApplyConvergesOwnedClientsAndLeavesOthersAlone(t *testing.T) {
 	panel := startPanel(t, fake)
 	a, b := owned("ak-a"), owned("ak-b")
 	b.TotalBytes = 1000
-	codes := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {a, b}}))
+	codes, _ := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {a, b}}))
 	if len(codes) != 0 {
 		t.Fatalf("codes %v", codes)
 	}
@@ -226,7 +241,7 @@ func TestApplyConvergesOwnedClientsAndLeavesOthersAlone(t *testing.T) {
 		t.Fatalf("client not created as targeted: %v", c)
 	}
 	fake.takeWrites()
-	if codes := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {a, b}})); len(codes) != 0 || len(fake.takeWrites()) != 0 {
+	if codes, _ := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {a, b}})); len(codes) != 0 || len(fake.takeWrites()) != 0 {
 		t.Fatal("an unchanged target wrote to the panel")
 	}
 	a.Enable = false
@@ -253,7 +268,7 @@ func TestExhaustedClientStaysDisabledUntilLimitRaisedOrReset(t *testing.T) {
 	fake.client(1, "ak-used")["enable"] = false
 	fake.mu.Unlock()
 	fake.takeWrites()
-	if codes := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {c}})); len(codes) != 0 || len(fake.takeWrites()) != 0 {
+	if codes, _ := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {c}})); len(codes) != 0 || len(fake.takeWrites()) != 0 {
 		t.Fatalf("exhausted client was reopened or reported: %v", codes)
 	}
 	c.ResetSeq = 1
@@ -271,7 +286,7 @@ func TestExhaustedClientStaysDisabledUntilLimitRaisedOrReset(t *testing.T) {
 func TestLastClientIsDisabledInsteadOfDeleted(t *testing.T) {
 	fake := newFakePanel(vlessInbound(1, map[string]any{"id": protocol.NewUUID(), "email": "ak-only", "enable": true}))
 	panel := startPanel(t, fake)
-	if codes := panel.Apply(context.Background(), targets(t, map[string][]Client{})); len(codes) != 0 {
+	if codes, _ := panel.Apply(context.Background(), targets(t, map[string][]Client{})); len(codes) != 0 {
 		t.Fatal(codes)
 	}
 	if c := fake.client(1, "ak-only"); c == nil || c["enable"] != false {
@@ -291,7 +306,7 @@ func TestSS2022RestartsXrayOnceAfterWrites(t *testing.T) {
 		"1": {{Email: "ak-s1", Credential: key('B'), Enable: true}},
 		"2": {{Email: "ak-s2", Credential: key('C'), Enable: true}},
 	})
-	if codes := panel.Apply(context.Background(), desired); len(codes) != 0 {
+	if codes, _ := panel.Apply(context.Background(), desired); len(codes) != 0 {
 		t.Fatal(codes)
 	}
 	restarts := 0
@@ -313,7 +328,7 @@ func TestApplyReportsMissingAndChangedInbounds(t *testing.T) {
 	fake := newFakePanel(vlessInbound(1, map[string]any{"id": "x", "email": "admin", "enable": true}))
 	panel := startPanel(t, fake)
 	wrongType := Client{Email: "ak-x", Credential: "not-a-uuid-but-long-enough", Enable: true}
-	codes := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {wrongType}, "9": {owned("ak-y")}}))
+	codes, _ := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {wrongType}, "9": {owned("ak-y")}}))
 	if codes["1"] != "xui_inbound_changed" || codes["9"] != "xui_inbound_missing" || len(fake.takeWrites()) != 0 {
 		t.Fatalf("codes %v", codes)
 	}
@@ -323,7 +338,7 @@ func TestSnapshotKeepsSecretsOnTheNode(t *testing.T) {
 	ib := vlessInbound(1, map[string]any{"id": "foreign-secret", "email": "admin", "enable": true})
 	ib.settings["decryption"] = "mlkem768x25519plus.private"
 	ib.stream["realitySettings"] = map[string]any{"privateKey": "reality-private", "mldsa65Seed": "seed", "settings": map[string]any{"publicKey": "pub"}}
-	ib.stream["tlsSettings"] = map[string]any{"certificates": []any{map[string]any{"key": "inline-private"}}, "serverName": "a.example"}
+	ib.stream["tlsSettings"] = map[string]any{"certificates": []any{map[string]any{"key": "inline-private"}}, "echServerKeys": "ech-private", "serverName": "a.example"}
 	wg := &fakeInbound{id: 2, protocol: "wireguard", settings: map[string]any{"secretKey": "wg-private"}, stream: map[string]any{"network": "udp"}}
 	fake := newFakePanel(ib, wg)
 	panel := startPanel(t, fake)
@@ -341,5 +356,106 @@ func TestSnapshotKeepsSecretsOnTheNode(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"publicKey":"pub"`) || !strings.Contains(string(data), `{"email":"ak-a","up":0,"down":0,"reset_seq":2}`) {
 		t.Fatalf("snapshot lacks public fields or traffic: %s", data)
+	}
+}
+
+func TestNamedInboundWithoutUsableTargetIsLeftAlone(t *testing.T) {
+	fake := newFakePanel(vlessInbound(1, map[string]any{"id": protocol.NewUUID(), "email": "ak-kept", "enable": true},
+		map[string]any{"id": protocol.NewUUID(), "email": "admin", "enable": true}))
+	panel := startPanel(t, fake)
+	if _, err := panel.Apply(context.Background(), map[string]json.RawMessage{"1": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if c := fake.client(1, "ak-kept"); c == nil || c["enable"] != true || len(fake.takeWrites()) != 0 {
+		t.Fatal("an inbound still named by Cloud was cleaned")
+	}
+}
+
+func TestFailedCleanupIsReportedForRetry(t *testing.T) {
+	fake := newFakePanel(vlessInbound(1, map[string]any{"id": protocol.NewUUID(), "email": "ak-gone", "enable": true},
+		map[string]any{"id": protocol.NewUUID(), "email": "admin", "enable": true}))
+	panel := startPanel(t, fake)
+	panel.adapter.cfg.PanelURL = "http://127.0.0.1:1/"
+	if _, err := panel.Apply(context.Background(), map[string]json.RawMessage{}); err == nil {
+		t.Fatal("an unreachable panel with nothing targeted reported success")
+	}
+}
+
+func TestSharedSecretWithForeignClientBlocksWrites(t *testing.T) {
+	shared := protocol.NewUUID()
+	fake := newFakePanel(vlessInbound(1,
+		map[string]any{"id": shared, "email": "ak-dup", "enable": true},
+		map[string]any{"id": shared, "email": "admin-phone", "enable": true},
+		map[string]any{"id": protocol.NewUUID(), "email": "admin-laptop", "enable": true}))
+	panel := startPanel(t, fake)
+	if _, err := panel.Apply(context.Background(), map[string]json.RawMessage{}); err == nil {
+		t.Fatal("conflict not reported")
+	}
+	if fake.client(1, "admin-phone") == nil || len(fake.takeWrites()) != 0 {
+		t.Fatal("a foreign client was deleted")
+	}
+	// A target reusing a foreign client's secret is refused before it exists.
+	fake = newFakePanel(vlessInbound(1, map[string]any{"id": shared, "email": "admin-phone", "enable": true}))
+	panel = startPanel(t, fake)
+	clash := owned("ak-new")
+	clash.Credential = shared
+	codes, _ := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {clash}}))
+	if codes["1"] != "xui_client_conflict" || len(fake.takeWrites()) != 0 {
+		t.Fatalf("a client sharing a foreign secret was written: %v", codes)
+	}
+}
+
+func TestFailedSS2022RestartIsRetriedWithoutNewWrites(t *testing.T) {
+	fake := newFakePanel(&fakeInbound{id: 1, protocol: "shadowsocks", settings: map[string]any{"method": "2022-blake3-aes-128-gcm", "password": "c2VydmVyLWtleS0xNmJ5dA=="},
+		stream: map[string]any{"network": "tcp", "security": "none"}, clients: []map[string]any{{"password": "AAAAAAAAAAAAAAAAAAAAAA==", "email": "admin", "enable": true}}})
+	fake.restartFails = true
+	server := httptest.NewServer(fake)
+	defer server.Close()
+	cfg, stateDir := Config{PanelURL: server.URL + "/panel/", Username: "synthetic", Password: "synthetic"}, t.TempDir()
+	desired := targets(t, map[string][]Client{"1": {{Email: "ak-s1", Credential: "QUFBQUFBQUFBQUFBQUFBBQ==", Enable: true}}})
+	if codes, _ := openPanel(t, cfg, stateDir).Apply(context.Background(), desired); codes["1"] != "xui_restart_failed" {
+		t.Fatalf("codes %v", codes)
+	}
+	fake.restartFails = false
+	fake.takeWrites()
+	// A new process finds the restart still owed although the panel already matches.
+	if codes, _ := openPanel(t, cfg, stateDir).Apply(context.Background(), desired); len(codes) != 0 {
+		t.Fatal(codes)
+	}
+	if writes := fake.takeWrites(); len(writes) != 1 || writes[0] != "restart" {
+		t.Fatalf("writes %v", writes)
+	}
+}
+
+func TestIncompatibleTargetNeverResetsTraffic(t *testing.T) {
+	fake := newFakePanel(vlessInbound(1, map[string]any{"id": protocol.NewUUID(), "email": "ak-x", "enable": true},
+		map[string]any{"id": protocol.NewUUID(), "email": "admin", "enable": true}))
+	panel := startPanel(t, fake)
+	c := Client{Email: "ak-x", Credential: "not-a-uuid-but-long-enough", Enable: true, ResetSeq: 1}
+	codes, _ := panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {c}}))
+	if codes["1"] != "xui_inbound_changed" || len(fake.takeWrites()) != 0 || panel.state.reset("ak-x") != 0 {
+		t.Fatalf("traffic reset for a target the inbound cannot take: %v", codes)
+	}
+}
+
+func TestResetRecordIsAdoptedOnlyOnceSaved(t *testing.T) {
+	blocker := t.TempDir() + "/file"
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	local := &localState{file: state.NewJSONFile(blocker + "/state.json"), stored: stateFile{Schema: 1, Resets: map[string]int64{}}}
+	if local.setReset("ak-x", 3) == nil || local.reset("ak-x") != 0 {
+		t.Fatal("an unsaved reset was remembered, so it would be executed again after a restart")
+	}
+}
+
+func TestTargetClientsNeedEveryField(t *testing.T) {
+	for _, missing := range []string{"total_bytes", "enable", "reset_seq", "flow"} {
+		client := map[string]any{"email": "ak-a", "credential": protocol.NewUUID(), "flow": "", "enable": true, "total_bytes": 100, "reset_seq": 0}
+		delete(client, missing)
+		raw, _ := json.Marshal(map[string]any{"clients": []any{client}})
+		if new(Panel).Validate("1", raw) == nil {
+			t.Errorf("target without %s accepted", missing)
+		}
 	}
 }

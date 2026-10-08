@@ -123,7 +123,7 @@ func (s *Snapshots) read(ctx context.Context) ([]byte, error) {
 		for _, stat := range ib.ClientStats {
 			if strings.HasPrefix(stat.Email, ownedPrefix) {
 				result.Traffic = append(result.Traffic, clientTraffic{
-					Email: stat.Email, Up: stat.Up, Down: stat.Down, ResetSeq: s.panel.resets.get(stat.Email),
+					Email: stat.Email, Up: stat.Up, Down: stat.Down, ResetSeq: s.panel.state.reset(stat.Email),
 				})
 			}
 		}
@@ -136,38 +136,62 @@ func (s *Snapshots) read(ctx context.Context) ([]byte, error) {
 }
 
 // publicConfig keeps what a client needs to connect to an inbound Cloud can
-// deliver, and only network and security of any other. Clients (other users'
-// credentials), server private keys, the VLESS decryption key, Reality seeds
-// and inline certificates never leave the node.
+// deliver, and only network and security of any other. The protocol settings
+// and the TLS and Reality blocks, which hold the secrets, are copied from an
+// allowlist, so other users' credentials, private keys, ECH server keys,
+// seeds and certificates never leave the node, including fields 3x-ui adds
+// later. The rest of the transport is kept so Cloud can tell what it is.
 func publicConfig(ib inbound) (json.RawMessage, json.RawMessage) {
 	var settings, stream map[string]any
 	_ = json.Unmarshal([]byte(ib.Settings), &settings)
 	_ = json.Unmarshal([]byte(ib.StreamSettings), &stream)
+	public := map[string]any{}
+	transport := map[string]any{"network": stream["network"], "security": stream["security"]}
 	switch ib.Protocol {
-	case "vless", "shadowsocks", "hysteria", "hysteria2":
-		delete(settings, "clients")
-		delete(settings, "decryption")
-		delete(settings, "fallbacks")
-		if reality, ok := stream["realitySettings"].(map[string]any); ok {
-			delete(reality, "privateKey")
-			delete(reality, "mldsa65Seed")
-		}
-		if tls, ok := stream["tlsSettings"].(map[string]any); ok {
-			delete(tls, "certificates")
-		}
+	case "vless":
+		public = pick(settings, "encryption")
+	case "shadowsocks":
+		public = pick(settings, "method", "password", "network")
+	case "hysteria", "hysteria2":
+		public = pick(settings, "version")
 	default:
-		settings = map[string]any{}
-		stream = map[string]any{"network": stream["network"], "security": stream["security"]}
+		return encode(public), encode(transport)
 	}
-	if settings == nil {
-		settings = map[string]any{}
+	for key, value := range stream {
+		if key != "tlsSettings" && key != "realitySettings" {
+			transport[key] = value
+		}
 	}
-	if stream == nil {
-		stream = map[string]any{}
+	if tls, ok := stream["tlsSettings"].(map[string]any); ok {
+		block := pick(tls, "serverName", "alpn")
+		if hints, ok := tls["settings"].(map[string]any); ok {
+			block["settings"] = pick(hints, "fingerprint", "allowInsecure", "echConfigList")
+		}
+		transport["tlsSettings"] = block
 	}
-	s, _ := json.Marshal(settings)
-	t, _ := json.Marshal(stream)
-	return s, t
+	if reality, ok := stream["realitySettings"].(map[string]any); ok {
+		block := pick(reality, "serverNames", "shortIds")
+		if hints, ok := reality["settings"].(map[string]any); ok {
+			block["settings"] = pick(hints, "publicKey", "fingerprint", "serverName", "spiderX", "mldsa65Verify")
+		}
+		transport["realitySettings"] = block
+	}
+	return encode(public), encode(transport)
+}
+
+func pick(source map[string]any, keys ...string) map[string]any {
+	picked := map[string]any{}
+	for _, key := range keys {
+		if value, found := source[key]; found {
+			picked[key] = value
+		}
+	}
+	return picked
+}
+
+func encode(value map[string]any) json.RawMessage {
+	data, _ := json.Marshal(value)
+	return data
 }
 
 type errorCode string

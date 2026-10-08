@@ -37,9 +37,12 @@ type Desired interface {
 	// Validate rejects a malformed target before it replaces the previous one.
 	Validate(key string, state json.RawMessage) error
 	// Apply converges the node to every current target of the module, removing
-	// whatever the module owns that no target names. It returns a stable error
-	// code for each key that is not in its target; a missing key succeeded.
-	Apply(ctx context.Context, targets map[string]json.RawMessage) map[string]string
+	// whatever the module owns that no key names. A nil target names a key
+	// whose target is unusable: the module leaves what that key covers as it
+	// is. Apply returns a stable error code for each key not in its target (a
+	// missing key succeeded) and an error when work outside any key, such as a
+	// removal, failed and must be retried.
+	Apply(ctx context.Context, targets map[string]json.RawMessage) (map[string]string, error)
 }
 
 // Publish sends one report on the current control session.

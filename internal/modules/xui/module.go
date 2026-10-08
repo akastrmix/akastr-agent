@@ -69,24 +69,33 @@ type Client struct {
 	ResetSeq int64 `json:"reset_seq"`
 }
 
+type targetDocument struct {
+	Clients []json.RawMessage `json:"clients"`
+}
+
 func decodeTarget(key string, raw json.RawMessage) (int, Target, error) {
 	id, err := strconv.Atoi(key)
 	if err != nil || id < 1 || strconv.Itoa(id) != key {
 		return 0, Target{}, errors.New("xui target key must be a panel inbound id")
 	}
-	target, err := protocol.DecodeStrict[Target](raw, "xui target", "clients")
-	if err != nil || target.Clients == nil {
+	outer, err := protocol.DecodeStrict[targetDocument](raw, "xui target", "clients")
+	if err != nil || outer.Clients == nil {
 		return 0, Target{}, errors.New("xui target is invalid")
 	}
+	target := Target{Clients: make([]Client, 0, len(outer.Clients))}
 	emails, credentials := map[string]bool{}, map[string]bool{}
-	for _, c := range target.Clients {
-		if !ownedEmail.MatchString(c.Email) || emails[c.Email] || credentials[c.Credential] ||
+	for _, item := range outer.Clients {
+		// Every field is required: a missing limit must not read as unlimited.
+		c, err := protocol.DecodeStrict[Client](item, "xui target client",
+			"email", "credential", "flow", "enable", "total_bytes", "reset_seq")
+		if err != nil || !ownedEmail.MatchString(c.Email) || emails[c.Email] || credentials[c.Credential] ||
 			len(c.Credential) < 16 || len(c.Credential) > 256 || strings.ContainsAny(c.Credential, "\x00\r\n\"") ||
 			(c.Flow != "" && c.Flow != visionFlow) ||
 			c.TotalBytes < 0 || c.TotalBytes > maxSafeInt || c.ResetSeq < 0 || c.ResetSeq > maxSafeInt {
 			return 0, Target{}, errors.New("xui target client is invalid")
 		}
 		emails[c.Email], credentials[c.Credential] = true, true
+		target.Clients = append(target.Clients, c)
 	}
 	return id, target, nil
 }
