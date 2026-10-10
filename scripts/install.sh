@@ -38,11 +38,18 @@ install_agent() {
   trap 'rm -rf -- "$temporary"' EXIT
   trap 'exit 1' HUP INT TERM
   binary="$temporary/akastr-agent"
-  curl --fail --show-error --silent --location \
-    --proto '=https' --proto-redir '=https' --retry 3 \
-    --connect-timeout 30 --max-time 300 \
-    --output "$binary" "$RELEASE_BASE_URL/$AGENT_RELEASE_VERSION/akastr-agent-linux-amd64" \
-    || fail 'Agent binary download failed'
+  # A slow link may take as long as it needs; only a minute without data ends
+  # an attempt, and each attempt continues from the bytes already received
+  # (curl's own --retry starts over instead).
+  attempt=1
+  until curl --fail --show-error --silent --location \
+    --proto '=https' --proto-redir '=https' \
+    --connect-timeout 30 --speed-limit 1 --speed-time 60 --continue-at - \
+    --output "$binary" "$RELEASE_BASE_URL/$AGENT_RELEASE_VERSION/akastr-agent-linux-amd64"; do
+    [ "$attempt" -lt 10 ] || fail 'Agent binary download failed'
+    attempt=$((attempt + 1))
+    sleep 5
+  done
   [ "$(sha256sum "$binary" | awk '{print $1}')" = "$BINARY_SHA256" ] \
     || fail 'Agent binary integrity check failed'
   chmod 0755 "$binary"

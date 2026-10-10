@@ -99,6 +99,7 @@ Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/m
 
 **自动更新。** 主进程每 60 秒、以及业务连接每次结束或就绪时，向 Cloud 发一次签名的更新检查（协议见 [PROTOCOL.md](PROTOCOL.md#更新检查)）。发现目标后：
 
+- 下载目标程序：不限总时长，只有 1 分钟收不到数据才放弃本次；已收到的部分按目标摘要保存在状态目录，下次检查时续传，核对摘要后才使用；
 - 把目标程序与配置写入非活动 slot，由候选程序自己执行 `version` 与 `prepare` 验证；
 - 取得进程级更新 lease 并确认本地没有进行中的 operation 或 ChangeIP 核对，否则稍后重试；
 - 在 `update-attempt.json` 记下一次尝试后，以候选程序原地替换进程；

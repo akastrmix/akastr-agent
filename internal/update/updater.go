@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -79,9 +78,10 @@ func (u *Updater) Loop(ctx context.Context, nudges <-chan struct{}) error {
 }
 
 func (u *Updater) check(ctx context.Context) time.Duration {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	target, err := u.Client.Check(ctx, u.ControlEndpoint, u.Identity, u.Version, u.Revision, u.lastError)
+	// Only the check is bounded as a whole; a download is bounded by stalls.
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	target, err := u.Client.Check(checkCtx, u.ControlEndpoint, u.Identity, u.Version, u.Revision, u.lastError)
+	cancel()
 	if err != nil {
 		u.logger().Warn("update check failed", "code", "update_check_failed")
 		return retryInterval
@@ -200,29 +200,10 @@ func (u *Updater) binary(ctx context.Context, target Target, slotBinary string) 
 	}
 	client := u.Download
 	if client == nil {
-		client = &http.Client{Timeout: 3 * time.Minute}
+		client = downloadClient()
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.BinaryURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("User-Agent", "Akastr-Agent/"+u.Version)
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", response.StatusCode)
-	}
-	var contents bytes.Buffer
-	if _, err := io.Copy(&contents, io.LimitReader(response.Body, maxBinaryBytes+1)); err != nil {
-		return nil, err
-	}
-	if contents.Len() > maxBinaryBytes || digest(contents.Bytes()) != target.BinarySHA256 {
-		return nil, errors.New("downloaded binary does not match the approved digest")
-	}
-	return contents.Bytes(), nil
+	return download(ctx, client, target.BinaryURL, "Akastr-Agent/"+u.Version,
+		partialPath(u.Layout.StateDir, target.BinarySHA256), target.BinarySHA256)
 }
 
 func (u *Updater) logger() *slog.Logger {
