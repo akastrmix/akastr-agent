@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
@@ -24,6 +26,7 @@ const (
 	ownedPrefix  = "ak-"
 	visionFlow   = "xtls-rprx-vision"
 	maxSafeInt   = 1<<53 - 1
+	maxComment   = 200
 )
 
 var ownedEmail = regexp.MustCompile(`^ak-[a-z0-9]{1,61}$`)
@@ -67,6 +70,8 @@ type Client struct {
 	TotalBytes int64  `json:"total_bytes"`
 	// ResetSeq rises each time Cloud wants the client's traffic cleared once.
 	ResetSeq int64 `json:"reset_seq"`
+	// Comment names the client's owner in the panel; it never reaches Xray.
+	Comment string `json:"comment"`
 }
 
 type targetDocument struct {
@@ -87,17 +92,24 @@ func decodeTarget(key string, raw json.RawMessage) (int, Target, error) {
 	for _, item := range outer.Clients {
 		// Every field is required: a missing limit must not read as unlimited.
 		c, err := protocol.DecodeStrict[Client](item, "xui target client",
-			"email", "credential", "flow", "enable", "total_bytes", "reset_seq")
+			"email", "credential", "flow", "enable", "total_bytes", "reset_seq", "comment")
 		if err != nil || !ownedEmail.MatchString(c.Email) || emails[c.Email] || credentials[c.Credential] ||
 			len(c.Credential) < 16 || len(c.Credential) > 256 || strings.ContainsAny(c.Credential, "\x00\r\n\"") ||
 			(c.Flow != "" && c.Flow != visionFlow) ||
-			c.TotalBytes < 0 || c.TotalBytes > maxSafeInt || c.ResetSeq < 0 || c.ResetSeq > maxSafeInt {
+			c.TotalBytes < 0 || c.TotalBytes > maxSafeInt || c.ResetSeq < 0 || c.ResetSeq > maxSafeInt ||
+			!validComment(c.Comment) {
 			return 0, Target{}, errors.New("xui target client is invalid")
 		}
 		emails[c.Email], credentials[c.Credential] = true, true
 		target.Clients = append(target.Clients, c)
 	}
 	return id, target, nil
+}
+
+// validComment accepts one line of at most maxComment characters.
+func validComment(s string) bool {
+	return utf8.ValidString(s) && utf8.RuneCountInString(s) <= maxComment &&
+		strings.IndexFunc(s, unicode.IsControl) < 0
 }
 
 // credentialField names the client field that holds the secret, which the

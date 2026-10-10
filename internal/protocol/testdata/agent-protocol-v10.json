@@ -1,12 +1,12 @@
 {
   "schema": "akastr-agent-protocol-fixtures.v1",
-  "protocol": "2026-10-07.v9",
+  "protocol": "2026-10-10.v10",
   "golden": [
     {
       "name": "cloud-auth-challenge",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174100",
         "type": "auth.challenge",
         "sent_at": "2026-08-18T00:00:00.000Z",
@@ -23,7 +23,7 @@
       "name": "cloud-hello-accepted",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174150",
         "type": "hello.accepted",
         "sent_at": "2026-08-18T00:00:00.500Z",
@@ -36,7 +36,7 @@
       "name": "cloud-changeip-offer",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174103",
         "type": "operation.offer",
         "sent_at": "2026-08-18T00:00:01.000Z",
@@ -56,7 +56,7 @@
       "name": "cloud-ipquality-offer",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174105",
         "type": "operation.offer",
         "sent_at": "2026-08-18T00:00:02.000Z",
@@ -79,7 +79,7 @@
       "name": "cloud-operation-accepted-ack",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174107",
         "type": "operation.accepted_ack",
         "sent_at": "2026-08-18T00:00:03.000Z",
@@ -93,7 +93,7 @@
       "name": "cloud-report-ack",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174130",
         "type": "report.ack",
         "sent_at": "2026-08-18T00:00:03.000Z",
@@ -106,7 +106,7 @@
       "name": "agent-auth-response",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174108",
         "type": "auth.response",
         "sent_at": "2026-08-18T00:00:04.000Z",
@@ -121,7 +121,7 @@
       "name": "agent-hello",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174109",
         "type": "agent.hello",
         "sent_at": "2026-08-18T00:00:05.000Z",
@@ -135,7 +135,7 @@
       "name": "agent-operation-result",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174110",
         "type": "operation.result",
         "sent_at": "2026-08-18T00:00:06.000Z",
@@ -154,7 +154,7 @@
       "name": "agent-ip-address",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174111",
         "type": "report",
         "sent_at": "2026-08-18T00:00:07.000Z",
@@ -174,7 +174,7 @@
       "name": "agent-ip-address-changeip-outcome",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174131",
         "type": "report",
         "sent_at": "2026-08-18T00:00:07.500Z",
@@ -194,7 +194,7 @@
       "name": "agent-ipv6-address",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174126",
         "type": "report",
         "sent_at": "2026-08-18T00:00:08.000Z",
@@ -214,7 +214,7 @@
       "name": "agent-changeip-unchanged",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174133",
         "type": "report",
         "sent_at": "2026-08-18T00:00:09.000Z",
@@ -233,7 +233,7 @@
       "name": "cloud-xui-state-put",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174201",
         "type": "state.put",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -249,7 +249,8 @@
                 "flow": "xtls-rprx-vision",
                 "enable": true,
                 "total_bytes": 214748364800,
-                "reset_seq": 3
+                "reset_seq": 3,
+                "comment": "alice · 标准月付 #12"
               }
             ]
           }
@@ -260,7 +261,7 @@
       "name": "cloud-xui-state-keys",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174202",
         "type": "state.keys",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -277,7 +278,7 @@
       "name": "agent-state-status",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174203",
         "type": "state.status",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -293,7 +294,7 @@
       "name": "agent-state-status-failed",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174204",
         "type": "state.status",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -309,7 +310,7 @@
       "name": "agent-xui-snapshot",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174205",
         "type": "report",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -378,7 +379,7 @@
       "name": "cloud-hello-accepted-extra-field",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174129",
         "type": "hello.accepted",
         "sent_at": "2026-08-18T00:00:01.800Z",
@@ -392,7 +393,7 @@
       "name": "cloud-changeip-offer-missing-expected-ipv4",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174113",
         "type": "operation.offer",
         "sent_at": "2026-08-18T00:00:08.000Z",
@@ -410,7 +411,7 @@
       "name": "cloud-ipquality-offer-extra-field",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174115",
         "type": "operation.offer",
         "sent_at": "2026-08-18T00:00:09.000Z",
@@ -434,7 +435,7 @@
       "name": "cloud-accepted-ack-missing-accepted",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174118",
         "type": "operation.accepted_ack",
         "sent_at": "2026-08-18T00:00:10.000Z",
@@ -447,7 +448,7 @@
       "name": "cloud-report-ack-extra-field",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174135",
         "type": "report.ack",
         "sent_at": "2026-08-18T00:00:10.500Z",
@@ -461,7 +462,7 @@
       "name": "cloud-auth-challenge-padded-nonce",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174119",
         "type": "auth.challenge",
         "sent_at": "2026-08-18T00:00:11.000Z",
@@ -478,7 +479,7 @@
       "name": "agent-auth-response-padded-signature",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174121",
         "type": "auth.response",
         "sent_at": "2026-08-18T00:00:12.000Z",
@@ -493,7 +494,7 @@
       "name": "agent-ip-address-missing-observed-at",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174122",
         "type": "report",
         "sent_at": "2026-08-18T00:00:13.000Z",
@@ -512,7 +513,7 @@
       "name": "agent-result-extra-field",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174124",
         "type": "operation.result",
         "sent_at": "2026-08-18T00:00:14.000Z",
@@ -542,7 +543,7 @@
       "name": "agent-ipv6-address-attributed-to-changeip",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174136",
         "type": "report",
         "sent_at": "2026-08-18T00:00:16.000Z",
@@ -562,7 +563,7 @@
       "name": "agent-report-unknown-kind",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174138",
         "type": "report",
         "sent_at": "2026-08-18T00:00:17.000Z",
@@ -577,7 +578,7 @@
       "name": "cloud-state-put-version-zero",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174207",
         "type": "state.put",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -593,7 +594,8 @@
                 "flow": "xtls-rprx-vision",
                 "enable": true,
                 "total_bytes": 214748364800,
-                "reset_seq": 3
+                "reset_seq": 3,
+                "comment": "alice · 标准月付 #12"
               }
             ]
           }
@@ -604,7 +606,7 @@
       "name": "cloud-state-put-state-not-object",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174208",
         "type": "state.put",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -620,7 +622,7 @@
       "name": "cloud-state-put-bad-key",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174209",
         "type": "state.put",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -636,7 +638,8 @@
                 "flow": "xtls-rprx-vision",
                 "enable": true,
                 "total_bytes": 214748364800,
-                "reset_seq": 3
+                "reset_seq": 3,
+                "comment": "alice · 标准月付 #12"
               }
             ]
           }
@@ -647,7 +650,7 @@
       "name": "cloud-state-keys-duplicate",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174210",
         "type": "state.keys",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -664,7 +667,7 @@
       "name": "cloud-xui-target-unowned-email",
       "direction": "cloud_to_agent",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174211",
         "type": "state.put",
         "sent_at": "2026-10-07T00:00:00.000Z",
@@ -680,7 +683,8 @@
                 "flow": "xtls-rprx-vision",
                 "enable": true,
                 "total_bytes": 214748364800,
-                "reset_seq": 3
+                "reset_seq": 3,
+                "comment": "alice · 标准月付 #12"
               }
             ]
           }
@@ -691,7 +695,7 @@
       "name": "agent-state-status-extra-field",
       "direction": "agent_to_cloud",
       "message": {
-        "protocol": "2026-10-07.v9",
+        "protocol": "2026-10-10.v10",
         "message_id": "123e4567-e89b-42d3-a456-426614174212",
         "type": "state.status",
         "sent_at": "2026-10-07T00:00:00.000Z",

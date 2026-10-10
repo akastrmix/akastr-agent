@@ -37,11 +37,13 @@ func (p *Panel) Validate(key string, raw json.RawMessage) error {
 	return err
 }
 
-// action is one panel write. identity addresses an existing client.
+// action is one panel write. identity addresses an existing client. A write
+// that changes only the comment leaves Xray's view of the client as it was.
 type action struct {
-	kind     string // add, update or delete
-	identity string
-	client   map[string]any
+	kind        string // add, update or delete
+	identity    string
+	client      map[string]any
+	commentOnly bool
 }
 
 func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[string]string, error) {
@@ -172,7 +174,7 @@ func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named b
 			return false, err
 		}
 	}
-	if len(actions) > 0 && ss2022(ib.Protocol, method(ib)) {
+	if reachesXray(actions) && ss2022(ib.Protocol, method(ib)) {
 		if err := p.state.setRestartPending(true); err != nil {
 			return false, errors.New("xui_state_failed")
 		}
@@ -191,6 +193,15 @@ func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named b
 		}
 	}
 	return len(actions) > 0, nil
+}
+
+func reachesXray(actions []action) bool {
+	for _, a := range actions {
+		if !a.commentOnly {
+			return true
+		}
+	}
+	return false
 }
 
 func hasClients(ib inbound) bool {
@@ -327,7 +338,7 @@ func plan(ib inbound, target Target) ([]action, error) {
 		}
 		current, exists := owned[t.Email]
 		if !exists {
-			client := map[string]any{"email": t.Email, "subId": t.Email, "limitIp": float64(0), "tgId": float64(0), "reset": float64(0)}
+			client := map[string]any{"email": t.Email, "subId": t.Email, "limitIp": float64(0), "tgId": float64(0), "reset": float64(0), "comment": t.Comment}
 			for key, value := range fields {
 				client[key] = value
 			}
@@ -342,8 +353,13 @@ func plan(ib inbound, target Target) ([]action, error) {
 				changed = true
 			}
 		}
-		if changed {
-			actions = append(actions, action{kind: "update", identity: identity(current), client: updated})
+		// The panel stores no comment for a client it never had one for.
+		comment, _ := current["comment"].(string)
+		if comment != t.Comment {
+			updated["comment"] = t.Comment
+		}
+		if changed || comment != t.Comment {
+			actions = append(actions, action{kind: "update", identity: identity(current), client: updated, commentOnly: !changed})
 		}
 	}
 	return actions, nil
