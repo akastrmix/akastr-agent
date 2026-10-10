@@ -200,7 +200,10 @@ func (u *Updater) binary(ctx context.Context, target Target, slotBinary string) 
 	}
 	client := u.Download
 	if client == nil {
+		// Each attempt's pool is its own; an interrupted redirect chain would
+		// otherwise leave the earlier hop's connection idle until the server drops it.
 		client = downloadClient()
+		defer client.CloseIdleConnections()
 	}
 	return download(ctx, client, target.BinaryURL, "Akastr-Agent/"+u.Version,
 		partialPath(u.Layout.StateDir, target.BinarySHA256), target.BinarySHA256)

@@ -25,6 +25,7 @@ func downloadClient() *http.Client {
 		DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
 		TLSHandshakeTimeout:   30 * time.Second,
 		ResponseHeaderTimeout: time.Minute,
+		IdleConnTimeout:       time.Minute,
 	}}
 }
 
