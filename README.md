@@ -8,17 +8,19 @@ Akastr Agent 是 AkastrCloud 服务节点上的轻量被控程序。它以单个
 
 Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久节点生成的一行安装命令：
 
-1. 管理员在后台创建目标节点或 IPQuality Runner，并填写全部参数；
+1. 管理员在后台添加节点，按需打开模块并填写参数；
 2. 操作者完整复制后台的一键命令到节点执行；
 3. 按[安装教程](docs/INSTALLATION.md#5-安装后验收)检查服务与业务连接。
 
 安装全程非交互，不需要 Git、Go 或手写配置。命令含长期节点凭据，不要公开；同节点重装和修复可重跑，跨节点覆盖及降级会被拒绝。命令的信任边界、凭据轮换与修复方式见[安装教程](docs/INSTALLATION.md#3-添加节点并执行一键命令)。
 
-目标节点参数包括：
+每台节点按需组合下列模块；ChangeIP 需要同时开启 IP 观察，全局只能有一台 active Runner：
 
 - 公网 IPv4 与可选 IPv6 定时观察；
 - HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
-- 已有 SOCKS5 代理的端口与登录（只供主控派发 IPQuality，Agent 不运行代理）；代理地址始终使用 Agent 观测到的公网 IPv4。
+- 已有 SOCKS5 代理的端口与登录（只供主控派发 IPQuality，Agent 不运行代理）；代理地址始终使用 Agent 观测到的公网 IPv4；
+- 3x-ui：按 Cloud 下发的目标管理本机面板中的受管客户端，并上报入站与流量；
+- IPQuality Runner：见下。
 
 Runner 使用主控随任务下发的目标 SOCKS5 登录，执行固定版本、经过摘要校验的官方 IPQuality 脚本，严格单并发，本身不保存代理密码。配置范围与固定版本入口见[安装教程](docs/INSTALLATION.md#ipquality-runner)。
 

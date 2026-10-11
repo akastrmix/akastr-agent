@@ -4,7 +4,7 @@
 
 每个安装实例只存在一个 `akastr-agent.service` 和一个 Go 主进程。主进程主动连接 AkastrCloud 的 WSS 控制端点，并在内部检查主控批准的更新（见第 8 节）；节点没有额外 updater service、timer 或常驻辅助进程，也不开放通用管理 HTTP 服务。实例只公布配置中明确启用的能力。
 
-每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点；目标节点与 Runner 只是 Cloud 选择的两种模块组合：绑定服务器的目标节点必须观察公网 IP，Runner 只执行 IPQuality，避免资源占用和目标网络变化互相影响。
+每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、3x-ui 客户端管理、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点，模块可以任意组合，只受技术依赖约束（ChangeIP 需要公网 IP 观察）；全局只能有一台 active Runner，由 Cloud 保证。
 
 项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。节点由后台先创建，得到节点 UUID 与长期机器 token；provider secret 只在以机器 token 加密的持久 bootstrap 里，不以明文进入 PostgreSQL。节点上的配置就是 Cloud 下发的 bootstrap 明文，Agent 不再转写成第二种格式。配置有单调的 desired/applied revision，两者不等时 Cloud 不派发操作；配置更新由主进程自动取回收敛，不需要重跑安装命令。
 
