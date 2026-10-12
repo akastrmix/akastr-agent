@@ -7,7 +7,8 @@ import (
 	"strings"
 )
 
-func Ready() error {
+// Ready tells systemd the service started; status is what `systemctl status` shows.
+func Ready(status string) error {
 	socket := os.Getenv("NOTIFY_SOCKET")
 	if socket == "" {
 		return nil
@@ -20,11 +21,12 @@ func Ready() error {
 		return err
 	}
 	defer connection.Close()
-	written, err := connection.Write([]byte("READY=1\nSTATUS=Control connection ready"))
+	message := "READY=1\nSTATUS=" + status
+	written, err := connection.Write([]byte(message))
 	if err != nil {
 		return err
 	}
-	if written != len("READY=1\nSTATUS=Control connection ready") {
+	if written != len(message) {
 		return errors.New("short systemd notification write")
 	}
 	return nil

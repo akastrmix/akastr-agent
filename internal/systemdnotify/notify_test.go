@@ -16,7 +16,7 @@ func TestReadySendsSystemdNotification(t *testing.T) {
 	}
 	defer listener.Close()
 	t.Setenv("NOTIFY_SOCKET", socketPath)
-	if err := Ready(); err != nil {
+	if err := Ready("Running"); err != nil {
 		t.Fatal(err)
 	}
 	if err := listener.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -27,14 +27,14 @@ func TestReadySendsSystemdNotification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(buffer[:read]) != "READY=1\nSTATUS=Control connection ready" {
+	if string(buffer[:read]) != "READY=1\nSTATUS=Running" {
 		t.Fatalf("unexpected notification %q", buffer[:read])
 	}
 }
 
 func TestReadyIsNoopOutsideSystemd(t *testing.T) {
 	_ = os.Unsetenv("NOTIFY_SOCKET")
-	if err := Ready(); err != nil {
+	if err := Ready("Running"); err != nil {
 		t.Fatal(err)
 	}
 }

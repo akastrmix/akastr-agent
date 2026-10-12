@@ -82,7 +82,7 @@ func Run(ctx context.Context, options Options) error {
 		// Keep updating so a release or configuration change can repair the node;
 		// with no module running there is no work to protect.
 		logger.Error("local runtime unavailable; updates remain active", "code", "runtime_initialization_failed", "error", err.Error())
-		if err := systemdnotify.Ready(); err != nil {
+		if err := systemdnotify.Ready("Modules unavailable; waiting for an update"); err != nil {
 			return err
 		}
 		return updater.Loop(ctx, nudges)
@@ -125,7 +125,7 @@ func Run(ctx context.Context, options Options) error {
 	if err != nil {
 		return err
 	}
-	if err := systemdnotify.Ready(); err != nil {
+	if err := systemdnotify.Ready("Running"); err != nil {
 		return err
 	}
 	deadline := time.Duration(0)
