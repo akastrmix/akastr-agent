@@ -82,7 +82,7 @@ offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重�
 
 payload 只包含 `expected_ipv4`。Agent 在调用 provider 前观察当前公网 IPv4：不匹配时返回 `stale_expected_ipv4`，不执行 provider。Agent 先持久化 command 与该旧 IP 的核对状态，再调用本机固定 provider；stdout/stderr 不进入协议或日志。
 
-HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或请求建立前失败是明确失败。固定程序 provider 以退出码 `0` 为明确成功、非零为明确失败。明确成功返回 `change_triggered`；请求可能已送达但响应、进程或 WSS 因断网中断时返回 `change_trigger_unknown`。两种成功终态都只包含触发前 IPv4，不宣称地址已经变化，也不会重发 provider。其他对外稳定 code 包括 `http_status_not_200`、`request_failed`、`stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero` 和 `reconciliation_state_failed`。
+HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或请求建立前失败是明确失败。固定程序 provider 以退出码 `0` 为明确成功、程序自己返回的非零退出码为明确失败；被信号终止视为结果未知。明确成功返回 `change_triggered`；请求可能已送达但响应、进程或 WSS 因断网中断时返回 `change_trigger_unknown`。两种成功终态都只包含触发前 IPv4，不宣称地址已经变化，也不会重发 provider。其他对外稳定 code 包括 `http_status_not_200`、`request_failed`、`stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero` 和 `reconciliation_state_failed`。
 
 ### `ipquality.execute`
 
@@ -135,7 +135,7 @@ key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `cl
 - 只管理 email 以 `ak-` 开头的客户端，绝不改动其他客户端。面板按凭据（Shadowsocks 按 email）定位客户端，并作用于所有匹配项，所以受管客户端或目标的凭据与非受管客户端相同时，该入站返回 `xui_client_conflict`，不做任何写入；也不创建或修改入站。目标中缺少的受管客户端新建，字段不一致的合并更新（保留未托管字段），多余的删除；任何 key 都未指名的入站中的受管客户端也删除。面板拒绝删除入站的最后一个客户端，此时改为停用，视为一致。`expiryTime` 固定为 0。
 - 已有上限且已用流量达到上限的客户端，即使目标 `enable=true` 也保持停用：面板会在流量耗尽时同时停用流量记录与客户端配置，写回启用只会被面板再次停用。提高上限或重置后自动恢复启用。
 - 目标先与入站核对（协议、method、凭据与冲突），通过后才执行重置。`reset_seq` 大于本机已执行的序号时，先调用面板的重置流量，再记录序号（`/var/lib/akastr-agent/xui/state.json`）；写盘失败时记录留在内存，后续每轮先补写，不再重复重置；面板的重置只恢复流量记录的启用，客户端配置的启用随后按目标写入。重置与记录之间进程中断会再重置一次，最多丢失这一瞬间的计数。不存在的客户端只记录序号。
-- 写入任何 Shadowsocks 2022 入站（只改 `comment` 的除外）前先在 `state.json` 记下“待重启”，本轮最后经面板原生 `restartXrayService` 重启一次 Xray，成功后清除：该组合的动态写入可能报告成功却不可用。重启失败或进程在重启前停止时，下一轮即使面板已一致也会补做重启。重启会使同机所有连接短暂中断。
+- 写入任何 Shadowsocks 2022 入站（只改 `comment` 也算：面板仍会先从 Xray 删除该用户再加回，而加回会失败）前先在 `state.json` 记下“待重启”，本轮最后经面板原生 `restartXrayService` 重启一次 Xray，成功后清除：该组合的动态写入可能报告成功却不可用。重启失败或进程在重启前停止时，下一轮即使面板已一致也会补做重启。重启会使同机所有连接短暂中断。
 - 目标为空时，面板中已不存在的入站视为一致（不报 `xui_inbound_missing`），使已删除入站的 key 也能完成退役。
 - 有写入时重新读取面板核对，不一致返回 `xui_unconfirmed`。其他错误码：面板请求类（`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`）、`xui_inbound_missing`、`xui_inbound_changed`（入站协议、method 与目标凭据不再匹配）、`xui_inbound_invalid`、`xui_client_conflict`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`。
 

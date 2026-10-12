@@ -323,8 +323,8 @@ func TestSS2022RestartsXrayOnceAfterWrites(t *testing.T) {
 	if writes := fake.takeWrites(); len(writes) != 0 {
 		t.Fatalf("no-op restarted or wrote: %v", writes)
 	}
-	// A renamed customer changes only the comment, which Xray never reads:
-	// restarting would drop every connection on the node for nothing.
+	// A renamed customer changes only the comment, yet the panel still removes
+	// the user from Xray and fails to add it back: only a restart restores it.
 	renamed := targets(t, map[string][]Client{
 		"1": {{Email: "ak-s1", Credential: key('B'), Enable: true, Comment: "bob · 标准月付 #12"}},
 		"2": {{Email: "ak-s2", Credential: key('C'), Enable: true}},
@@ -332,10 +332,14 @@ func TestSS2022RestartsXrayOnceAfterWrites(t *testing.T) {
 	if codes, _ := panel.Apply(context.Background(), renamed); len(codes) != 0 {
 		t.Fatal(codes)
 	}
+	restarts = 0
 	for _, w := range fake.takeWrites() {
 		if w == "restart" {
-			t.Fatal("a comment change restarted Xray")
+			restarts++
 		}
+	}
+	if restarts != 1 {
+		t.Fatalf("a comment change restarted Xray %d times", restarts)
 	}
 	if got := fake.client(1, "ak-s1")["comment"]; got != "bob · 标准月付 #12" {
 		t.Fatalf("comment %v", got)

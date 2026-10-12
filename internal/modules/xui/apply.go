@@ -37,13 +37,11 @@ func (p *Panel) Validate(key string, raw json.RawMessage) error {
 	return err
 }
 
-// action is one panel write. identity addresses an existing client. A write
-// that changes only the comment leaves Xray's view of the client as it was.
+// action is one panel write. identity addresses an existing client.
 type action struct {
-	kind        string // add, update or delete
-	identity    string
-	client      map[string]any
-	commentOnly bool
+	kind     string // add, update or delete
+	identity string
+	client   map[string]any
 }
 
 func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[string]string, error) {
@@ -174,7 +172,10 @@ func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named b
 			return false, err
 		}
 	}
-	if reachesXray(actions) && ss2022(ib.Protocol, method(ib)) {
+	// The panel passes every client write to Xray, a comment-only update too: it
+	// removes the user and adds it back, and Xray rejects that add for a
+	// Shadowsocks 2022 user. Only a restart brings the user back.
+	if len(actions) > 0 && ss2022(ib.Protocol, method(ib)) {
 		if err := p.state.setRestartPending(true); err != nil {
 			return false, errors.New("xui_state_failed")
 		}
@@ -193,15 +194,6 @@ func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named b
 		}
 	}
 	return len(actions) > 0, nil
-}
-
-func reachesXray(actions []action) bool {
-	for _, a := range actions {
-		if !a.commentOnly {
-			return true
-		}
-	}
-	return false
 }
 
 func hasClients(ib inbound) bool {
@@ -359,7 +351,7 @@ func plan(ib inbound, target Target) ([]action, error) {
 			updated["comment"] = t.Comment
 		}
 		if changed || comment != t.Comment {
-			actions = append(actions, action{kind: "update", identity: identity(current), client: updated, commentOnly: !changed})
+			actions = append(actions, action{kind: "update", identity: identity(current), client: updated})
 		}
 	}
 	return actions, nil
