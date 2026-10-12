@@ -67,10 +67,10 @@ func New(config Config) (*Provider, error) {
 		return nil, errors.New("IPQuality script version is required")
 	}
 	provider := &Provider{config: config, now: time.Now}
-	if err := provider.verifyScript(); err != nil {
+	if err := verifyDependencies(); err != nil {
 		return nil, err
 	}
-	if err := verifyDependencies(); err != nil {
+	if _, err := provider.pinnedScript(); err != nil {
 		return nil, err
 	}
 	return provider, nil
@@ -92,9 +92,15 @@ func (p *Provider) Run(ctx context.Context, request Request) Result {
 	if err != nil || !netpolicy.IsPublicIPv4(expected) || request.ProxyPort < 1 || request.ProxyPort > 65535 {
 		return Result{Code: "proxy_endpoint_invalid", CheckedAt: checkedAt}
 	}
-	if err := p.verifyScript(); err != nil {
+	contents, err := p.pinnedScript()
+	if err != nil {
 		return Result{Code: "script_checksum_mismatch", CheckedAt: checkedAt}
 	}
+	scriptPath, err := writeTemporary(contents)
+	if err != nil {
+		return Result{Code: "script_start_failed", CheckedAt: checkedAt}
+	}
+	defer os.Remove(scriptPath)
 	proxyAddress := net.JoinHostPort(expected.String(), fmt.Sprint(request.ProxyPort))
 	before, err := observeProxyIPv4(ctx, proxyAddress, profile)
 	if err != nil {
@@ -110,7 +116,7 @@ func (p *Provider) Run(ctx context.Context, request Request) Result {
 		return Result{Code: "proxy_relay_failed", IPv4Before: before, CheckedAt: checkedAt}
 	}
 	defer relay.Close()
-	process := exec.Command("/bin/bash", p.config.ScriptPath, "-4", "-n", "-x", relay.URL())
+	process := exec.Command("/bin/bash", scriptPath, "-4", "-n", "-x", relay.URL())
 	process.Stdin = nil
 	output := &limitedBuffer{limit: maxOutputBytes}
 	process.Stdout = output
@@ -161,20 +167,44 @@ func interpretScriptOutput(output *limitedBuffer, processError error) (string, s
 	return "", "report_url_missing"
 }
 
-func (p *Provider) verifyScript() error {
+// floatingDNSBL is where the pinned script reads its blacklist servers: the
+// moving main branch, whose lines it substitutes into shell code. The copy that
+// runs reads them from the pinned commit instead, so only reviewed content runs.
+const floatingDNSBL = `"${rawgithub}main/ref/dnsbl.list"`
+
+// pinnedScript returns the verified script with every download it runs pinned.
+func (p *Provider) pinnedScript() ([]byte, error) {
 	contents, err := os.ReadFile(p.config.ScriptPath)
 	if err != nil {
-		return fmt.Errorf("read IPQuality script: %w", err)
+		return nil, fmt.Errorf("read IPQuality script: %w", err)
 	}
 	expected, err := hex.DecodeString(p.config.ExpectedSHA256Hex)
 	if err != nil || len(expected) != sha256.Size {
-		return errors.New("invalid configured IPQuality script checksum")
+		return nil, errors.New("invalid configured IPQuality script checksum")
 	}
 	actual := sha256.Sum256(contents)
 	if subtle.ConstantTimeCompare(actual[:], expected) != 1 {
-		return errors.New("IPQuality script checksum mismatch")
+		return nil, errors.New("IPQuality script checksum mismatch")
 	}
-	return nil
+	if bytes.Count(contents, []byte(floatingDNSBL)) != 1 {
+		return nil, errors.New("IPQuality script no longer reads its DNSBL list where expected")
+	}
+	return bytes.Replace(contents, []byte(floatingDNSBL), []byte(`"${rawgithub}`+PinnedCommit+`/ref/dnsbl.list"`), 1), nil
+}
+
+// writeTemporary writes the script that runs into the Agent's private
+// temporary directory and returns its path.
+func writeTemporary(contents []byte) (string, error) {
+	file, err := os.CreateTemp("", "ipquality-*.sh")
+	if err != nil {
+		return "", err
+	}
+	_, writeErr := file.Write(contents)
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		_ = os.Remove(file.Name())
+		return "", err
+	}
+	return file.Name(), nil
 }
 
 func observeProxyIPv4(ctx context.Context, address string, profile Profile) (string, error) {

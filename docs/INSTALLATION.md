@@ -50,7 +50,7 @@ apt-get install --yes ca-certificates curl
 
 Runner 模块没有设置项。可检测的就是开启了 SOCKS5 入口的节点；每次检测时主控把该节点的代理登录随任务发给 Runner，Runner 不保存任何代理密码，也不写入日志。
 
-Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，具体 commit 与 SHA-256 见 [`pin.go`](../internal/modules/ipqualityrunner/script/pin.go)。并发严格为 1，多个检测由 AkastrCloud 持久排队。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。
+Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，具体 commit 与 SHA-256 见 [`pin.go`](../internal/modules/ipqualityrunner/script/pin.go)；脚本运行时下载并代入 shell 的 DNSBL 列表也改从同一 commit 读取，不跟随上游 main 分支。并发严格为 1，多个检测由 AkastrCloud 持久排队。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。
 
 检测次数与缓存由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)管理；重装 Runner 不能绕过限制。
 
