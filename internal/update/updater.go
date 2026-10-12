@@ -25,6 +25,7 @@ const (
 	checkInterval  = time.Minute
 	retryInterval  = 10 * time.Second
 	busyInterval   = 15 * time.Second
+	rejectedRetry  = 30 * time.Minute
 	maxBinaryBytes = 32 * 1024 * 1024
 )
 
@@ -52,6 +53,9 @@ type Updater struct {
 	Now      func() time.Time
 
 	lastError string
+	// rejected is the target whose candidate last refused its configuration.
+	rejected   string
+	rejectedAt time.Time
 }
 
 // Loop checks at a fixed interval and whenever nudged. The daemon nudges after
@@ -125,7 +129,16 @@ func (u *Updater) apply(ctx context.Context, target Target) (time.Duration, stri
 	if u.CheckSafe != nil && u.CheckSafe() != nil {
 		return busyInterval, ""
 	}
+	// A candidate refuses its configuration again until the host changes, such
+	// as a missing package installed; rewriting the slot every minute meanwhile
+	// only wears the disk. Restarting the Agent retries at once.
+	if u.rejected == target.Name() && u.now().Sub(u.rejectedAt) < rejectedRetry {
+		return checkInterval, "update_candidate_invalid"
+	}
 	slot, code := u.prepare(ctx, target)
+	if code == "update_candidate_invalid" {
+		u.rejected, u.rejectedAt = target.Name(), u.now()
+	}
 	if code != "" {
 		return checkInterval, code
 	}
