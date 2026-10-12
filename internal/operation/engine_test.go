@@ -75,13 +75,17 @@ func TestEngineBoundsRecentHistory(t *testing.T) {
 	}
 }
 
+// A damaged file must not pass for an empty history, which would let a
+// redelivered command run again.
 func TestEngineFailsClosedOnUnknownState(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "state.json")
-	if err := os.WriteFile(statePath, []byte(`{"schema_version":2,"active":{},"recent":[]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(Options{StateFile: statePath, RecentLimit: 16}); err == nil {
-		t.Fatal("Open() accepted unknown state schema")
+	for _, contents := range []string{`{"schema_version":2,"active":{},"recent":[]}`, `{}`, `null`, `{"schema_version":1}`} {
+		statePath := filepath.Join(t.TempDir(), "state.json")
+		if err := os.WriteFile(statePath, []byte(contents), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Open(Options{StateFile: statePath, RecentLimit: 16}); err == nil {
+			t.Fatalf("Open() accepted %s", contents)
+		}
 	}
 }
 

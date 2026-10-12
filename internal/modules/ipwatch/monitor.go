@@ -96,14 +96,17 @@ func OpenMonitor(filePath string, observer AddressObserver, interval time.Durati
 		// The first observation of every process is reported.
 		ipv4: familyState{announce: true}, ipv6: familyState{announce: true},
 	}
-	found, err := monitor.file.Load(&monitor.persisted)
+	// A file is decoded into a zero state, so {} or null fails the schema check.
+	var loaded monitorState
+	found, err := monitor.file.Load(&loaded)
 	if err != nil {
 		return nil, err
 	}
 	if found {
-		if err := validateMonitorState(monitor.persisted); err != nil {
+		if err := validateMonitorState(loaded); err != nil {
 			return nil, err
 		}
+		monitor.persisted = loaded
 	}
 	return monitor, nil
 }

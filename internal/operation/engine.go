@@ -83,14 +83,18 @@ func Open(options Options) (*Engine, error) {
 		},
 	}
 
-	found, err := engine.file.Load(&engine.snapshot)
+	// Only a missing file starts empty: a file is decoded into a zero snapshot,
+	// so contents such as {} or null cannot pass for an empty history.
+	var loaded Snapshot
+	found, err := engine.file.Load(&loaded)
 	if err != nil {
 		return nil, err
 	}
 	if found {
-		if err := validateSnapshot(engine.snapshot); err != nil {
+		if err := validateSnapshot(loaded); err != nil {
 			return nil, fmt.Errorf("validate operation state: %w", err)
 		}
+		engine.snapshot = loaded
 	}
 	return engine, nil
 }
