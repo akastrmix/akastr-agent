@@ -189,17 +189,27 @@ func TestProcAddressesAndPruning(t *testing.T) {
 	}
 }
 
+// Connections from the live log and, when still open, from the copy 3x-ui
+// moved aside before the process started are known; the live log wins.
 func TestRunMapsConnectionsFromTheLog(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
-	appendTo(t, filepath.Join(dir, "access.log"), lineFor("203.0.113.9:9", "ak-z"))
+	appendTo(t, filepath.Join(dir, "access.log"), lineFor("203.0.113.9:9", "ak-z")+lineFor("192.168.1.2:54321", "ak-z"))
+	appendTo(t, filepath.Join(dir, "copy.log"), lineFor("192.168.1.3:1", "ak-old")+lineFor("192.168.1.4:1", "ak-gone")+lineFor("192.168.1.2:54321", "ak-old"))
+	appendTo(t, filepath.Join(proc, "net", "tcp"), "   0: 0100007F:1F90 0201A8C0:D431 01 00000000:00000000 00:00000000 00000000     0        0 1 1\n"+
+		"   1: 0100007F:1F90 0301A8C0:0001 01 00000000:00000000 00:00000000 00000000     0        0 2 1\n")
 	l := newLog(proc)
+	l.copy = filepath.Join(dir, "copy.log")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
 	go func() { done <- l.Run(ctx) }()
 	defer func() { cancel(); <-done }()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if got := l.Connections(map[string]bool{"ak-z": true}); len(got["ak-z"]) == 1 && l.Err() == nil {
+		got := l.Connections(map[string]bool{"ak-z": true, "ak-old": true, "ak-gone": true})
+		if len(got["ak-z"]) == 2 && l.Err() == nil {
+			if len(got["ak-old"]) != 1 || got["ak-old"][0] != netip.MustParseAddrPort("192.168.1.3:1") || len(got["ak-gone"]) != 0 {
+				t.Fatalf("seeded connections %v", got)
+			}
 			return
 		}
 		time.Sleep(50 * time.Millisecond)

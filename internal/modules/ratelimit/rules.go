@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -126,7 +127,11 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 		}
 	}
 	added := map[rule]installed{}
-	for key, email := range want.rules {
+	keys := slices.SortedFunc(maps.Keys(want.rules), func(a, b rule) int {
+		return cmp.Or(strings.Compare(a.dev, b.dev), a.addr.Compare(b.addr), strings.Compare(a.proto, b.proto))
+	})
+	for _, key := range keys {
+		email := want.rules[key]
 		i := index[email]
 		if have, found := r.filters[key]; i == 0 || (found && have.index == i) {
 			continue

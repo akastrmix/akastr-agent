@@ -29,11 +29,13 @@ const (
 	// to look for, so a quiet one is forgotten after this time.
 	keepUnseen = 2 * time.Hour
 	maxEntries = 65536
+	// persistentCopy is where 3x-ui appends the log before truncating it.
+	persistentCopy = "/var/log/x-ui/3xipl-ap.log"
 )
 
 // Log is the connection table and the loop that keeps it current.
 type Log struct {
-	proc string
+	proc, copy string
 
 	mu    sync.RWMutex
 	conns map[netip.AddrPort]entry
@@ -48,7 +50,7 @@ type entry struct {
 func New() *Log { return newLog("/proc") }
 
 func newLog(proc string) *Log {
-	return &Log{proc: proc, conns: map[netip.AddrPort]entry{}, err: errors.New("xray access log not read yet")}
+	return &Log{proc: proc, copy: persistentCopy, conns: map[netip.AddrPort]entry{}, err: errors.New("xray access log not read yet")}
 }
 
 // Err reports why the log is not being followed, or nil while it is.
@@ -79,6 +81,7 @@ func (l *Log) Run(ctx context.Context) error {
 	var f *follower
 	defer func() { f.close() }()
 	var locateAt, pruneAt time.Time
+	l.seed(time.Now())
 	for {
 		now := time.Now()
 		if !now.Before(locateAt) {
@@ -124,6 +127,25 @@ func (l *Log) Run(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// seed learns the TCP connections still open from the end of 3x-ui's copy,
+// so connections opened before the last truncation are known too. The live
+// log, read next, overrides it.
+func (l *Log) seed(now time.Time) {
+	live, err := liveTCP(l.proc)
+	if err != nil {
+		return
+	}
+	f := &follower{path: l.copy}
+	defer f.close()
+	var lines []line
+	_ = f.poll(func(raw []byte) {
+		if addr, email, ok := parse(raw); ok && live[addr] {
+			lines = append(lines, line{addr, email})
+		}
+	})
+	l.add(lines, now)
 }
 
 type line struct {
