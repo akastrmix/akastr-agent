@@ -3,8 +3,11 @@ package command
 import (
 	"context"
 	"os"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
 
 func TestProviderCompletesWithoutShell(t *testing.T) {
@@ -19,6 +22,16 @@ func TestProviderReportsNonZeroExit(t *testing.T) {
 	provider := newHelperProvider(t, "failure", time.Second)
 	result := provider.Run(context.Background())
 	if result.Code != CodeExitedNonZero || result.ExitCode != 23 {
+		t.Fatalf("Run() = %#v", result)
+	}
+}
+
+// A program killed by a signal may already have changed the network; calling
+// that a failure would let Cloud offer the change again.
+func TestProviderReportsSignalledExitAsUnknown(t *testing.T) {
+	provider := newHelperProvider(t, "signal", time.Second)
+	result := provider.Run(context.Background())
+	if result.State != changeip.TriggerUnknown || result.Code != CodeTerminated {
 		t.Fatalf("Run() = %#v", result)
 	}
 }
@@ -67,6 +80,10 @@ func TestCommandHelperProcess(t *testing.T) {
 	case "failure":
 		os.Exit(23)
 	case "sleep":
+		time.Sleep(5 * time.Second)
+		os.Exit(0)
+	case "signal":
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 		time.Sleep(5 * time.Second)
 		os.Exit(0)
 	default:

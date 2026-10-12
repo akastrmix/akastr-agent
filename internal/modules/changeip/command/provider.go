@@ -16,6 +16,7 @@ const (
 	CodeCompleted     = "completed"
 	CodeStartFailed   = "start_failed"
 	CodeExitedNonZero = "exited_nonzero"
+	CodeTerminated    = "terminated"
 	CodeTimedOut      = "timed_out"
 	CodeCancelled     = "cancelled"
 )
@@ -91,7 +92,13 @@ func resultFromWait(waitError error, process *exec.Cmd, startedAt, finishedAt ti
 	if waitError == nil {
 		return changeip.Result{State: changeip.TriggerConfirmed, Code: CodeCompleted, ExitCode: 0, StartedAt: startedAt, FinishedAt: finishedAt}
 	}
-	return changeip.Result{State: changeip.TriggerFailed, Code: CodeExitedNonZero, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: finishedAt}
+	// Only a status the program returned itself says it did not trigger. One
+	// killed by a signal may have changed the network before it stopped.
+	var exit *exec.ExitError
+	if errors.As(waitError, &exit) && exit.ExitCode() > 0 {
+		return changeip.Result{State: changeip.TriggerFailed, Code: CodeExitedNonZero, ExitCode: exit.ExitCode(), StartedAt: startedAt, FinishedAt: finishedAt}
+	}
+	return changeip.Result{State: changeip.TriggerUnknown, Code: CodeTerminated, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: finishedAt}
 }
 
 func exitCode(process *exec.Cmd) int {
