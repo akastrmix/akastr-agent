@@ -1,11 +1,12 @@
 // Package module defines how a node capability plugs into the Agent. Each
 // capability is a module under internal/modules, holding all of its code, that
 // Cloud switches on by including its configuration section; internal/app wires
-// the enabled modules. A module takes any of three shapes:
+// the enabled modules. A module takes any of these shapes:
 //
 //   - Commands: one-off work that must not run twice, such as ChangeIP;
 //   - Desired: Cloud-owned targets the module converges to and may reapply;
-//   - Reporter: facts the node observes and reports on its own.
+//   - Reporter: facts the node observes and reports on its own;
+//   - Worker: local work that follows the node itself, such as its traffic.
 package module
 
 import (
@@ -58,4 +59,10 @@ type Reporter interface {
 	Acknowledge(reportID string) (bool, error)
 	// UpdateSafe refuses a process replacement while its work must finish first.
 	UpdateSafe() error
+}
+
+// Worker runs for the life of the process and stops when ctx ends; returning
+// earlier stops the process, like a reporter.
+type Worker interface {
+	Run(ctx context.Context) error
 }

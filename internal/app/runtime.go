@@ -23,6 +23,7 @@ type Runtime struct {
 	commands   map[string]module.Commands
 	desired    *desired.Engine
 	reporters  []module.Reporter
+	workers    []module.Worker
 }
 
 // BuildRuntime validates every local dependency the enabled modules need. It
@@ -70,7 +71,7 @@ func (r *Runtime) Execute(ctx context.Context, offer protocol.OperationOffer) (p
 func (r *Runtime) PutState(put protocol.StatePut) error       { return r.desired.Put(put) }
 func (r *Runtime) SetStateKeys(keys protocol.StateKeys) error { return r.desired.Keys(keys) }
 
-// Run applies Desired modules and keeps every reporter running; a reporter
+// Run applies Desired modules and keeps every reporter and worker running; one
 // stopping stops the process, so a node is never online while silently no
 // longer observing.
 func (r *Runtime) Run(ctx context.Context, publish module.Publish, status desired.Send) error {
@@ -84,17 +85,24 @@ func (r *Runtime) Run(ctx context.Context, publish module.Publish, status desire
 		cancel()
 		<-applied
 	}()
-	if len(r.reporters) == 0 {
+	tasks := make([]func(context.Context) error, 0, len(r.reporters)+len(r.workers))
+	for _, reporter := range r.reporters {
+		tasks = append(tasks, func(ctx context.Context) error { return reporter.Run(ctx, publish) })
+	}
+	for _, worker := range r.workers {
+		tasks = append(tasks, worker.Run)
+	}
+	if len(tasks) == 0 {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	done := make(chan error, len(r.reporters))
-	for _, reporter := range r.reporters {
-		go func() { done <- reporter.Run(runContext, publish) }()
+	done := make(chan error, len(tasks))
+	for _, task := range tasks {
+		go func() { done <- task(runContext) }()
 	}
 	err := <-done
 	cancel()
-	for range len(r.reporters) - 1 {
+	for range len(tasks) - 1 {
 		<-done
 	}
 	if ctx.Err() != nil {

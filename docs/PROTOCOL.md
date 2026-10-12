@@ -21,10 +21,11 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | `socks5` | `port`、`username`、`password`（该代理的登录） | 只供 Cloud 读取；Agent 不运行代理 |
 | `ipquality_runner` | 无字段（`{}`） | 执行 `ipquality.execute` |
 | `xui` | `panel_url`、`username`、`password` | 按目标状态管理本机 3x-ui 的受管客户端，上报 `xui.snapshot` |
+| `rate_limit` | 无字段（`{}`） | 按目标状态限制受管用户的下载；需要 `xui` |
 
 `xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
 
-Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`）；除此之外模块可任意组合，全局只能有一台 active Runner 由 Cloud 保证。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
+Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`，`rate_limit` 需要 `xui`）；除此之外模块可任意组合，全局只能有一台 active Runner 由 Cloud 保证。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -138,6 +139,21 @@ key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `cl
 - 写入任何 Shadowsocks 2022 入站（只改 `comment` 也算：面板仍会先从 Xray 删除该用户再加回，而加回会失败）前先在 `state.json` 记下“待重启”，本轮最后经面板原生 `restartXrayService` 重启一次 Xray，成功后清除：该组合的动态写入可能报告成功却不可用。重启失败或进程在重启前停止时，下一轮即使面板已一致也会补做重启。重启会使同机所有连接短暂中断。
 - 目标为空时，面板中已不存在的入站视为一致（不报 `xui_inbound_missing`），使已删除入站的 key 也能完成退役。
 - 有写入时重新读取面板核对，不一致返回 `xui_unconfirmed`。其他错误码：面板请求类（`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`）、`xui_inbound_missing`、`xui_inbound_changed`（入站协议、method 与目标凭据不再匹配）、`xui_inbound_invalid`、`xui_client_conflict`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`。
+
+### `rate_limit`
+
+key 是受管客户端的 email（与 `xui` 相同的 `ak-` 格式），state 必须且只能包含 `down_mbps`：0–10000 的整数，单位 Mbps。0 表示不限，是 Cloud 退役 key 前下发的空目标。同一 email 在本机所有入站的连接共享这一个限速，只限下载（节点发往客户端的方向）。
+
+- **认人**：Agent 跟读 3x-ui 所运行 Xray 的访问日志，记下每条被接受连接的“来源地址:端口 → email”。经过中转时，来源是中转机的地址，每条用户连接对应一条中转连接。记录只在内存，不上报，也不写盘。日志须开启且不掩码地址（`log.access` 不为 `none`，`maskAddress` 为空）；路径按 Xray 进程的工作目录解析。
+- **执行**：
+  - 在有默认路由的网卡上挂 clsact egress。
+  - 被限用户的每条已知连接，按目的地址:端口各加 TCP、UDP 两条 flower 过滤（IPv4 优先级 49001，IPv6 优先级 49002），同一用户的过滤共用一个 police 动作（编号 `0xAC000001` 起）。
+  - police 速率为 `down_mbps`，突发约 100 毫秒、至少 64 KiB，超出即丢弃；不超出时继续后续过滤。
+  - 根 qdisc 与他人的过滤不动。
+  - 每 2 秒按已知连接增删过滤。一条连接 2 小时没再出现在日志里，而且内核中也没有到该地址的 TCP 连接时，就不再算已知；同一地址:端口被别的用户重用时，以最新一行为准。
+  - 过滤总数有上限，超出的连接不限。
+- **状态**：已装好的目标回报空错误码。日志不可用时，继续限制已知连接，并回报 `rate_limit_log_unavailable`。tc 失败时，撤掉本模块的全部规则，回报 `rate_limit_apply_failed`。
+- **清理**：启动时先清掉此前进程留下的规则（更新换进程与崩溃都不会先停模块），进程正常停止时清理，模块关闭后的进程启动时也清理。清理只删上述优先级的过滤和编号段内的动作；clsact 上已没有任何过滤时才删除它。
 
 ## 上报与回执
 

@@ -20,6 +20,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 - HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
 - 已有 SOCKS5 代理的端口与登录（只供主控派发 IPQuality，Agent 不运行代理）；代理地址始终使用 Agent 观测到的公网 IPv4；
 - 3x-ui：按 Cloud 下发的目标管理本机面板中的受管客户端，并上报入站与流量；
+- 限速：按 Cloud 下发的目标限制指定用户的下载，靠 3x-ui 的 Xray 访问日志认出连接属于谁；
 - IPQuality Runner：见下。
 
 Runner 使用主控随任务下发的目标 SOCKS5 登录，执行固定版本、经过摘要校验的官方 IPQuality 脚本，严格单并发，本身不保存代理密码。配置范围与固定版本入口见[安装教程](docs/INSTALLATION.md#ipquality-runner)。

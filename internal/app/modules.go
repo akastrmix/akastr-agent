@@ -19,8 +19,10 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
 	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/modules/ratelimit"
 	"github.com/akastrmix/akastr-agent/internal/modules/socks5"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
 )
 
 // Fixed runtime limits. Cloud configures what a node does, not these bounds.
@@ -35,11 +37,12 @@ const (
 // Adding a capability means one package under internal/modules plus one
 // field and its cases in this file.
 type modules struct {
-	ipWatch  *ipwatch.Config
-	changeIP *changefeature.Config
-	socks5   *socks5.Config
-	runner   *ipqualityrunner.Config
-	xui      *xui.Config
+	ipWatch   *ipwatch.Config
+	changeIP  *changefeature.Config
+	socks5    *socks5.Config
+	runner    *ipqualityrunner.Config
+	xui       *xui.Config
+	rateLimit *ratelimit.Config
 }
 
 func parseModules(sections map[string]json.RawMessage) (modules, error) {
@@ -57,6 +60,8 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 			m.socks5, err = parseSection(socks5.ParseConfig, raw)
 		case ipqualityrunner.Name:
 			m.runner, err = parseSection(ipqualityrunner.ParseConfig, raw)
+		case ratelimit.Name:
+			m.rateLimit, err = parseSection(ratelimit.ParseConfig, raw)
 		default:
 			return modules{}, fmt.Errorf("configuration module %q is unknown to this Agent", name)
 		}
@@ -67,6 +72,10 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 	// ChangeIP is confirmed only through the observed public IPv4.
 	if m.changeIP != nil && m.ipWatch == nil {
 		return modules{}, errors.New("module changeip requires ip_watch")
+	}
+	// Users are found through the access log of the 3x-ui Xray.
+	if m.rateLimit != nil && m.xui == nil {
+		return modules{}, errors.New("module rate_limit requires xui")
 	}
 	return m, nil
 }
@@ -80,11 +89,16 @@ func parseSection[T any](parse func(json.RawMessage) (T, error), raw json.RawMes
 }
 
 // hostCommands and hostPackages are what the installer provides with apt.
-func (m modules) hostCommands() ([]string, []string) {
-	if m.runner == nil {
-		return nil, nil
+func (m modules) hostCommands() (commands, packages []string) {
+	if m.runner != nil {
+		commands = append(commands, strings.Fields(qualityscript.RunnerCommands)...)
+		packages = append(packages, strings.Fields(qualityscript.RunnerPackages)...)
 	}
-	return strings.Fields(qualityscript.RunnerCommands), strings.Fields(qualityscript.RunnerPackages)
+	if m.rateLimit != nil {
+		commands = append(commands, ratelimit.TCProgram)
+		packages = append(packages, "iproute2")
+	}
+	return commands, packages
 }
 
 // RemoveStaleAssets deletes pinned module assets that only earlier deployments
@@ -115,6 +129,14 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 		runtime.desired.Add(xui.Name, panel)
 		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel))
+	}
+	if m.rateLimit != nil {
+		log := accesslog.New()
+		limiter := ratelimit.New(log)
+		runtime.desired.Add(ratelimit.Name, limiter)
+		runtime.workers = append(runtime.workers, log, limiter)
+	} else {
+		runtime.workers = append(runtime.workers, ratelimit.Leftovers{})
 	}
 	if m.ipWatch != nil {
 		observer, err := ipwatch.New(observationTimeout, "Akastr-Agent")

@@ -39,7 +39,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 ## 4. 包职责
 
 - `internal/config`：严格读取节点配置的外层；各模块的配置段由模块自己校验。
-- `internal/module`：模块接入的三种形态——不可重复的一次性任务（`Commands`）、Cloud 下发并可反复应用的目标状态（`Desired`）、节点主动上报的事实（`Reporter`）。
+- `internal/module`：模块接入的四种形态——不可重复的一次性任务（`Commands`）、Cloud 下发并可反复应用的目标状态（`Desired`）、节点主动上报的事实（`Reporter`）、跟随本机变化的常驻工作（`Worker`）。
 - `internal/modules/*`：每个模块一个目录，放齐它的全部代码：配置段、命令、目标、上报与回执、它在 Root/StateDir 下的文件，以及只供它使用的执行方式（子包）；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
 - `internal/layout`：固定的磁盘布局——A/B 两个 slot、`current` 原子切换、安装/更新共用的锁，以及交给模块的 Root 与 StateDir；不认识任何模块的文件。
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
@@ -48,7 +48,8 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
-- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，并上报入站与受管客户端流量的快照。
+- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，并上报入站与受管客户端流量的快照。子包 `accesslog` 跟读 3x-ui 所运行 Xray 的访问日志，只在内存中记“连接来源地址:端口 → 用户”，供同进程模块使用。
+- `internal/modules/ratelimit`：按目标把指定用户的下载限速。在默认路由网卡的 clsact egress 上按连接加 flower 过滤，同一用户共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
 - `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/bootstrap`：安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。
@@ -57,7 +58,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/app`：解析启用的模块并组成运行时；连接层只收发消息，命令、上报与确认都交给对应模块。
 - `internal/daemon`：组织 WSS、更新循环、候选版本激活与退出；CLI 只负责参数和进程信号。
 
-新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands`、`module.Desired` 或 `module.Reporter` 中合适的形态，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型、[目标格式](PROTOCOL.md#目标状态)或[上报 kind](PROTOCOL.md#上报与回执)。连接层、更新与安装都不需要改。
+新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands`、`module.Desired`、`module.Reporter` 或 `module.Worker` 中合适的形态，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型、[目标格式](PROTOCOL.md#目标状态)或[上报 kind](PROTOCOL.md#上报与回执)。连接层、更新与安装都不需要改。
 
 节点配置只放模块开关和很少变化的设置：配置一变，整个进程就经第 8 节的更新路径重启，新配置先校验，失败回到旧 slot。经常变化的业务数据（例如防火墙规则、xray 用户）不进节点配置，否则每次修改都会重启节点；Cloud 通过 WSS 以[目标状态](PROTOCOL.md#目标状态)下发，`Desired` 模块对比本机现状，只改有差别的部分。同一目标重复应用结果不变，所以断线后全量重发、定期纠正手工改动都是安全的；只有不可重复的动作才用 operation。
 
