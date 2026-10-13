@@ -102,29 +102,67 @@ func newTestLimiter(log *fakeLog, tc *fakeTC) *Limiter {
 	return l
 }
 
+// targets builds one-client groups named after their client, from key/rate pairs.
 func targets(pairs ...any) map[string]json.RawMessage {
 	out := map[string]json.RawMessage{}
 	for i := 0; i < len(pairs); i += 2 {
-		out[pairs[i].(string)] = json.RawMessage(fmt.Sprintf(`{"down_mbps":%d}`, pairs[i+1].(int)))
+		key, mbps := pairs[i].(string), pairs[i+1].(int)
+		emails := `["` + key + `"]`
+		if mbps == 0 {
+			emails = "[]"
+		}
+		out[key] = json.RawMessage(fmt.Sprintf(`{"down_mbps":%d,"emails":%s}`, mbps, emails))
 	}
 	return out
 }
 
 func TestValidateAcceptsOnlyOwnedUsersAndSaneRates(t *testing.T) {
 	l := New(&fakeLog{})
-	if err := l.Validate("ak-a1", json.RawMessage(`{"down_mbps":30}`)); err != nil {
+	for _, raw := range []string{`{"down_mbps":30,"emails":["ak-a1","ak-a2"]}`, `{"down_mbps":0,"emails":[]}`} {
+		if err := l.Validate("sub-1", json.RawMessage(raw)); err != nil {
+			t.Fatal(raw, err)
+		}
+	}
+	many := `"ak-a0"`
+	for i := 1; i <= maxEmails; i++ {
+		many += fmt.Sprintf(`,"ak-a%d"`, i)
+	}
+	for _, raw := range []string{
+		`{"down_mbps":30,"emails":["old-user"]}`,
+		`{"down_mbps":30,"emails":["ak-a1","ak-a1"]}`,
+		`{"down_mbps":10001,"emails":["ak-a1"]}`,
+		`{"down_mbps":-1,"emails":[]}`,
+		`{"down_mbps":30}`,
+		`{"down_mbps":30,"emails":null}`,
+		`{"down_mbps":30,"emails":["ak-a1"],"up_mbps":1}`,
+		`{"down_mbps":30,"emails":[` + many + `]}`,
+	} {
+		if l.Validate("sub-1", json.RawMessage(raw)) == nil {
+			t.Fatalf("accepted %s", raw)
+		}
+	}
+}
+
+// The clients of one group share one police action, so a subscription is
+// held to its limit whichever of its clients carry the traffic; a client that
+// Cloud names twice follows the lower limit.
+func TestGroupsShareOneLimit(t *testing.T) {
+	a, b, c := netip.MustParseAddrPort("203.0.113.1:1000"), netip.MustParseAddrPort("203.0.113.2:2000"), netip.MustParseAddrPort("203.0.113.3:3000")
+	log := &fakeLog{conns: map[string][]netip.AddrPort{"ak-a": {a}, "ak-b": {b}, "ak-c": {c}}}
+	tc := &fakeTC{out: map[string]string{}}
+	l := newTestLimiter(log, tc)
+	if _, err := l.Apply(context.Background(), map[string]json.RawMessage{
+		"sub-1": json.RawMessage(`{"down_mbps":30,"emails":["ak-a","ak-b"]}`),
+		"sub-2": json.RawMessage(`{"down_mbps":10,"emails":["ak-b","ak-c"]}`),
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for key, raw := range map[string]string{
-		"old-user": `{"down_mbps":30}`,
-		"ak-a1":    `{"down_mbps":10001}`,
-		"ak-a2":    `{"down_mbps":-1}`,
-		"ak-a3":    `{}`,
-		"ak-a4":    `{"down_mbps":30,"up_mbps":1}`,
-	} {
-		if l.Validate(key, json.RawMessage(raw)) == nil {
-			t.Fatalf("accepted %s %s", key, raw)
-		}
+	got := tc.take()
+	if strings.Count(got, "actions replace") != 2 ||
+		!strings.Contains(got, "dst_ip 203.0.113.1 dst_port 1000 action police index 2885681153") ||
+		!strings.Contains(got, "dst_ip 203.0.113.2 dst_port 2000 action police index 2885681154") ||
+		!strings.Contains(got, "dst_ip 203.0.113.3 dst_port 3000 action police index 2885681154") {
+		t.Fatalf("groups not shared:\n%s", got)
 	}
 }
 

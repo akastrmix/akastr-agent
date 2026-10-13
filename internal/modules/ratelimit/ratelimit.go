@@ -2,10 +2,11 @@
 // node. Cloud decides who and how fast; the module only finds each user's
 // connections in the Xray access log and polices them on the way out.
 //
-// On every interface that carries a default route the module keeps a clsact
-// egress hook with flower filters matching each connection's client address
-// and port, TCP and UDP alike, and all filters of a user share one police
-// action at the user's rate. The root qdisc and other filters stay as they
+// Cloud limits groups of users: the clients of one subscription share one
+// limit, whichever of them a connection uses. On every interface that carries
+// a default route the module keeps a clsact egress hook with flower filters
+// matching each connection's client address and port, TCP and UDP alike, and
+// all filters of a group share one police action at the group's rate. The root qdisc and other filters stay as they
 // are, so nobody unlimited is touched. What the module adds is marked by two
 // filter priorities and a range of action indexes. It removes leftovers of an
 // earlier process when it starts, everything when it stops, and everything on
@@ -29,6 +30,7 @@ import (
 const (
 	Name         = "rate_limit"
 	maxMbps      = 10000
+	maxEmails    = 64
 	syncInterval = 2 * time.Second
 	stopTimeout  = 15 * time.Second
 
@@ -43,15 +45,22 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 	return protocol.DecodeStrict[Config](raw, Name)
 }
 
-// Target is one user's limit; zero means none, which Cloud sends before it
-// retires the key.
+// Target is the shared download limit of one group of owned clients, keyed by
+// Cloud's group. Zero means none, which Cloud sends before it retires the key.
 type Target struct {
-	DownMbps int `json:"down_mbps"`
+	DownMbps int      `json:"down_mbps"`
+	Emails   []string `json:"emails"`
 }
 
-func decodeTarget(key string, raw json.RawMessage) (Target, error) {
-	t, err := protocol.DecodeStrict[Target](raw, "rate_limit target", "down_mbps")
-	if err != nil || !xui.Owned(key) || t.DownMbps < 0 || t.DownMbps > maxMbps {
+func decodeTarget(raw json.RawMessage) (Target, error) {
+	t, err := protocol.DecodeStrict[Target](raw, "rate_limit target", "down_mbps", "emails")
+	invalid := err != nil || t.DownMbps < 0 || t.DownMbps > maxMbps || len(t.Emails) > maxEmails
+	seen := map[string]bool{}
+	for _, email := range t.Emails {
+		invalid = invalid || !xui.Owned(email) || seen[email]
+		seen[email] = true
+	}
+	if invalid {
 		return Target{}, errors.New("rate_limit target is invalid")
 	}
 	return t, nil
@@ -70,7 +79,7 @@ type Limiter struct {
 	links  func() ([]string, error)
 
 	mu     sync.Mutex
-	limits map[string]int
+	limits map[string]Target
 	// clean is set once the leftovers of an earlier process are gone.
 	clean bool
 	rules *rules
@@ -83,12 +92,12 @@ var (
 )
 
 func New(log Connections) *Limiter {
-	return &Limiter{log: log, tc: execTC{}, links: links, limits: map[string]int{}, rules: newRules(),
+	return &Limiter{log: log, tc: execTC{}, links: links, limits: map[string]Target{}, rules: newRules(),
 		routes: func() ([]string, []string, error) { return defaultRoutes("/proc") }}
 }
 
-func (l *Limiter) Validate(key string, raw json.RawMessage) error {
-	_, err := decodeTarget(key, raw)
+func (l *Limiter) Validate(_ string, raw json.RawMessage) error {
+	_, err := decodeTarget(raw)
 	return err
 }
 
@@ -97,17 +106,17 @@ func (l *Limiter) Validate(key string, raw json.RawMessage) error {
 func (l *Limiter) Apply(ctx context.Context, targets map[string]json.RawMessage) (map[string]string, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	limits := map[string]int{}
+	limits := map[string]Target{}
 	for key, raw := range targets {
 		if raw == nil {
-			// Unusable target: keep whatever this user had.
-			if mbps, found := l.limits[key]; found {
-				limits[key] = mbps
+			// Unusable target: keep whatever this group had.
+			if t, found := l.limits[key]; found {
+				limits[key] = t
 			}
 			continue
 		}
-		if t, err := decodeTarget(key, raw); err == nil && t.DownMbps > 0 {
-			limits[key] = t.DownMbps
+		if t, err := decodeTarget(raw); err == nil && t.DownMbps > 0 && len(t.Emails) > 0 {
+			limits[key] = t
 		}
 	}
 	l.limits = limits
@@ -120,8 +129,8 @@ func (l *Limiter) Apply(ctx context.Context, targets map[string]json.RawMessage)
 	}
 	codes := map[string]string{}
 	if l.code != "" {
-		for email := range l.limits {
-			codes[email] = l.code
+		for key := range l.limits {
+			codes[key] = l.code
 		}
 	}
 	return codes, nil
@@ -191,9 +200,11 @@ func (l *Limiter) want() (desired, string) {
 	if err != nil || len(v4)+len(v6) == 0 {
 		return desired{}, codeApplyFailed
 	}
-	emails := make(map[string]bool, len(l.limits))
-	for email := range l.limits {
-		emails[email] = true
+	emails := map[string]bool{}
+	for _, t := range l.limits {
+		for _, email := range t.Emails {
+			emails[email] = true
+		}
 	}
 	code := ""
 	if l.log.Err() != nil {

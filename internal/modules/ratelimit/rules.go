@@ -27,37 +27,47 @@ type rule struct {
 	proto string
 }
 
-// desired is the rule set for some limits: each user's rate and each rule's
-// user.
+// desired is the rule set for some limits: each group's rate and the group
+// each rule polices.
 type desired struct {
 	rates map[string]int
 	rules map[rule]string
 }
 
-// plan matches every connection of a limited user, IPv4 on the IPv4 default
-// interfaces and IPv6 on the IPv6 ones, until maxFilters.
-func plan(limits map[string]int, conns map[string][]netip.AddrPort, v4, v6 []string) desired {
+// plan matches every connection of the limited groups, IPv4 on the IPv4
+// default interfaces and IPv6 on the IPv6 ones, until maxFilters. A client
+// that Cloud names in two groups follows the lower limit.
+func plan(limits map[string]Target, conns map[string][]netip.AddrPort, v4, v6 []string) desired {
 	want := desired{rates: map[string]int{}, rules: map[rule]string{}}
-	emails := make([]string, 0, len(limits))
-	for email := range limits {
-		emails = append(emails, email)
-	}
-	slices.Sort(emails)
-	for _, email := range emails {
-		want.rates[email] = limits[email]
-		addrs := slices.Clone(conns[email])
-		slices.SortFunc(addrs, func(a, b netip.AddrPort) int { return a.Compare(b) })
-		for _, addr := range addrs {
-			devs := v4
-			if addr.Addr().Is6() {
-				devs = v6
+	groups := slices.Sorted(maps.Keys(limits))
+	owner := map[string]string{}
+	for _, group := range groups {
+		for _, email := range limits[group].Emails {
+			if current, found := owner[email]; !found || limits[group].DownMbps < limits[current].DownMbps {
+				owner[email] = group
 			}
-			for _, dev := range devs {
-				for _, proto := range []string{"tcp", "udp"} {
-					if len(want.rules) >= maxFilters {
-						return want
+		}
+	}
+	for _, group := range groups {
+		want.rates[group] = limits[group].DownMbps
+		for _, email := range slices.Sorted(slices.Values(limits[group].Emails)) {
+			if owner[email] != group {
+				continue
+			}
+			addrs := slices.Clone(conns[email])
+			slices.SortFunc(addrs, func(a, b netip.AddrPort) int { return a.Compare(b) })
+			for _, addr := range addrs {
+				devs := v4
+				if addr.Addr().Is6() {
+					devs = v6
+				}
+				for _, dev := range devs {
+					for _, proto := range []string{"tcp", "udp"} {
+						if len(want.rules) >= maxFilters {
+							return want
+						}
+						want.rules[rule{dev, addr, proto}] = group
 					}
-					want.rules[rule{dev, addr, proto}] = email
 				}
 			}
 		}
@@ -68,7 +78,7 @@ func plan(limits map[string]int, conns map[string][]netip.AddrPort, v4, v6 []str
 // rules is what the module installed, as far as it knows.
 type rules struct {
 	clsact  map[string]bool
-	actions map[string]uint32 // user → police index
+	actions map[string]uint32 // group → police index
 	rates   map[uint32]int
 	filters map[rule]installed
 	// orphans are police actions whose filters are gone; the kernel releases
@@ -96,8 +106,8 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 	}
 	index := r.assign(want)
 	devs := map[string]bool{}
-	for key, email := range want.rules {
-		if index[email] != 0 {
+	for key, group := range want.rules {
+		if index[group] != 0 {
 			devs[key.dev] = true
 		}
 	}
@@ -114,10 +124,10 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 			batch = append(batch, "qdisc add dev "+dev+" clsact")
 		}
 	}
-	for email, i := range index {
-		if r.actions[email] != i || r.rates[i] != want.rates[email] {
+	for group, i := range index {
+		if r.actions[group] != i || r.rates[i] != want.rates[group] {
 			batch = append(batch, fmt.Sprintf("actions replace action police rate %dmbit burst %d conform-exceed drop/continue index %d",
-				want.rates[email], burst(want.rates[email]), i))
+				want.rates[group], burst(want.rates[group]), i))
 		}
 	}
 	for key, have := range r.filters {
@@ -131,8 +141,8 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 		return cmp.Or(strings.Compare(a.dev, b.dev), a.addr.Compare(b.addr), strings.Compare(a.proto, b.proto))
 	})
 	for _, key := range keys {
-		email := want.rules[key]
-		i := index[email]
+		group := want.rules[key]
+		i := index[group]
 		if have, found := r.filters[key]; i == 0 || (found && have.index == i) {
 			continue
 		}
@@ -156,15 +166,15 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 		}
 	}
 	maps.Copy(r.filters, added)
-	for email, i := range r.actions {
-		if index[email] != i {
+	for group, i := range r.actions {
+		if index[group] != i {
 			r.orphans[i] = true
 			delete(r.rates, i)
 		}
 	}
 	r.actions = index
-	for email, i := range index {
-		r.rates[i] = want.rates[email]
+	for group, i := range index {
+		r.rates[i] = want.rates[group]
 	}
 	return nil
 }
@@ -194,33 +204,33 @@ func (r *rules) drifted(ctx context.Context, tc runner) bool {
 	return false
 }
 
-// assign gives every limited user a police index: the one it has, or the
+// assign gives every limited group a police index: the one it has, or the
 // lowest free one. Indexes being released are not reused in the same pass.
 func (r *rules) assign(want desired) map[string]uint32 {
 	index := map[string]uint32{}
 	used := maps.Clone(r.orphans)
 	var newcomers []string
-	for email, i := range r.actions {
+	for group, i := range r.actions {
 		used[i] = true
-		if _, keep := want.rates[email]; keep {
-			index[email] = i
+		if _, keep := want.rates[group]; keep {
+			index[group] = i
 		}
 	}
-	for email := range want.rates {
-		if _, found := index[email]; !found {
-			newcomers = append(newcomers, email)
+	for group := range want.rates {
+		if _, found := index[group]; !found {
+			newcomers = append(newcomers, group)
 		}
 	}
 	slices.Sort(newcomers)
 	next := uint32(1)
-	for _, email := range newcomers {
+	for _, group := range newcomers {
 		for next <= maxUsers && used[actionBase+next] {
 			next++
 		}
 		if next > maxUsers {
 			break
 		}
-		index[email] = actionBase + next
+		index[group] = actionBase + next
 		next++
 	}
 	return index
