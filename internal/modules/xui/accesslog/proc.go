@@ -1,23 +1,27 @@
 package accesslog
 
 import (
-	"bufio"
-	"encoding/binary"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-// locate finds the one Xray process 3x-ui runs and the access log its
-// configuration writes. A log that is off or masks addresses cannot say who a
-// connection belongs to.
-func locate(proc string) (string, map[uint16]bool, error) {
+// inbound is what the access log's tag of an inbound stands for.
+type inbound struct {
+	port uint16
+	// udp is whether clients can reach the inbound over UDP; a TCP-only
+	// inbound's connections can be checked against the kernel's TCP table.
+	udp bool
+}
+
+// locate finds the one Xray process 3x-ui runs, the access log its
+// configuration writes and its inbounds by tag. A log that is off or masks
+// addresses cannot say who a connection belongs to.
+func locate(proc string) (string, map[string]inbound, error) {
 	dirs, err := os.ReadDir(proc)
 	if err != nil {
 		return "", nil, err
@@ -58,7 +62,15 @@ func locate(proc string) (string, map[uint16]bool, error) {
 			MaskAddress string `json:"maskAddress"`
 		} `json:"log"`
 		Inbounds []struct {
-			Port json.RawMessage `json:"port"`
+			Tag      string          `json:"tag"`
+			Port     json.RawMessage `json:"port"`
+			Protocol string          `json:"protocol"`
+			Settings struct {
+				Network string `json:"network"`
+			} `json:"settings"`
+			StreamSettings struct {
+				Network string `json:"network"`
+			} `json:"streamSettings"`
 		} `json:"inbounds"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -70,15 +82,19 @@ func locate(proc string) (string, map[uint16]bool, error) {
 	if doc.Log.MaskAddress != "" {
 		return "", nil, errors.New("the Xray access log masks addresses")
 	}
-	// 3x-ui writes each port as a number. Ranges and environment references
-	// are skipped: connections on them stay unknown.
-	ports := map[uint16]bool{}
+	// 3x-ui tags each inbound and writes its port as a number. Ranges and
+	// environment references are skipped: connections on them stay unknown.
+	inbounds := map[string]inbound{}
 	for _, ib := range doc.Inbounds {
-		if port, err := strconv.ParseUint(strings.Trim(string(ib.Port), `"`), 10, 16); err == nil && port > 0 {
-			ports[uint16(port)] = true
+		port, err := strconv.ParseUint(strings.Trim(string(ib.Port), `"`), 10, 16)
+		if err != nil || port == 0 || ib.Tag == "" {
+			continue
 		}
+		udp := strings.Contains(ib.Settings.Network, "udp") || strings.HasPrefix(ib.Protocol, "hysteria") ||
+			ib.StreamSettings.Network == "kcp" || ib.StreamSettings.Network == "quic"
+		inbounds[ib.Tag] = inbound{port: uint16(port), udp: udp}
 	}
-	return resolve(cwd, doc.Log.Access), ports, nil
+	return resolve(cwd, doc.Log.Access), inbounds, nil
 }
 
 func configArg(args []string) string {
@@ -101,49 +117,4 @@ func resolve(dir, path string) string {
 		return path
 	}
 	return filepath.Join(dir, path)
-}
-
-// liveTCP returns the remote address of every TCP connection the kernel holds.
-func liveTCP(proc string) (map[netip.AddrPort]bool, error) {
-	live := map[netip.AddrPort]bool{}
-	for _, name := range []string{"tcp", "tcp6"} {
-		file, err := os.Open(filepath.Join(proc, "net", name))
-		if err != nil {
-			return nil, err
-		}
-		scanner := bufio.NewScanner(file)
-		scanner.Scan() // header
-		for scanner.Scan() {
-			fields := strings.Fields(scanner.Text())
-			// The state LISTEN (0A) has no remote end.
-			if len(fields) < 4 || fields[3] == "0A" {
-				continue
-			}
-			if addr, ok := procAddr(fields[2]); ok {
-				live[addr] = true
-			}
-		}
-		err = scanner.Err()
-		file.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
-	return live, nil
-}
-
-// procAddr decodes an address of /proc/net/tcp{,6}: the address as 32-bit
-// words in host (little-endian) order, a colon and the port in hex.
-func procAddr(field string) (netip.AddrPort, bool) {
-	host, portText, found := strings.Cut(field, ":")
-	raw, err := hex.DecodeString(host)
-	port, perr := strconv.ParseUint(portText, 16, 16)
-	if !found || err != nil || perr != nil || (len(raw) != 4 && len(raw) != 16) {
-		return netip.AddrPort{}, false
-	}
-	for i := 0; i < len(raw); i += 4 {
-		binary.BigEndian.PutUint32(raw[i:], binary.LittleEndian.Uint32(raw[i:]))
-	}
-	addr, _ := netip.AddrFromSlice(raw)
-	return netip.AddrPortFrom(addr.Unmap(), uint16(port)), true
 }

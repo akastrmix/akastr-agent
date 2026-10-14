@@ -8,6 +8,8 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
 )
 
 const (
@@ -21,8 +23,10 @@ const (
 )
 
 // rule is one flower filter: one protocol of one connection on one interface.
+// The connection is its inbound port and client address, as in the access log.
 type rule struct {
 	dev   string
+	port  uint16
 	addr  netip.AddrPort
 	proto string
 }
@@ -37,7 +41,7 @@ type desired struct {
 // plan matches every connection of the limited groups, IPv4 on the IPv4
 // default interfaces and IPv6 on the IPv6 ones, until maxFilters. A client
 // that Cloud names in two groups follows the lower limit.
-func plan(limits map[string]Target, conns map[string][]netip.AddrPort, v4, v6 []string) desired {
+func plan(limits map[string]Target, conns map[string][]accesslog.Conn, v4, v6 []string) desired {
 	want := desired{rates: map[string]int{}, rules: map[rule]string{}}
 	groups := slices.Sorted(maps.Keys(limits))
 	owner := map[string]string{}
@@ -54,11 +58,11 @@ func plan(limits map[string]Target, conns map[string][]netip.AddrPort, v4, v6 []
 			if owner[email] != group {
 				continue
 			}
-			addrs := slices.Clone(conns[email])
-			slices.SortFunc(addrs, func(a, b netip.AddrPort) int { return a.Compare(b) })
-			for _, addr := range addrs {
+			cs := slices.Clone(conns[email])
+			slices.SortFunc(cs, func(a, b accesslog.Conn) int { return cmp.Or(a.Remote.Compare(b.Remote), cmp.Compare(a.Port, b.Port)) })
+			for _, c := range cs {
 				devs := v4
-				if addr.Addr().Is6() {
+				if c.Remote.Addr().Is6() {
 					devs = v6
 				}
 				for _, dev := range devs {
@@ -66,7 +70,7 @@ func plan(limits map[string]Target, conns map[string][]netip.AddrPort, v4, v6 []
 						if len(want.rules) >= maxFilters {
 							return want
 						}
-						want.rules[rule{dev, addr, proto}] = group
+						want.rules[rule{dev, c.Port, c.Remote, proto}] = group
 					}
 				}
 			}
@@ -138,7 +142,7 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 	}
 	added := map[rule]installed{}
 	keys := slices.SortedFunc(maps.Keys(want.rules), func(a, b rule) int {
-		return cmp.Or(strings.Compare(a.dev, b.dev), a.addr.Compare(b.addr), strings.Compare(a.proto, b.proto))
+		return cmp.Or(strings.Compare(a.dev, b.dev), a.addr.Compare(b.addr), cmp.Compare(a.port, b.port), strings.Compare(a.proto, b.proto))
 	})
 	for _, key := range keys {
 		group := want.rules[key]
@@ -148,8 +152,8 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 		}
 		r.nextHandle++
 		added[key] = installed{r.nextHandle, i}
-		batch = append(batch, fmt.Sprintf("filter add dev %s egress protocol %s pref %d handle %d flower ip_proto %s dst_ip %s dst_port %d action police index %d",
-			key.dev, family(key.addr), pref(key.addr), r.nextHandle, key.proto, key.addr.Addr(), key.addr.Port(), i))
+		batch = append(batch, fmt.Sprintf("filter add dev %s egress protocol %s pref %d handle %d flower ip_proto %s src_port %d dst_ip %s dst_port %d action police index %d",
+			key.dev, family(key.addr), pref(key.addr), r.nextHandle, key.proto, key.port, key.addr.Addr(), key.addr.Port(), i))
 	}
 	if len(batch) > 0 {
 		if _, err := tc.run(ctx, strings.Join(batch, "\n")+"\n", "-batch", "-"); err != nil {

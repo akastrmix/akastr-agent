@@ -10,28 +10,39 @@ import (
 //
 //	2026/10/12 12:42:51.677607 from 1.2.3.4:33704 accepted tcp:example.com:443 [in >> out] email: user
 //
-// The source may carry a tcp: or udp: prefix and may be IPv6 in brackets.
-func parse(raw []byte) (netip.AddrPort, string, bool) {
+// It returns the inbound's tag, the source and the user. The source may carry
+// a tcp: or udp: prefix and may be IPv6 in brackets.
+func parse(raw []byte) (string, netip.AddrPort, string, bool) {
 	_, rest, found := bytes.Cut(raw, []byte(" from "))
 	if !found {
-		return netip.AddrPort{}, "", false
+		return "", netip.AddrPort{}, "", false
 	}
 	source, rest, found := bytes.Cut(rest, []byte(" accepted "))
 	if !found {
-		return netip.AddrPort{}, "", false
+		return "", netip.AddrPort{}, "", false
 	}
 	at := bytes.LastIndex(rest, []byte(" email: "))
 	if at < 0 {
-		return netip.AddrPort{}, "", false
+		return "", netip.AddrPort{}, "", false
 	}
 	email := string(rest[at+len(" email: "):])
 	if email == "" || strings.ContainsAny(email, " \t") {
-		return netip.AddrPort{}, "", false
+		return "", netip.AddrPort{}, "", false
+	}
+	// The route is "[inbound >> outbound]", or "->" when it was not sniffed.
+	route := rest[:at]
+	open := bytes.LastIndexByte(route, '[')
+	if open < 0 || !bytes.HasSuffix(route, []byte("]")) {
+		return "", netip.AddrPort{}, "", false
+	}
+	tag, _, found := strings.Cut(string(route[open+1:len(route)-1]), " ")
+	if !found || tag == "" {
+		return "", netip.AddrPort{}, "", false
 	}
 	text := strings.TrimPrefix(strings.TrimPrefix(string(source), "tcp:"), "udp:")
 	addr, err := netip.ParseAddrPort(text)
 	if err != nil || addr.Port() == 0 {
-		return netip.AddrPort{}, "", false
+		return "", netip.AddrPort{}, "", false
 	}
-	return netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()), email, true
+	return tag, netip.AddrPortFrom(addr.Addr().Unmap(), addr.Port()), email, true
 }

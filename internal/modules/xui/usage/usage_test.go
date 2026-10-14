@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/netip"
 	"reflect"
 	"testing"
@@ -17,11 +18,12 @@ type fakeOwners struct {
 	owners map[netip.AddrPort]string
 }
 
-func (f *fakeOwners) Err() error                        { return f.err }
-func (f *fakeOwners) Inbound(local netip.AddrPort) bool { return local.Port() == 443 }
-func (f *fakeOwners) Owner(remote netip.AddrPort) (string, bool) {
+func (f *fakeOwners) Err() error { return f.err }
+
+// Owner knows connections to port 443 only, like a log that names one inbound.
+func (f *fakeOwners) Owner(local, remote netip.AddrPort) (string, bool) {
 	e, ok := f.owners[remote]
-	return e, ok
+	return e, ok && local.Port() == 443
 }
 
 var (
@@ -156,6 +158,30 @@ func TestCloseNoticesCountTheLastBytesOnce(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("totals %v", got)
+	}
+}
+
+// A report lists every client of its epoch; one that would outgrow a protocol
+// message starts a new epoch instead.
+func TestManyClientsStartANewEpoch(t *testing.T) {
+	k := &fakeKernel{conns: map[uint64]*sockdiag.Conn{}}
+	owners := &fakeOwners{owners: map[netip.AddrPort]string{}}
+	m := newMeter(owners, k.dump, noNotices)
+	m.poll()
+	first := lastReport(t, m).Epoch
+	for i := 0; i <= maxClients; i++ {
+		remote := netip.AddrPortFrom(netip.MustParseAddr("203.0.113.1"), uint16(1000+i))
+		owners.owners[remote] = fmt.Sprintf("ak-c%d", i)
+		k.open(uint64(100+i), inbound, remote, 1, 0)
+	}
+	m.poll()
+	r := lastReport(t, m)
+	if r.Epoch == first || len(r.Clients) > maxClients {
+		t.Fatalf("epoch %s → %s with %d clients", first, r.Epoch, len(r.Clients))
+	}
+	data, _ := json.Marshal(r)
+	if len(data) > 900<<10 {
+		t.Fatalf("report of %d bytes", len(data))
 	}
 }
 

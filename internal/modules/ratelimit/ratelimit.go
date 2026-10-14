@@ -5,8 +5,9 @@
 // Cloud limits groups of users: the clients of one subscription share one
 // limit, whichever of them a connection uses. On every interface that carries
 // a default route the module keeps a clsact egress hook with flower filters
-// matching each connection's client address and port, TCP and UDP alike, and
-// all filters of a group share one police action at the group's rate. The root qdisc and other filters stay as they
+// matching each connection's inbound port and client address and port, TCP
+// and UDP alike, and all filters of a group share one police action at the
+// group's rate. The root qdisc and other filters stay as they
 // are, so nobody unlimited is touched. What the module adds is marked by two
 // filter priorities and a range of action indexes. It removes leftovers of an
 // earlier process when it starts, everything when it stops, and everything on
@@ -18,21 +19,22 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 const (
 	Name         = "rate_limit"
 	maxMbps      = 10000
-	maxEmails    = 64
 	syncInterval = 2 * time.Second
-	stopTimeout  = 15 * time.Second
+	// Leftovers retries a failed cleanup this often.
+	leftoverRetry = 30 * time.Second
+	stopTimeout   = 15 * time.Second
 
 	codeLogUnavailable = "rate_limit_log_unavailable"
 	codeApplyFailed    = "rate_limit_apply_failed"
@@ -54,7 +56,7 @@ type Target struct {
 
 func decodeTarget(raw json.RawMessage) (Target, error) {
 	t, err := protocol.DecodeStrict[Target](raw, "rate_limit target", "down_mbps", "emails")
-	invalid := err != nil || t.DownMbps < 0 || t.DownMbps > maxMbps || len(t.Emails) > maxEmails
+	invalid := err != nil || t.DownMbps < 0 || t.DownMbps > maxMbps
 	seen := map[string]bool{}
 	for _, email := range t.Emails {
 		invalid = invalid || !xui.Owned(email) || seen[email]
@@ -69,7 +71,7 @@ func decodeTarget(raw json.RawMessage) (Target, error) {
 // Connections is what the module needs from the access log.
 type Connections interface {
 	Err() error
-	Connections(emails map[string]bool) map[string][]netip.AddrPort
+	Connections(emails map[string]bool) map[string][]accesslog.Conn
 }
 
 type Limiter struct {
@@ -124,10 +126,15 @@ func (l *Limiter) Apply(ctx context.Context, targets map[string]json.RawMessage)
 	if l.clean && l.rules.drifted(ctx, l.tc) {
 		l.clean = false
 	}
-	if err := l.sync(ctx); err != nil {
-		return nil, err
-	}
 	codes := map[string]string{}
+	if err := l.sync(ctx); err != nil {
+		// Rules may remain, so no target counts as applied, not even a
+		// release: Cloud must not show a user as unlimited while still limited.
+		for key := range targets {
+			codes[key] = codeApplyFailed
+		}
+		return codes, err
+	}
 	if l.code != "" {
 		for key := range l.limits {
 			codes[key] = l.code
@@ -244,13 +251,22 @@ type Leftovers struct{}
 var _ module.Worker = Leftovers{}
 
 func (Leftovers) Run(ctx context.Context) error {
-	devs, err := links()
-	if err == nil {
-		err = cleanup(ctx, execTC{}, devs)
+	for {
+		devs, err := links()
+		if err == nil {
+			err = cleanup(ctx, execTC{}, devs)
+		}
+		if err == nil {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		if ctx.Err() == nil {
+			slog.Warn("rate limit rules of an earlier process remain; retrying", "error", err.Error())
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(leftoverRetry):
+		}
 	}
-	if err != nil && ctx.Err() == nil {
-		slog.Warn("rate limit rules of an earlier process remain", "error", err.Error())
-	}
-	<-ctx.Done()
-	return ctx.Err()
 }

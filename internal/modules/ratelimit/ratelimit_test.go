@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
 )
 
 // fakeTC records tc calls and keeps the filters they leave, so listings
@@ -80,18 +82,23 @@ func (f *fakeTC) take() string {
 
 type fakeLog struct {
 	err   error
-	conns map[string][]netip.AddrPort
+	conns map[string][]accesslog.Conn
 }
 
 func (l *fakeLog) Err() error { return l.err }
-func (l *fakeLog) Connections(emails map[string]bool) map[string][]netip.AddrPort {
-	out := map[string][]netip.AddrPort{}
+func (l *fakeLog) Connections(emails map[string]bool) map[string][]accesslog.Conn {
+	out := map[string][]accesslog.Conn{}
 	for email, addrs := range l.conns {
 		if emails[email] {
 			out[email] = addrs
 		}
 	}
 	return out
+}
+
+// conn is a connection to inbound port 443 from addr.
+func conn(addr string) accesslog.Conn {
+	return accesslog.Conn{Port: 443, Remote: netip.MustParseAddrPort(addr)}
 }
 
 func newTestLimiter(log *fakeLog, tc *fakeTC) *Limiter {
@@ -123,9 +130,13 @@ func TestValidateAcceptsOnlyOwnedUsersAndSaneRates(t *testing.T) {
 			t.Fatal(raw, err)
 		}
 	}
+	// A subscription may have many clients on one node.
 	many := `"ak-a0"`
-	for i := 1; i <= maxEmails; i++ {
+	for i := 1; i <= 100; i++ {
 		many += fmt.Sprintf(`,"ak-a%d"`, i)
+	}
+	if err := l.Validate("sub-1", json.RawMessage(`{"down_mbps":30,"emails":[`+many+`]}`)); err != nil {
+		t.Fatal(err)
 	}
 	for _, raw := range []string{
 		`{"down_mbps":30,"emails":["old-user"]}`,
@@ -135,7 +146,6 @@ func TestValidateAcceptsOnlyOwnedUsersAndSaneRates(t *testing.T) {
 		`{"down_mbps":30}`,
 		`{"down_mbps":30,"emails":null}`,
 		`{"down_mbps":30,"emails":["ak-a1"],"up_mbps":1}`,
-		`{"down_mbps":30,"emails":[` + many + `]}`,
 	} {
 		if l.Validate("sub-1", json.RawMessage(raw)) == nil {
 			t.Fatalf("accepted %s", raw)
@@ -147,8 +157,8 @@ func TestValidateAcceptsOnlyOwnedUsersAndSaneRates(t *testing.T) {
 // held to its limit whichever of its clients carry the traffic; a client that
 // Cloud names twice follows the lower limit.
 func TestGroupsShareOneLimit(t *testing.T) {
-	a, b, c := netip.MustParseAddrPort("203.0.113.1:1000"), netip.MustParseAddrPort("203.0.113.2:2000"), netip.MustParseAddrPort("203.0.113.3:3000")
-	log := &fakeLog{conns: map[string][]netip.AddrPort{"ak-a": {a}, "ak-b": {b}, "ak-c": {c}}}
+	a, b, c := conn("203.0.113.1:1000"), conn("203.0.113.2:2000"), conn("203.0.113.3:3000")
+	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {a}, "ak-b": {b}, "ak-c": {c}}}
 	tc := &fakeTC{out: map[string]string{}}
 	l := newTestLimiter(log, tc)
 	if _, err := l.Apply(context.Background(), map[string]json.RawMessage{
@@ -169,8 +179,8 @@ func TestGroupsShareOneLimit(t *testing.T) {
 // The rules follow the limits and the users' connections with the smallest
 // change, and a released police action is deleted on a later pass.
 func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
-	a1, a2 := netip.MustParseAddrPort("203.0.113.1:1000"), netip.MustParseAddrPort("[2001:db8::1]:2000")
-	log := &fakeLog{conns: map[string][]netip.AddrPort{"ak-a": {a1}}}
+	a1, a2 := conn("203.0.113.1:1000"), conn("[2001:db8::1]:2000")
+	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {a1}}}
 	tc := &fakeTC{out: map[string]string{}}
 	l := newTestLimiter(log, tc)
 	ctx := context.Background()
@@ -183,8 +193,8 @@ func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
 	for _, want := range []string{
 		"qdisc add dev eth0 clsact",
 		"actions replace action police rate 30mbit burst 375000 conform-exceed drop/continue index 2885681153",
-		"filter add dev eth0 egress protocol ip pref 49001 handle 1 flower ip_proto tcp dst_ip 203.0.113.1 dst_port 1000 action police index 2885681153",
-		"filter add dev eth0 egress protocol ip pref 49001 handle 2 flower ip_proto udp dst_ip 203.0.113.1 dst_port 1000 action police index 2885681153",
+		"filter add dev eth0 egress protocol ip pref 49001 handle 1 flower ip_proto tcp src_port 443 dst_ip 203.0.113.1 dst_port 1000 action police index 2885681153",
+		"filter add dev eth0 egress protocol ip pref 49001 handle 2 flower ip_proto udp src_port 443 dst_ip 203.0.113.1 dst_port 1000 action police index 2885681153",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in\n%s", want, got)
@@ -195,15 +205,15 @@ func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
 		t.Fatal("unchanged rules were rewritten")
 	}
 	// A new IPv6 connection adds only its filters.
-	log.conns["ak-a"] = []netip.AddrPort{a1, a2}
+	log.conns["ak-a"] = []accesslog.Conn{a1, a2}
 	l.sync(ctx)
 	got = tc.take()
-	if !strings.Contains(got, "filter add dev eth0 egress protocol ipv6 pref 49002 handle 3 flower ip_proto tcp dst_ip 2001:db8::1 dst_port 2000") ||
+	if !strings.Contains(got, "filter add dev eth0 egress protocol ipv6 pref 49002 handle 3 flower ip_proto tcp src_port 443 dst_ip 2001:db8::1 dst_port 2000") ||
 		strings.Contains(got, "actions replace") || strings.Contains(got, "filter del") {
 		t.Fatalf("new connection:\n%s", got)
 	}
 	// The same address now belongs to another limited user.
-	log.conns = map[string][]netip.AddrPort{"ak-a": {a2}, "ak-b": {a1}}
+	log.conns = map[string][]accesslog.Conn{"ak-a": {a2}, "ak-b": {a1}}
 	if _, err := l.Apply(ctx, targets("ak-a", 30, "ak-b", 10)); err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +242,7 @@ func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
 
 // Rules removed by hand are rebuilt when Cloud's targets are applied again.
 func TestApplyRebuildsRulesRemovedByHand(t *testing.T) {
-	log := &fakeLog{conns: map[string][]netip.AddrPort{"ak-a": {netip.MustParseAddrPort("203.0.113.1:1000")}}}
+	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {conn("203.0.113.1:1000")}}}
 	tc := &fakeTC{out: map[string]string{}}
 	l := newTestLimiter(log, tc)
 	if _, err := l.Apply(context.Background(), targets("ak-a", 30)); err != nil {
@@ -253,7 +263,7 @@ func TestApplyRebuildsRulesRemovedByHand(t *testing.T) {
 
 // Any failure removes every rule rather than leaving a half-applied set.
 func TestLimiterRemovesEverythingOnFailure(t *testing.T) {
-	log := &fakeLog{conns: map[string][]netip.AddrPort{"ak-a": {netip.MustParseAddrPort("203.0.113.1:1000")}}}
+	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {conn("203.0.113.1:1000")}}}
 	tc := &fakeTC{out: map[string]string{"qdisc show dev eth0": "qdisc clsact ffff: parent ffff:fff1"}, failBatch: true}
 	l := newTestLimiter(log, tc)
 	codes, err := l.Apply(context.Background(), targets("ak-a", 30))
@@ -269,6 +279,23 @@ func TestLimiterRemovesEverythingOnFailure(t *testing.T) {
 	codes, err = l.Apply(context.Background(), targets("ak-a", 30))
 	if err != nil || codes["ak-a"] != codeLogUnavailable || !strings.Contains(tc.take(), "filter add") {
 		t.Fatalf("apply with log unavailable = %v %v", codes, err)
+	}
+}
+
+// When rules cannot be removed, no target is confirmed, not even a release:
+// Cloud would otherwise show a user as unlimited while still limited.
+func TestFailedRemovalConfirmsNothing(t *testing.T) {
+	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {conn("203.0.113.1:1000")}}}
+	tc := &fakeTC{out: map[string]string{}}
+	l := newTestLimiter(log, tc)
+	if _, err := l.Apply(context.Background(), targets("ak-a", 30)); err != nil {
+		t.Fatal(err)
+	}
+	tc.failBatch = true
+	l.links = func() ([]string, error) { return nil, errors.New("netlink busy") }
+	codes, err := l.Apply(context.Background(), targets("ak-a", 0))
+	if err == nil || codes["ak-a"] != codeApplyFailed {
+		t.Fatalf("release with rules left = %v %v", codes, err)
 	}
 }
 

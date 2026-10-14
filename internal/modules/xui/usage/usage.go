@@ -29,13 +29,15 @@ const (
 	// close notice, which may arrive after the poll, still counts once.
 	keepMissing = 6
 	maxSafeInt  = 1<<53 - 1
+	// A report lists every client of its epoch; past this many a new epoch
+	// starts, which keeps the report well within one protocol message.
+	maxClients = 4096
 )
 
-// Owners tells which connections are inbound to Xray and whose they are.
+// Owners tells whose an inbound connection to Xray is.
 type Owners interface {
 	Err() error
-	Inbound(local netip.AddrPort) bool
-	Owner(remote netip.AddrPort) (string, bool)
+	Owner(local, remote netip.AddrPort) (string, bool)
 }
 
 // Meter polls the kernel, adds what each known connection carried to its
@@ -177,15 +179,15 @@ func (m *Meter) count(c sockdiag.Conn, before *seen) *total {
 	}
 	acked, received := before.acked, before.received
 	before.acked, before.received = c.BytesAcked, c.BytesReceived
-	if !m.owners.Inbound(c.Local) {
-		return nil
-	}
-	email, ok := m.owners.Owner(c.Remote)
+	email, ok := m.owners.Owner(c.Local, c.Remote)
 	if !ok || !xui.Owned(email) {
 		return nil
 	}
 	t := m.clients[email]
 	if t == nil {
+		if len(m.clients) >= maxClients {
+			m.epoch, m.clients = protocol.NewUUID(), map[string]*total{}
+		}
 		t = &total{Email: email}
 		m.clients[email] = t
 	}

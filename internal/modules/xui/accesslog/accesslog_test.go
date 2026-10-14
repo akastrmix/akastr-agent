@@ -5,6 +5,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -12,34 +13,39 @@ import (
 
 func TestParseAcceptedUserLines(t *testing.T) {
 	cases := []struct {
-		line, addr, email string
+		line, tag, addr, email string
 	}{
-		{"2026/10/12 12:42:51.677607 from 203.0.113.7:33704 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1", "203.0.113.7:33704", "ak-a1"},
-		{"2026/10/12 12:42:51.677607 from tcp:203.0.113.7:4000 accepted udp:8.8.8.8:53 [inbound-1 -> direct] email: ak-b2", "203.0.113.7:4000", "ak-b2"},
-		{"2026/10/12 12:42:51.677607 from [2001:db8::7]:5000 accepted tcp:example.com:443 email: old-user", "[2001:db8::7]:5000", "old-user"},
-		{"2026/10/12 12:42:51.677607 from [::ffff:203.0.113.7]:6000 accepted tcp:example.com:443 email: ak-c3", "203.0.113.7:6000", "ak-c3"},
+		{"2026/10/12 12:42:51.677607 from 203.0.113.7:33704 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1", "inbound-1", "203.0.113.7:33704", "ak-a1"},
+		{"2026/10/12 12:42:51.677607 from tcp:203.0.113.7:4000 accepted udp:8.8.8.8:53 [inbound-2 -> direct] email: ak-b2", "inbound-2", "203.0.113.7:4000", "ak-b2"},
+		{"2026/10/12 12:42:51.677607 from [::ffff:203.0.113.7]:6000 accepted tcp:example.com:443 [inbound-3 >> direct] email: ak-c3", "inbound-3", "203.0.113.7:6000", "ak-c3"},
 	}
 	for _, c := range cases {
-		addr, email, ok := parse([]byte(c.line))
-		if !ok || addr != netip.MustParseAddrPort(c.addr) || email != c.email {
-			t.Fatalf("parse(%q) = %v %q %v", c.line, addr, email, ok)
+		tag, addr, email, ok := parse([]byte(c.line))
+		if !ok || tag != c.tag || addr != netip.MustParseAddrPort(c.addr) || email != c.email {
+			t.Fatalf("parse(%q) = %q %v %q %v", c.line, tag, addr, email, ok)
 		}
 	}
 	for _, line := range []string{
 		"2026/10/12 12:42:51.677607 from 203.0.113.7:33704 rejected  proxy/vless/encoding: invalid request user id",
 		"2026/10/12 12:42:51.677607 from 127.0.0.1:40000 accepted tcp:127.0.0.1:62789 [api -> api]",
-		"2026/10/12 12:42:51.677607 from 203.0.113.7:0 accepted tcp:example.com:443 email: ak-a1",
-		"from 203.0.113.7:1 accepted tcp:example.com:443 email: ",
+		"2026/10/12 12:42:51.677607 from 203.0.113.7:0 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1",
+		// Without the route the inbound, and so the connection, is unknown.
+		"2026/10/12 12:42:51.677607 from [2001:db8::7]:5000 accepted tcp:example.com:443 email: old-user",
+		"from 203.0.113.7:1 accepted tcp:example.com:443 [inbound-1 >> direct] email: ",
 		"half a line",
 	} {
-		if _, _, ok := parse([]byte(line)); ok {
+		if _, _, _, ok := parse([]byte(line)); ok {
 			t.Fatalf("parse accepted %q", line)
 		}
 	}
 }
 
 func lineFor(addr, email string) string {
-	return "2026/10/12 12:00:00.000000 from " + addr + " accepted tcp:example.com:443 [in >> out] email: " + email + "\n"
+	return lineOn("inbound-443", addr, email)
+}
+
+func lineOn(tag, addr, email string) string {
+	return "2026/10/12 12:00:00.000000 from " + addr + " accepted tcp:example.com:443 [" + tag + " >> direct] email: " + email + "\n"
 }
 
 func appendTo(t *testing.T, path, text string) {
@@ -66,7 +72,7 @@ func TestFollowerSurvivesTruncationAndReplacement(t *testing.T) {
 	poll := func() []string {
 		got = got[:0]
 		if err := f.poll(func(b []byte) {
-			_, email, _ := parse(b)
+			_, _, email, _ := parse(b)
 			got = append(got, email)
 		}); err != nil {
 			t.Fatal(err)
@@ -131,19 +137,20 @@ func fakeXray(t *testing.T, logSection string) (proc, dir string) {
 	must(os.Symlink(filepath.Join(dir, "bin", "xray-linux-amd64"), filepath.Join(pid, "exe")))
 	must(os.Symlink(dir, filepath.Join(pid, "cwd")))
 	must(os.WriteFile(filepath.Join(pid, "cmdline"), []byte("bin/xray-linux-amd64\x00-c\x00bin/config.json\x00"), 0o600))
-	must(os.WriteFile(filepath.Join(dir, "bin", "config.json"), []byte(`{"log":`+logSection+
-		`,"inbounds":[{"port":62789},{"port":443},{"port":"8443"},{"port":"1000-2000"}]}`), 0o600))
-	header := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
-	must(os.WriteFile(filepath.Join(proc, "net", "tcp"), []byte(header), 0o600))
-	must(os.WriteFile(filepath.Join(proc, "net", "tcp6"), []byte(header), 0o600))
+	must(os.WriteFile(filepath.Join(dir, "bin", "config.json"), []byte(`{"log":`+logSection+`,"inbounds":[
+		{"tag":"api","port":62789,"protocol":"tunnel"},
+		{"tag":"inbound-443","port":443,"protocol":"vless","streamSettings":{"network":"tcp"}},
+		{"tag":"inbound-8443","port":"8443","protocol":"shadowsocks","settings":{"network":"tcp,udp"}},
+		{"tag":"inbound-9443","port":9443,"protocol":"hysteria2"},
+		{"tag":"inbound-range","port":"1000-2000","protocol":"vless"}]}`), 0o600))
 	return proc, dir
 }
 
 func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
-	if path, ports, err := locate(proc); err != nil || path != filepath.Join(dir, "access.log") ||
-		len(ports) != 3 || !ports[443] || !ports[8443] || !ports[62789] {
-		t.Fatalf("locate = %q, %v, %v", path, ports, err)
+	want := map[string]inbound{"api": {port: 62789}, "inbound-443": {port: 443}, "inbound-8443": {port: 8443, udp: true}, "inbound-9443": {port: 9443, udp: true}}
+	if path, inbounds, err := locate(proc); err != nil || path != filepath.Join(dir, "access.log") || !reflect.DeepEqual(inbounds, want) {
+		t.Fatalf("locate = %q, %v, %v", path, inbounds, err)
 	}
 	for _, section := range []string{`{"access":"none"}`, `{"access":""}`, `{"access":"./access.log","maskAddress":"quarter"}`} {
 		proc, _ := fakeXray(t, section)
@@ -164,30 +171,45 @@ func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	}
 }
 
-func TestProcAddressesAndPruning(t *testing.T) {
-	for field, want := range map[string]string{
-		"0201A8C0:D431":                         "192.168.1.2:54321",
-		"0000000000000000FFFF00000201A8C0:D431": "192.168.1.2:54321",
-		"B80D0120000000000000000001000000:01BB": "[2001:db8::1]:443",
-	} {
-		if got, ok := procAddr(field); !ok || got != netip.MustParseAddrPort(want) {
-			t.Fatalf("procAddr(%s) = %v %v", field, got, ok)
-		}
-	}
-	l := newLog("")
+// Connections end: a closed TCP one is forgotten soon, one that may be UDP
+// only after a long quiet time, and an open one never.
+func TestPruneForgetsEndedConnections(t *testing.T) {
+	l := newLog("", nil)
+	l.setInbounds(map[string]inbound{"inbound-443": {port: 443}, "inbound-8443": {port: 8443, udp: true}})
 	now := time.Now()
-	quietLive, quietGone, recent := netip.MustParseAddrPort("192.168.1.2:54321"), netip.MustParseAddrPort("192.168.1.3:1"), netip.MustParseAddrPort("192.168.1.4:1")
-	l.add([]line{{quietLive, "ak-a"}, {quietGone, "ak-a"}}, now.Add(-3*time.Hour))
-	l.add([]line{{recent, "ak-b"}}, now)
-	l.prune(now, map[netip.AddrPort]bool{quietLive: true})
+	open, closed := Conn{443, netip.MustParseAddrPort("192.168.1.2:1")}, Conn{443, netip.MustParseAddrPort("192.168.1.3:1")}
+	quietUDP, oldUDP := Conn{8443, netip.MustParseAddrPort("192.168.1.4:1")}, Conn{8443, netip.MustParseAddrPort("192.168.1.5:1")}
+	l.add([]line{{"inbound-443", open.Remote, "ak-a"}, {"inbound-443", closed.Remote, "ak-a"}, {"inbound-8443", quietUDP.Remote, "ak-b"}}, now.Add(-30*time.Minute), nil)
+	l.add([]line{{"inbound-8443", oldUDP.Remote, "ak-b"}}, now.Add(-3*time.Hour), nil)
+	l.prune(now, map[Conn]bool{open: true})
 	got := l.Connections(map[string]bool{"ak-a": true, "ak-b": true})
-	if len(got["ak-a"]) != 1 || got["ak-a"][0] != quietLive || len(got["ak-b"]) != 1 {
+	if len(got["ak-a"]) != 1 || got["ak-a"][0] != open || len(got["ak-b"]) != 1 || got["ak-b"][0] != quietUDP {
 		t.Fatalf("after prune %v", got)
 	}
-	// A reused address belongs to its newest user.
-	l.add([]line{{recent, "ak-a"}}, now)
-	if got := l.Connections(map[string]bool{"ak-b": true}); len(got) != 0 {
-		t.Fatalf("reused address kept its old user %v", got)
+	// Once seen open, a connection on a UDP-capable port is TCP: it goes soon
+	// after it closes.
+	l.add([]line{{"inbound-8443", oldUDP.Remote, "ak-b"}}, now, nil)
+	l.prune(now, map[Conn]bool{open: true, oldUDP: true})
+	l.prune(now.Add(2*time.Minute), map[Conn]bool{open: true})
+	if got := l.Connections(map[string]bool{"ak-b": true}); len(got["ak-b"]) != 1 || got["ak-b"][0] != quietUDP {
+		t.Fatalf("closed TCP on a UDP-capable port kept %v", got)
+	}
+}
+
+// One relay address may reach two inbounds at once: each connection keeps
+// its own user, and a later line rewrites only its own connection.
+func TestConnectionsAreKeyedByInboundPort(t *testing.T) {
+	l := newLog("", nil)
+	l.setInbounds(map[string]inbound{"inbound-443": {port: 443}, "inbound-8443": {port: 8443}})
+	relay := netip.MustParseAddrPort("203.0.113.9:40000")
+	l.add([]line{{"inbound-443", relay, "ak-a"}, {"inbound-8443", relay, "ak-b"}, {"inbound-unknown", relay, "ak-c"}}, time.Now(), nil)
+	a, _ := l.Owner(netip.MustParseAddrPort("198.51.100.1:443"), relay)
+	b, _ := l.Owner(netip.MustParseAddrPort("[2001:db8::1]:8443"), relay)
+	if a != "ak-a" || b != "ak-b" {
+		t.Fatalf("owners %q %q", a, b)
+	}
+	if got := l.Connections(map[string]bool{"ak-c": true}); len(got) != 0 {
+		t.Fatalf("a line of an unknown inbound was kept: %v", got)
 	}
 }
 
@@ -197,9 +219,8 @@ func TestRunMapsConnectionsFromTheLog(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
 	appendTo(t, filepath.Join(dir, "access.log"), lineFor("203.0.113.9:9", "ak-z")+lineFor("192.168.1.2:54321", "ak-z"))
 	appendTo(t, filepath.Join(dir, "copy.log"), lineFor("192.168.1.3:1", "ak-old")+lineFor("192.168.1.4:1", "ak-gone")+lineFor("192.168.1.2:54321", "ak-old"))
-	appendTo(t, filepath.Join(proc, "net", "tcp"), "   0: 0100007F:1F90 0201A8C0:D431 01 00000000:00000000 00:00000000 00000000     0        0 1 1\n"+
-		"   1: 0100007F:1F90 0301A8C0:0001 01 00000000:00000000 00:00000000 00000000     0        0 2 1\n")
-	l := newLog(proc)
+	live := map[Conn]bool{{443, netip.MustParseAddrPort("192.168.1.2:54321")}: true, {443, netip.MustParseAddrPort("192.168.1.3:1")}: true}
+	l := newLog(proc, func() (map[Conn]bool, error) { return live, nil })
 	l.copy = filepath.Join(dir, "copy.log")
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
@@ -209,15 +230,11 @@ func TestRunMapsConnectionsFromTheLog(t *testing.T) {
 	for time.Now().Before(deadline) {
 		got := l.Connections(map[string]bool{"ak-z": true, "ak-old": true, "ak-gone": true})
 		if len(got["ak-z"]) == 2 && l.Err() == nil {
-			if len(got["ak-old"]) != 1 || got["ak-old"][0] != netip.MustParseAddrPort("192.168.1.3:1") || len(got["ak-gone"]) != 0 {
+			if len(got["ak-old"]) != 1 || got["ak-old"][0] != (Conn{443, netip.MustParseAddrPort("192.168.1.3:1")}) || len(got["ak-gone"]) != 0 {
 				t.Fatalf("seeded connections %v", got)
 			}
-			// The usage meter asks per connection: on an inbound port, from whom.
-			if email, ok := l.Owner(netip.MustParseAddrPort("203.0.113.9:9")); !ok || email != "ak-z" {
+			if email, ok := l.Owner(netip.MustParseAddrPort("198.51.100.1:443"), netip.MustParseAddrPort("203.0.113.9:9")); !ok || email != "ak-z" {
 				t.Fatalf("owner %q %v", email, ok)
-			}
-			if !l.Inbound(netip.MustParseAddrPort("198.51.100.1:443")) || l.Inbound(netip.MustParseAddrPort("198.51.100.1:22")) {
-				t.Fatal("inbound ports not taken from the running configuration")
 			}
 			return
 		}
