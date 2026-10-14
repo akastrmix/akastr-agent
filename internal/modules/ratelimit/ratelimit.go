@@ -1,17 +1,18 @@
 // Package ratelimit limits the download of the users Cloud names on this
-// node. Cloud decides who and how fast; the module only finds each user's
-// connections in the Xray access log and polices them on the way out.
+// node. Cloud decides who and how fast; the module only takes each user's
+// connections from the connection ledger and polices them on the way out.
 //
 // Cloud limits groups of users: the clients of one subscription share one
 // limit, whichever of them a connection uses. On every interface that carries
-// a default route the module keeps a clsact egress hook with flower filters
-// matching each connection's inbound port and client address and port, TCP
-// and UDP alike, and all filters of a group share one police action at the
-// group's rate. The root qdisc and other filters stay as they
-// are, so nobody unlimited is touched. What the module adds is marked by two
-// filter priorities and a range of action indexes. It removes leftovers of an
-// earlier process when it starts, everything when it stops, and everything on
-// any failure: an unlimited user is better than a broken network.
+// a default route the module keeps a clsact egress hook with flower filters,
+// one per connection: a TCP connection matched by both its addresses and
+// ports, a UDP flow by the inbound port and the client address and port. All
+// filters of a group share one police action at the group's rate. The root
+// qdisc and other filters stay as they are, so nobody unlimited is touched.
+// What the module adds is marked by two filter priorities and a range of
+// action indexes. It removes leftovers of an earlier process when it starts,
+// everything when it stops, and everything on any failure: an unlimited user
+// is better than a broken network.
 package ratelimit
 
 import (
@@ -24,7 +25,7 @@ import (
 
 	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
-	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/ledger"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
@@ -68,14 +69,14 @@ func decodeTarget(raw json.RawMessage) (Target, error) {
 	return t, nil
 }
 
-// Connections is what the module needs from the access log.
-type Connections interface {
+// Flows is what the module needs from the connection ledger.
+type Flows interface {
 	Err() error
-	Connections(emails map[string]bool) map[string][]accesslog.Conn
+	Flows(emails map[string]bool) map[string][]ledger.Flow
 }
 
 type Limiter struct {
-	log    Connections
+	flows  Flows
 	tc     runner
 	routes func() (v4, v6 []string, err error)
 	links  func() ([]string, error)
@@ -93,8 +94,8 @@ var (
 	_ module.Worker  = (*Limiter)(nil)
 )
 
-func New(log Connections) *Limiter {
-	return &Limiter{log: log, tc: execTC{}, links: links, limits: map[string]Target{}, rules: newRules(),
+func New(flows Flows) *Limiter {
+	return &Limiter{flows: flows, tc: execTC{}, links: links, limits: map[string]Target{}, rules: newRules(),
 		routes: func() ([]string, []string, error) { return defaultRoutes("/proc") }}
 }
 
@@ -197,8 +198,8 @@ func (l *Limiter) sync(ctx context.Context) error {
 	return nil
 }
 
-// want is the rule set for the current limits. A log that cannot be read
-// keeps the connections already known and only reports itself.
+// want is the rule set for the current limits. When connections cannot all
+// be found, those already known stay limited and the reason is reported.
 func (l *Limiter) want() (desired, string) {
 	if len(l.limits) == 0 {
 		return desired{}, ""
@@ -214,10 +215,10 @@ func (l *Limiter) want() (desired, string) {
 		}
 	}
 	code := ""
-	if l.log.Err() != nil {
+	if l.flows.Err() != nil {
 		code = codeLogUnavailable
 	}
-	return plan(l.limits, l.log.Connections(emails), v4, v6), code
+	return plan(l.limits, l.flows.Flows(emails), v4, v6), code
 }
 
 func (l *Limiter) removeAll(ctx context.Context) error {

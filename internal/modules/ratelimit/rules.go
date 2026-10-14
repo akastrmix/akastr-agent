@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/ledger"
 )
 
 const (
@@ -22,13 +22,11 @@ const (
 	maxFilters = 16384
 )
 
-// rule is one flower filter: one protocol of one connection on one interface.
-// The connection is its inbound port and client address, as in the access log.
+// rule is one flower filter: one connection or UDP flow on one interface.
 type rule struct {
-	dev   string
-	port  uint16
-	addr  netip.AddrPort
-	proto string
+	dev           string
+	proto         string
+	local, remote netip.AddrPort
 }
 
 // desired is the rule set for some limits: each group's rate and the group
@@ -41,7 +39,7 @@ type desired struct {
 // plan matches every connection of the limited groups, IPv4 on the IPv4
 // default interfaces and IPv6 on the IPv6 ones, until maxFilters. A client
 // that Cloud names in two groups follows the lower limit.
-func plan(limits map[string]Target, conns map[string][]accesslog.Conn, v4, v6 []string) desired {
+func plan(limits map[string]Target, flows map[string][]ledger.Flow, v4, v6 []string) desired {
 	want := desired{rates: map[string]int{}, rules: map[rule]string{}}
 	groups := slices.Sorted(maps.Keys(limits))
 	owner := map[string]string{}
@@ -58,20 +56,20 @@ func plan(limits map[string]Target, conns map[string][]accesslog.Conn, v4, v6 []
 			if owner[email] != group {
 				continue
 			}
-			cs := slices.Clone(conns[email])
-			slices.SortFunc(cs, func(a, b accesslog.Conn) int { return cmp.Or(a.Remote.Compare(b.Remote), cmp.Compare(a.Port, b.Port)) })
-			for _, c := range cs {
+			fs := slices.Clone(flows[email])
+			slices.SortFunc(fs, func(a, b ledger.Flow) int {
+				return cmp.Or(a.Remote.Compare(b.Remote), a.Local.Compare(b.Local), strings.Compare(a.Proto, b.Proto))
+			})
+			for _, f := range fs {
 				devs := v4
-				if c.Remote.Addr().Is6() {
+				if f.Remote.Addr().Is6() {
 					devs = v6
 				}
 				for _, dev := range devs {
-					for _, proto := range []string{"tcp", "udp"} {
-						if len(want.rules) >= maxFilters {
-							return want
-						}
-						want.rules[rule{dev, c.Port, c.Remote, proto}] = group
+					if len(want.rules) >= maxFilters {
+						return want
 					}
+					want.rules[rule{dev, f.Proto, f.Local, f.Remote}] = group
 				}
 			}
 		}
@@ -137,12 +135,12 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 	for key, have := range r.filters {
 		if index[want.rules[key]] != have.index {
 			batch = append(batch, fmt.Sprintf("filter del dev %s egress protocol %s pref %d handle %d flower",
-				key.dev, family(key.addr), pref(key.addr), have.handle))
+				key.dev, family(key.remote), pref(key.remote), have.handle))
 		}
 	}
 	added := map[rule]installed{}
 	keys := slices.SortedFunc(maps.Keys(want.rules), func(a, b rule) int {
-		return cmp.Or(strings.Compare(a.dev, b.dev), a.addr.Compare(b.addr), cmp.Compare(a.port, b.port), strings.Compare(a.proto, b.proto))
+		return cmp.Or(strings.Compare(a.dev, b.dev), a.remote.Compare(b.remote), a.local.Compare(b.local), strings.Compare(a.proto, b.proto))
 	})
 	for _, key := range keys {
 		group := want.rules[key]
@@ -152,8 +150,8 @@ func (r *rules) converge(ctx context.Context, tc runner, want desired) error {
 		}
 		r.nextHandle++
 		added[key] = installed{r.nextHandle, i}
-		batch = append(batch, fmt.Sprintf("filter add dev %s egress protocol %s pref %d handle %d flower ip_proto %s src_port %d dst_ip %s dst_port %d action police index %d",
-			key.dev, family(key.addr), pref(key.addr), r.nextHandle, key.proto, key.port, key.addr.Addr(), key.addr.Port(), i))
+		batch = append(batch, fmt.Sprintf("filter add dev %s egress protocol %s pref %d handle %d flower %s action police index %d",
+			key.dev, family(key.remote), pref(key.remote), r.nextHandle, key.match(), i))
 	}
 	if len(batch) > 0 {
 		if _, err := tc.run(ctx, strings.Join(batch, "\n")+"\n", "-batch", "-"); err != nil {
@@ -238,6 +236,16 @@ func (r *rules) assign(want desired) map[string]uint32 {
 		next++
 	}
 	return index
+}
+
+// match is the flower match of the rule's packets on the way to the client.
+// A UDP flow's local address is unknown, so it matches by port only.
+func (r rule) match() string {
+	local := ""
+	if r.local.Addr().IsValid() {
+		local = "src_ip " + r.local.Addr().String() + " "
+	}
+	return fmt.Sprintf("ip_proto %s %ssrc_port %d dst_ip %s dst_port %d", r.proto, local, r.local.Port(), r.remote.Addr(), r.remote.Port())
 }
 
 func family(addr netip.AddrPort) string {

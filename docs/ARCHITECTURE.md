@@ -48,9 +48,9 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
-- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，并上报入站与受管客户端流量的快照。子包 `accesslog` 跟读 3x-ui 所运行 Xray 的访问日志，只在内存中记“入站端口 + 来源地址:端口 → 用户”，按内核的 TCP 连接表及时忘掉已断开的连接，供同进程模块使用；子包 `usage` 按这份对应关系把内核 TCP 计数归到用户，每分钟上报（Vision 直传期间面板计数不增长，这份计数照常增长）。
+- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，并上报入站与受管客户端流量的快照。子包 `accesslog` 跟读 3x-ui 所运行 Xray 的访问日志（截断时从 3x-ui 的副本补读），逐行交出“入站端口 + 来源地址:端口 → 用户”，不保存连接；子包 `ledger` 是唯一的连接账本：把这些行绑定到内核的 TCP 连接上，按内核计数把流量归到用户并每分钟上报（Vision 直传期间面板计数不增长，这份计数照常增长），也把每个用户的连接与 UDP 流交给限速。
 - `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
-- `internal/modules/ratelimit`：按目标把指定用户的下载限速。在默认路由网卡的 clsact egress 上按连接加 flower 过滤，同一用户共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
+- `internal/modules/ratelimit`：按目标把指定用户的下载限速。按连接账本中的连接与 UDP 流，在默认路由网卡的 clsact egress 上加 flower 过滤，同一组共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
 - `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/bootstrap`：安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。

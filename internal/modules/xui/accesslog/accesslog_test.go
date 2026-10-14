@@ -7,10 +7,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/akastrmix/akastr-agent/internal/sockdiag"
 )
 
 func TestParseAcceptedUserLines(t *testing.T) {
@@ -21,11 +20,15 @@ func TestParseAcceptedUserLines(t *testing.T) {
 		{"2026/10/12 12:42:51.677607 from tcp:203.0.113.7:4000 accepted udp:8.8.8.8:53 [inbound-2 -> direct] email: ak-b2", "inbound-2", "203.0.113.7:4000", "ak-b2"},
 		{"2026/10/12 12:42:51.677607 from [::ffff:203.0.113.7]:6000 accepted tcp:example.com:443 [inbound-3 >> direct] email: ak-c3", "inbound-3", "203.0.113.7:6000", "ak-c3"},
 	}
+	stamp := time.Date(2026, 10, 12, 12, 42, 51, 677607000, time.Local)
 	for _, c := range cases {
-		tag, addr, email, ok := parse([]byte(c.line))
-		if !ok || tag != c.tag || addr != netip.MustParseAddrPort(c.addr) || email != c.email {
-			t.Fatalf("parse(%q) = %q %v %q %v", c.line, tag, addr, email, ok)
+		ln, ok := parse([]byte(c.line))
+		if !ok || ln.tag != c.tag || ln.addr != netip.MustParseAddrPort(c.addr) || ln.email != c.email || !ln.at.Equal(stamp) {
+			t.Fatalf("parse(%q) = %+v %v", c.line, ln, ok)
 		}
+	}
+	if ln, ok := parse([]byte("garbled from 203.0.113.7:1 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1")); !ok || !ln.at.IsZero() {
+		t.Fatalf("a line without a time = %+v %v", ln, ok)
 	}
 	for _, line := range []string{
 		"2026/10/12 12:42:51.677607 from 203.0.113.7:33704 rejected  proxy/vless/encoding: invalid request user id",
@@ -36,18 +39,18 @@ func TestParseAcceptedUserLines(t *testing.T) {
 		"from 203.0.113.7:1 accepted tcp:example.com:443 [inbound-1 >> direct] email: ",
 		"half a line",
 	} {
-		if _, _, _, ok := parse([]byte(line)); ok {
+		if _, ok := parse([]byte(line)); ok {
 			t.Fatalf("parse accepted %q", line)
 		}
 	}
 }
 
 func lineFor(addr, email string) string {
-	return lineOn("inbound-443", addr, email)
+	return lineAt("2026/10/12 12:00:00.000000", "inbound-443", addr, email)
 }
 
-func lineOn(tag, addr, email string) string {
-	return "2026/10/12 12:00:00.000000 from " + addr + " accepted tcp:example.com:443 [" + tag + " >> direct] email: " + email + "\n"
+func lineAt(stamp, tag, addr, email string) string {
+	return stamp + " from " + addr + " accepted tcp:example.com:443 [" + tag + " >> direct] email: " + email + "\n"
 }
 
 func appendTo(t *testing.T, path, text string) {
@@ -62,6 +65,37 @@ func appendTo(t *testing.T, path, text string) {
 	f.Close()
 }
 
+// clearLog does what 3x-ui does to the log: append it to the copy, then
+// truncate it in place.
+func clearLog(t *testing.T, path, copy string) {
+	t.Helper()
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendTo(t, copy, string(text))
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pollEmails polls f and returns the users of the lines, an old one marked
+// with a star.
+func pollEmails(t *testing.T, f *follower) string {
+	t.Helper()
+	var got []string
+	if err := f.poll(func(b []byte, backlog bool) {
+		ln, _ := parse(b)
+		if backlog {
+			ln.email += "*"
+		}
+		got = append(got, ln.email)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Join(got, ",")
+}
+
 // The follower must keep up with Xray appending and 3x-ui truncating in place,
 // including a truncation that grows back past the old offset before a poll,
 // and with the file being replaced.
@@ -70,28 +104,17 @@ func TestFollowerSurvivesTruncationAndReplacement(t *testing.T) {
 	appendTo(t, path, lineFor("203.0.113.1:1", "ak-a"))
 	f := &follower{path: path}
 	defer f.close()
-	var got []string
-	poll := func() []string {
-		got = got[:0]
-		if err := f.poll(func(b []byte) {
-			_, _, email, _ := parse(b)
-			got = append(got, email)
-		}); err != nil {
-			t.Fatal(err)
-		}
-		return got
-	}
-	if e := poll(); strings.Join(e, ",") != "ak-a" {
+	if e := pollEmails(t, f); e != "ak-a*" {
 		t.Fatalf("first read %v", e)
 	}
 	// Half a line waits for its end.
 	full := lineFor("203.0.113.2:2", "ak-b")
 	appendTo(t, path, full[:20])
-	if e := poll(); len(e) != 0 {
+	if e := pollEmails(t, f); e != "" {
 		t.Fatalf("partial line emitted %v", e)
 	}
 	appendTo(t, path, full[20:])
-	if e := poll(); strings.Join(e, ",") != "ak-b" {
+	if e := pollEmails(t, f); e != "ak-b" {
 		t.Fatalf("completed line %v", e)
 	}
 	// Truncated to empty, then a shorter text.
@@ -99,7 +122,7 @@ func TestFollowerSurvivesTruncationAndReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendTo(t, path, lineFor("203.0.113.3:3", "ak-c"))
-	if e := poll(); strings.Join(e, ",") != "ak-c" {
+	if e := pollEmails(t, f); e != "ak-c" {
 		t.Fatalf("after truncation %v", e)
 	}
 	// Truncated and grown past the old offset before the next poll.
@@ -107,7 +130,7 @@ func TestFollowerSurvivesTruncationAndReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendTo(t, path, lineFor("203.0.113.4:4", "ak-d")+lineFor("203.0.113.5:5", "ak-e")+lineFor("203.0.113.6:6", "ak-f"))
-	if e := poll(); strings.Join(e, ",") != "ak-d,ak-e,ak-f" {
+	if e := pollEmails(t, f); e != "ak-d,ak-e,ak-f" {
 		t.Fatalf("after truncation that grew back %v", e)
 	}
 	// Replaced by a new file.
@@ -115,8 +138,105 @@ func TestFollowerSurvivesTruncationAndReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendTo(t, path, lineFor("203.0.113.7:7", "ak-g"))
-	if e := poll(); strings.Join(e, ",") != "ak-g" {
+	if e := pollEmails(t, f); e != "ak-g*" {
 		t.Fatalf("after replacement %v", e)
+	}
+}
+
+// Lines written after the last poll and before 3x-ui truncated the log are
+// read back from its copy, once and in order. A copy that no longer matches
+// what was read yields nothing rather than wrong lines.
+func TestFollowerReadsBackWhatATruncationTook(t *testing.T) {
+	dir := t.TempDir()
+	path, copy := filepath.Join(dir, "access.log"), filepath.Join(dir, "3xipl-ap.log")
+	appendTo(t, copy, lineFor("203.0.113.1:1", "ak-old"))
+	appendTo(t, path, lineFor("203.0.113.2:2", "ak-a"))
+	f := &follower{path: path, copy: copy}
+	defer f.close()
+	// Opened from its start, the log follows the end of the copy.
+	if e := pollEmails(t, f); e != "ak-old*,ak-a*" {
+		t.Fatalf("first read %v", e)
+	}
+	appendTo(t, path, lineFor("203.0.113.3:3", "ak-b"))
+	clearLog(t, path, copy)
+	appendTo(t, path, lineFor("203.0.113.4:4", "ak-c"))
+	if e := pollEmails(t, f); e != "ak-b,ak-c" {
+		t.Fatalf("after a truncation %v", e)
+	}
+	// Grown back past the old offset before the poll.
+	appendTo(t, path, lineFor("203.0.113.5:5", "ak-d"))
+	clearLog(t, path, copy)
+	appendTo(t, path, lineFor("203.0.113.6:6", "ak-e")+lineFor("203.0.113.7:7", "ak-f")+lineFor("203.0.113.8:8", "ak-g"))
+	if e := pollEmails(t, f); e != "ak-d,ak-e,ak-f,ak-g" {
+		t.Fatalf("after a truncation that grew back %v", e)
+	}
+	// Two truncations between polls: both pieces come back.
+	appendTo(t, path, lineFor("203.0.113.9:9", "ak-h"))
+	clearLog(t, path, copy)
+	appendTo(t, path, lineFor("203.0.113.10:10", "ak-i"))
+	clearLog(t, path, copy)
+	appendTo(t, path, lineFor("203.0.113.11:11", "ak-j"))
+	if e := pollEmails(t, f); e != "ak-h,ak-i,ak-j" {
+		t.Fatalf("after two truncations %v", e)
+	}
+	// A truncation while nothing was read since the last one.
+	clearLog(t, path, copy)
+	if e := pollEmails(t, f); e != "" {
+		t.Fatalf("after an empty truncation %v", e)
+	}
+	appendTo(t, path, lineFor("203.0.113.16:16", "ak-n"))
+	clearLog(t, path, copy)
+	if e := pollEmails(t, f); e != "ak-n" {
+		t.Fatalf("after a truncation from the start %v", e)
+	}
+	appendTo(t, path, lineFor("203.0.113.17:17", "ak-o"))
+	clearLog(t, path, copy)
+	appendTo(t, path, lineFor("203.0.113.18:18", "ak-p"))
+	if e := pollEmails(t, f); e != "ak-o,ak-p" {
+		t.Fatalf("after a truncation from the start that grew back %v", e)
+	}
+	// Copied but not yet truncated: the lines are read once, from the log.
+	appendTo(t, path, lineFor("203.0.113.19:19", "ak-q"))
+	text, _ := os.ReadFile(path)
+	appendTo(t, copy, string(text))
+	if e := pollEmails(t, f); e != "ak-q" {
+		t.Fatalf("before the truncation %v", e)
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if e := pollEmails(t, f); e != "" {
+		t.Fatalf("lines read twice %v", e)
+	}
+	// The same with nothing read since the last truncation.
+	appendTo(t, path, lineFor("203.0.113.20:20", "ak-r"))
+	text, _ = os.ReadFile(path)
+	appendTo(t, copy, string(text))
+	if e := pollEmails(t, f); e != "ak-r" {
+		t.Fatalf("before a truncation from the start %v", e)
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if e := pollEmails(t, f); e != "" {
+		t.Fatalf("lines read twice from the start %v", e)
+	}
+	// The copy is rotated before the truncation: nothing is read back.
+	appendTo(t, path, lineFor("203.0.113.12:12", "ak-k"))
+	if err := os.Rename(copy, copy+".prev"); err != nil {
+		t.Fatal(err)
+	}
+	clearLog(t, path, copy)
+	appendTo(t, path, lineFor("203.0.113.13:13", "ak-l"))
+	if e := pollEmails(t, f); e != "ak-l" {
+		t.Fatalf("after a rotated copy %v", e)
+	}
+	// The copy changed where the lines should be: nothing is read back.
+	appendTo(t, path, lineFor("203.0.113.14:14", "ak-m"))
+	appendTo(t, copy, lineFor("203.0.113.15:15", "ak-x"))
+	clearLog(t, path, copy)
+	if e := pollEmails(t, f); e != "" {
+		t.Fatalf("after a changed copy %v", e)
 	}
 }
 
@@ -126,7 +246,7 @@ func fakeXray(t *testing.T, logSection string) (proc, dir string) {
 	root := t.TempDir()
 	proc, dir = filepath.Join(root, "proc"), filepath.Join(root, "x-ui")
 	pid := filepath.Join(proc, "4242")
-	for _, d := range []string{pid, filepath.Join(dir, "bin"), filepath.Join(proc, "net"), filepath.Join(proc, "self")} {
+	for _, d := range []string{pid, filepath.Join(dir, "bin")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +270,8 @@ func fakeXray(t *testing.T, logSection string) (proc, dir string) {
 
 func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
-	want := map[string]inbound{"api": {port: 62789}, "inbound-443": {port: 443}, "inbound-8443": {port: 8443, udp: true}, "inbound-9443": {port: 9443, udp: true}}
+	want := map[string]inbound{"api": {port: 62789, tcp: true}, "inbound-443": {port: 443, tcp: true},
+		"inbound-8443": {port: 8443, tcp: true, udp: true}, "inbound-9443": {port: 9443, udp: true}}
 	if path, inbounds, err := locate(proc); err != nil || path != filepath.Join(dir, "access.log") || !reflect.DeepEqual(inbounds, want) {
 		t.Fatalf("locate = %q, %v, %v", path, inbounds, err)
 	}
@@ -173,97 +294,62 @@ func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	}
 }
 
-// Connections end: a closed TCP one is forgotten soon, one that may be UDP
-// only after a long quiet time, and an open one never.
-func TestPruneForgetsEndedConnections(t *testing.T) {
-	l := newLog("", nil)
-	l.setInbounds(map[string]inbound{"inbound-443": {port: 443}, "inbound-8443": {port: 8443, udp: true}})
-	now := time.Now()
-	open, closed := Conn{443, netip.MustParseAddrPort("192.168.1.2:1")}, Conn{443, netip.MustParseAddrPort("192.168.1.3:1")}
-	quietUDP, oldUDP := Conn{8443, netip.MustParseAddrPort("192.168.1.4:1")}, Conn{8443, netip.MustParseAddrPort("192.168.1.5:1")}
-	l.add([]line{{"inbound-443", open.Remote, "ak-a"}, {"inbound-443", closed.Remote, "ak-a"}, {"inbound-8443", quietUDP.Remote, "ak-b"}}, now.Add(-30*time.Minute), nil)
-	l.add([]line{{"inbound-8443", oldUDP.Remote, "ak-b"}}, now.Add(-3*time.Hour), nil)
-	l.prune(now, map[Conn]bool{open: true})
-	got := l.Connections(map[string]bool{"ak-a": true, "ak-b": true})
-	if len(got["ak-a"]) != 1 || got["ak-a"][0] != open || len(got["ak-b"]) != 1 || got["ak-b"][0] != quietUDP {
-		t.Fatalf("after prune %v", got)
-	}
-	// A short TCP connection on a UDP-capable port that no prune saw open is
-	// known as TCP from its close notice.
-	short := Conn{8443, netip.MustParseAddrPort("192.168.1.6:1")}
-	l.add([]line{{"inbound-8443", short.Remote, "ak-b"}}, now, nil)
-	l.close(sockdiag.Conn{Local: netip.MustParseAddrPort("198.51.100.1:8443"), Remote: short.Remote})
-	l.prune(time.Now().Add(2*time.Minute), map[Conn]bool{open: true})
-	if got := l.Connections(map[string]bool{"ak-b": true}); len(got["ak-b"]) != 1 || got["ak-b"][0] != quietUDP {
-		t.Fatalf("closed short TCP kept %v", got)
-	}
-	// Once seen open, a connection on a UDP-capable port is TCP: it goes soon
-	// after it closes.
-	l.add([]line{{"inbound-8443", oldUDP.Remote, "ak-b"}}, now, nil)
-	l.prune(now, map[Conn]bool{open: true, oldUDP: true})
-	l.prune(now.Add(2*time.Minute), map[Conn]bool{open: true})
-	if got := l.Connections(map[string]bool{"ak-b": true}); len(got["ak-b"]) != 1 || got["ak-b"][0] != quietUDP {
-		t.Fatalf("closed TCP on a UDP-capable port kept %v", got)
-	}
-}
-
-// One relay address may reach two inbounds at once: each connection keeps
-// its own user, and a later line rewrites only its own connection.
-func TestConnectionsAreKeyedByInboundPort(t *testing.T) {
-	l := newLog("", nil)
-	l.setInbounds(map[string]inbound{"inbound-443": {port: 443}, "inbound-8443": {port: 8443}})
-	relay := netip.MustParseAddrPort("203.0.113.9:40000")
-	l.add([]line{{"inbound-443", relay, "ak-a"}, {"inbound-8443", relay, "ak-b"}, {"inbound-unknown", relay, "ak-c"}}, time.Now(), nil)
-	a, _ := l.Owner(netip.MustParseAddrPort("198.51.100.1:443"), relay)
-	b, _ := l.Owner(netip.MustParseAddrPort("[2001:db8::1]:8443"), relay)
-	if a != "ak-a" || b != "ak-b" {
-		t.Fatalf("owners %q %q", a, b)
-	}
-	if got := l.Connections(map[string]bool{"ak-c": true}); len(got) != 0 {
-		t.Fatalf("a line of an unknown inbound was kept: %v", got)
-	}
-}
-
-// Connections from the live log and, when still open, from the copy 3x-ui
-// moved aside before the process started are known; the live log wins.
-func TestRunMapsConnectionsFromTheLog(t *testing.T) {
+// Run passes the lines already in the copy and the log, then new ones, as
+// claims on the inbound's port; a line of an inbound added later is not lost.
+// An old line keeps its time; a new line stamped on another clock counts as
+// read now. An old line of an inbound that takes TCP too is no UDP flow.
+func TestRunPassesClaims(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
-	appendTo(t, filepath.Join(dir, "access.log"), lineFor("203.0.113.9:9", "ak-z")+lineFor("192.168.1.2:54321", "ak-z"))
-	appendTo(t, filepath.Join(dir, "copy.log"), lineFor("192.168.1.3:1", "ak-old")+lineFor("192.168.1.4:1", "ak-gone")+lineFor("192.168.1.2:54321", "ak-old"))
-	live := map[Conn]bool{{443, netip.MustParseAddrPort("192.168.1.2:54321")}: true, {443, netip.MustParseAddrPort("192.168.1.3:1")}: true}
-	l := newLog(proc, func() (map[Conn]bool, error) { return live, nil })
-	l.copy = filepath.Join(dir, "copy.log")
+	path, copy := filepath.Join(dir, "access.log"), filepath.Join(dir, "3xipl-ap.log")
+	appendTo(t, copy, lineAt("2026/10/12 11:00:00.000000", "inbound-443", "203.0.113.1:1", "ak-a"))
+	appendTo(t, path, lineAt("2026/10/12 11:30:00.000000", "inbound-8443", "203.0.113.2:2", "ak-b")+
+		lineAt("2026/10/12 11:30:00.000000", "inbound-unknown", "203.0.113.3:3", "ak-c")+
+		lineAt("2026/10/12 11:40:00.000000", "inbound-9443", "203.0.113.4:4", "ak-h"))
+	l := newLog(proc, copy)
+	var mu sync.Mutex
+	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.Local)
+	l.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	claims := make(chan []Claim, 10)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
-	go func() { done <- l.Run(ctx) }()
+	go func() { done <- l.Run(ctx, func(c []Claim) { claims <- c }) }()
 	defer func() { cancel(); <-done }()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		got := l.Connections(map[string]bool{"ak-z": true, "ak-old": true, "ak-gone": true})
-		if len(got["ak-z"]) == 2 && l.Err() == nil {
-			if len(got["ak-old"]) != 1 || got["ak-old"][0] != (Conn{443, netip.MustParseAddrPort("192.168.1.3:1")}) || len(got["ak-gone"]) != 0 {
-				t.Fatalf("seeded connections %v", got)
-			}
-			if email, ok := l.Owner(netip.MustParseAddrPort("198.51.100.1:443"), netip.MustParseAddrPort("203.0.113.9:9")); !ok || email != "ak-z" {
-				t.Fatalf("owner %q %v", email, ok)
-			}
-			// An inbound added later is known from its first line on.
-			config := filepath.Join(dir, "bin", "config.json")
-			raw, _ := os.ReadFile(config)
-			added := strings.Replace(string(raw), `"inbounds":[`, `"inbounds":[{"tag":"inbound-7443","port":7443,"protocol":"vless"},`, 1)
-			if err := os.WriteFile(config, []byte(added), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			appendTo(t, filepath.Join(dir, "access.log"), lineOn("inbound-7443", "203.0.113.8:8", "ak-new"))
-			for time.Now().Before(deadline) {
-				if email, _ := l.Owner(netip.MustParseAddrPort("198.51.100.1:7443"), netip.MustParseAddrPort("203.0.113.8:8")); email == "ak-new" {
-					return
-				}
-				time.Sleep(50 * time.Millisecond)
-			}
-			t.Fatal("a new inbound's first line was lost")
+	next := func() []Claim {
+		select {
+		case c := <-claims:
+			return c
+		case <-time.After(3 * time.Second):
+			t.Fatalf("no claims; err %v", l.Err())
+			return nil
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("connection not mapped; err %v", l.Err())
+	want := []Claim{
+		{Conn{443, netip.MustParseAddrPort("203.0.113.1:1")}, "ak-a", time.Date(2026, 10, 12, 11, 0, 0, 0, time.Local), false},
+		{Conn{8443, netip.MustParseAddrPort("203.0.113.2:2")}, "ak-b", time.Date(2026, 10, 12, 11, 30, 0, 0, time.Local), false},
+		{Conn{9443, netip.MustParseAddrPort("203.0.113.4:4")}, "ak-h", time.Date(2026, 10, 12, 11, 40, 0, 0, time.Local), true},
+	}
+	if got := next(); !reflect.DeepEqual(got, want) || l.Err() != nil {
+		t.Fatalf("first claims %+v, err %v", got, l.Err())
+	}
+	// An inbound added later is known from its first line on.
+	mu.Lock()
+	now = now.Add(30 * time.Second)
+	mu.Unlock()
+	config := filepath.Join(dir, "bin", "config.json")
+	raw, _ := os.ReadFile(config)
+	added := strings.Replace(string(raw), `"inbounds":[`, `"inbounds":[{"tag":"inbound-7443","port":7443,"protocol":"vless"},`, 1)
+	if err := os.WriteFile(config, []byte(added), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	appendTo(t, path, lineAt("2026/10/12 07:59:59.500000", "inbound-7443", "203.0.113.8:8", "ak-new")+
+		lineAt("2026/10/12 12:00:29.500000", "inbound-443", "203.0.113.9:9", "ak-d")+
+		lineAt("2026/10/12 12:00:29.500000", "inbound-8443", "203.0.113.2:5", "ak-b"))
+	want = []Claim{
+		{Conn{7443, netip.MustParseAddrPort("203.0.113.8:8")}, "ak-new", l.now(), false},
+		{Conn{443, netip.MustParseAddrPort("203.0.113.9:9")}, "ak-d", time.Date(2026, 10, 12, 12, 0, 29, 500000000, time.Local), false},
+		{Conn{8443, netip.MustParseAddrPort("203.0.113.2:5")}, "ak-b", time.Date(2026, 10, 12, 12, 0, 29, 500000000, time.Local), true},
+	}
+	if got := next(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("new claims %+v", got)
+	}
 }

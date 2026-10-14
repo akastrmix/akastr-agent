@@ -13,9 +13,9 @@ import (
 // inbound is what the access log's tag of an inbound stands for.
 type inbound struct {
 	port uint16
-	// udp is whether clients can reach the inbound over UDP; a TCP-only
-	// inbound's connections can be checked against the kernel's TCP table.
-	udp bool
+	// tcp and udp are how clients can reach the inbound. The kernel's TCP
+	// table does not show UDP.
+	tcp, udp bool
 }
 
 // locate finds the one Xray process 3x-ui runs, the access log its
@@ -90,9 +90,12 @@ func locate(proc string) (string, map[string]inbound, error) {
 		if err != nil || port == 0 || ib.Tag == "" {
 			continue
 		}
-		udp := strings.Contains(ib.Settings.Network, "udp") || strings.HasPrefix(ib.Protocol, "hysteria") ||
-			ib.StreamSettings.Network == "kcp" || ib.StreamSettings.Network == "quic"
-		inbounds[ib.Tag] = inbound{port: uint16(port), udp: udp}
+		udpOnly := strings.HasPrefix(ib.Protocol, "hysteria") || ib.StreamSettings.Network == "kcp" || ib.StreamSettings.Network == "quic"
+		tcp, udp := !udpOnly, udpOnly
+		if network := ib.Settings.Network; network != "" && !udpOnly {
+			tcp, udp = strings.Contains(network, "tcp"), strings.Contains(network, "udp")
+		}
+		inbounds[ib.Tag] = inbound{port: uint16(port), tcp: tcp, udp: udp}
 	}
 	return resolve(cwd, doc.Log.Access), inbounds, nil
 }

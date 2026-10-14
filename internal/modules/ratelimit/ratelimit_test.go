@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/ledger"
 )
 
 // fakeTC records tc calls and keeps the filters they leave, so listings
@@ -80,28 +80,37 @@ func (f *fakeTC) take() string {
 	return all
 }
 
-type fakeLog struct {
+type fakeLedger struct {
 	err   error
-	conns map[string][]accesslog.Conn
+	flows map[string][]ledger.Flow
 }
 
-func (l *fakeLog) Err() error { return l.err }
-func (l *fakeLog) Connections(emails map[string]bool) map[string][]accesslog.Conn {
-	out := map[string][]accesslog.Conn{}
-	for email, addrs := range l.conns {
+func (l *fakeLedger) Err() error { return l.err }
+func (l *fakeLedger) Flows(emails map[string]bool) map[string][]ledger.Flow {
+	out := map[string][]ledger.Flow{}
+	for email, flows := range l.flows {
 		if emails[email] {
-			out[email] = addrs
+			out[email] = flows
 		}
 	}
 	return out
 }
 
-// conn is a connection to inbound port 443 from addr.
-func conn(addr string) accesslog.Conn {
-	return accesslog.Conn{Port: 443, Remote: netip.MustParseAddrPort(addr)}
+// tcp is a TCP connection from addr to the node's port 443.
+func tcp(addr string) ledger.Flow {
+	remote, local := netip.MustParseAddrPort(addr), netip.MustParseAddrPort("198.51.100.1:443")
+	if remote.Addr().Is6() {
+		local = netip.MustParseAddrPort("[2001:db8::100]:443")
+	}
+	return ledger.Flow{Proto: "tcp", Local: local, Remote: remote}
 }
 
-func newTestLimiter(log *fakeLog, tc *fakeTC) *Limiter {
+// udp is a UDP flow from addr to the node's port 8443.
+func udp(addr string) ledger.Flow {
+	return ledger.Flow{Proto: "udp", Local: netip.AddrPortFrom(netip.Addr{}, 8443), Remote: netip.MustParseAddrPort(addr)}
+}
+
+func newTestLimiter(log *fakeLedger, tc *fakeTC) *Limiter {
 	l := New(log)
 	l.tc = tc
 	l.links = func() ([]string, error) { return []string{"eth0"}, nil }
@@ -124,7 +133,7 @@ func targets(pairs ...any) map[string]json.RawMessage {
 }
 
 func TestValidateAcceptsOnlyOwnedUsersAndSaneRates(t *testing.T) {
-	l := New(&fakeLog{})
+	l := New(&fakeLedger{})
 	for _, raw := range []string{`{"down_mbps":30,"emails":["ak-a1","ak-a2"]}`, `{"down_mbps":0,"emails":[]}`} {
 		if err := l.Validate("sub-1", json.RawMessage(raw)); err != nil {
 			t.Fatal(raw, err)
@@ -157,8 +166,8 @@ func TestValidateAcceptsOnlyOwnedUsersAndSaneRates(t *testing.T) {
 // held to its limit whichever of its clients carry the traffic; a client that
 // Cloud names twice follows the lower limit.
 func TestGroupsShareOneLimit(t *testing.T) {
-	a, b, c := conn("203.0.113.1:1000"), conn("203.0.113.2:2000"), conn("203.0.113.3:3000")
-	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {a}, "ak-b": {b}, "ak-c": {c}}}
+	a, b, c := tcp("203.0.113.1:1000"), tcp("203.0.113.2:2000"), tcp("203.0.113.3:3000")
+	log := &fakeLedger{flows: map[string][]ledger.Flow{"ak-a": {a}, "ak-b": {b}, "ak-c": {c}}}
 	tc := &fakeTC{out: map[string]string{}}
 	l := newTestLimiter(log, tc)
 	if _, err := l.Apply(context.Background(), map[string]json.RawMessage{
@@ -179,8 +188,8 @@ func TestGroupsShareOneLimit(t *testing.T) {
 // The rules follow the limits and the users' connections with the smallest
 // change, and a released police action is deleted on a later pass.
 func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
-	a1, a2 := conn("203.0.113.1:1000"), conn("[2001:db8::1]:2000")
-	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {a1}}}
+	a1, u1, a2 := tcp("203.0.113.1:1000"), udp("203.0.113.1:1001"), tcp("[2001:db8::1]:2000")
+	log := &fakeLedger{flows: map[string][]ledger.Flow{"ak-a": {a1, u1}}}
 	tc := &fakeTC{out: map[string]string{}}
 	l := newTestLimiter(log, tc)
 	ctx := context.Background()
@@ -193,8 +202,8 @@ func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
 	for _, want := range []string{
 		"qdisc add dev eth0 clsact",
 		"actions replace action police rate 30mbit burst 375000 conform-exceed drop/continue index 2885681153",
-		"filter add dev eth0 egress protocol ip pref 49001 handle 1 flower ip_proto tcp src_port 443 dst_ip 203.0.113.1 dst_port 1000 action police index 2885681153",
-		"filter add dev eth0 egress protocol ip pref 49001 handle 2 flower ip_proto udp src_port 443 dst_ip 203.0.113.1 dst_port 1000 action police index 2885681153",
+		"filter add dev eth0 egress protocol ip pref 49001 handle 1 flower ip_proto tcp src_ip 198.51.100.1 src_port 443 dst_ip 203.0.113.1 dst_port 1000 action police index 2885681153",
+		"filter add dev eth0 egress protocol ip pref 49001 handle 2 flower ip_proto udp src_port 8443 dst_ip 203.0.113.1 dst_port 1001 action police index 2885681153",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in\n%s", want, got)
@@ -205,15 +214,15 @@ func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
 		t.Fatal("unchanged rules were rewritten")
 	}
 	// A new IPv6 connection adds only its filters.
-	log.conns["ak-a"] = []accesslog.Conn{a1, a2}
+	log.flows["ak-a"] = []ledger.Flow{a1, u1, a2}
 	l.sync(ctx)
 	got = tc.take()
-	if !strings.Contains(got, "filter add dev eth0 egress protocol ipv6 pref 49002 handle 3 flower ip_proto tcp src_port 443 dst_ip 2001:db8::1 dst_port 2000") ||
+	if !strings.Contains(got, "filter add dev eth0 egress protocol ipv6 pref 49002 handle 3 flower ip_proto tcp src_ip 2001:db8::100 src_port 443 dst_ip 2001:db8::1 dst_port 2000") ||
 		strings.Contains(got, "actions replace") || strings.Contains(got, "filter del") {
 		t.Fatalf("new connection:\n%s", got)
 	}
 	// The same address now belongs to another limited user.
-	log.conns = map[string][]accesslog.Conn{"ak-a": {a2}, "ak-b": {a1}}
+	log.flows = map[string][]ledger.Flow{"ak-a": {a2}, "ak-b": {a1}}
 	if _, err := l.Apply(ctx, targets("ak-a", 30, "ak-b", 10)); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +240,7 @@ func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
 	if _, err := l.Apply(ctx, targets("ak-a", 30)); err != nil {
 		t.Fatal(err)
 	}
-	if got = tc.take(); strings.Count(got, "filter del") != 2 || strings.Contains(got, "filter add") {
+	if got = tc.take(); strings.Count(got, "filter del") != 1 || strings.Contains(got, "filter add") {
 		t.Fatalf("lift:\n%s", got)
 	}
 	l.sync(ctx)
@@ -242,7 +251,7 @@ func TestLimiterConvergesRulesToLimitsAndConnections(t *testing.T) {
 
 // Rules removed by hand are rebuilt when Cloud's targets are applied again.
 func TestApplyRebuildsRulesRemovedByHand(t *testing.T) {
-	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {conn("203.0.113.1:1000")}}}
+	log := &fakeLedger{flows: map[string][]ledger.Flow{"ak-a": {tcp("203.0.113.1:1000")}}}
 	tc := &fakeTC{out: map[string]string{}}
 	l := newTestLimiter(log, tc)
 	if _, err := l.Apply(context.Background(), targets("ak-a", 30)); err != nil {
@@ -263,7 +272,7 @@ func TestApplyRebuildsRulesRemovedByHand(t *testing.T) {
 
 // Any failure removes every rule rather than leaving a half-applied set.
 func TestLimiterRemovesEverythingOnFailure(t *testing.T) {
-	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {conn("203.0.113.1:1000")}}}
+	log := &fakeLedger{flows: map[string][]ledger.Flow{"ak-a": {tcp("203.0.113.1:1000")}}}
 	tc := &fakeTC{out: map[string]string{"qdisc show dev eth0": "qdisc clsact ffff: parent ffff:fff1"}, failBatch: true}
 	l := newTestLimiter(log, tc)
 	codes, err := l.Apply(context.Background(), targets("ak-a", 30))
@@ -285,7 +294,7 @@ func TestLimiterRemovesEverythingOnFailure(t *testing.T) {
 // When rules cannot be removed, no target is confirmed, not even a release:
 // Cloud would otherwise show a user as unlimited while still limited.
 func TestFailedRemovalConfirmsNothing(t *testing.T) {
-	log := &fakeLog{conns: map[string][]accesslog.Conn{"ak-a": {conn("203.0.113.1:1000")}}}
+	log := &fakeLedger{flows: map[string][]ledger.Flow{"ak-a": {tcp("203.0.113.1:1000")}}}
 	tc := &fakeTC{out: map[string]string{}}
 	l := newTestLimiter(log, tc)
 	if _, err := l.Apply(context.Background(), targets("ak-a", 30)); err != nil {
