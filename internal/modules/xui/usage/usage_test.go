@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/sockdiag"
@@ -161,27 +162,69 @@ func TestCloseNoticesCountTheLastBytesOnce(t *testing.T) {
 	}
 }
 
-// A report lists every client of its epoch; one that would outgrow a protocol
-// message starts a new epoch instead.
-func TestManyClientsStartANewEpoch(t *testing.T) {
+// A client idle for a while leaves the report, and comes back counting from
+// zero, which Cloud reads as new traffic since the previous report.
+func TestIdleClientsLeaveAndComeBackFromZero(t *testing.T) {
+	k := &fakeKernel{conns: map[uint64]*sockdiag.Conn{}}
+	owners := &fakeOwners{owners: map[netip.AddrPort]string{clientA: "ak-a"}}
+	m := newMeter(owners, k.dump, noNotices)
+	clock := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	m.now = func() time.Time { return clock }
+	m.poll()
+	k.open(1, inbound, clientA, 5<<20, 0)
+	m.poll()
+	delete(k.conns, 1)
+	clock = clock.Add(idleAfter - time.Second)
+	m.poll()
+	if got := totals(lastReport(t, m)); got["ak-a"].Down != 5<<20 {
+		t.Fatalf("left too early %v", got)
+	}
+	clock = clock.Add(2 * time.Second)
+	m.poll()
+	if got := totals(lastReport(t, m)); len(got) != 0 {
+		t.Fatalf("idle client kept %v", got)
+	}
+	k.open(2, inbound, clientA, 1<<20, 0)
+	m.poll()
+	if got := totals(lastReport(t, m)); got["ak-a"].Down != 1<<20 {
+		t.Fatalf("returning client %v", got)
+	}
+}
+
+// More active clients than one message holds make the report say so, rather
+// than send a part or start over every poll and look healthy.
+func TestTooManyActiveClientsReportUnavailable(t *testing.T) {
 	k := &fakeKernel{conns: map[uint64]*sockdiag.Conn{}}
 	owners := &fakeOwners{owners: map[netip.AddrPort]string{}}
 	m := newMeter(owners, k.dump, noNotices)
 	m.poll()
-	first := lastReport(t, m).Epoch
+	epoch := lastReport(t, m).Epoch
 	for i := 0; i <= maxClients; i++ {
 		remote := netip.AddrPortFrom(netip.MustParseAddr("203.0.113.1"), uint16(1000+i))
 		owners.owners[remote] = fmt.Sprintf("ak-c%d", i)
 		k.open(uint64(100+i), inbound, remote, 1, 0)
 	}
 	m.poll()
+	m.poll()
 	r := lastReport(t, m)
-	if r.Epoch == first || len(r.Clients) > maxClients {
-		t.Fatalf("epoch %s → %s with %d clients", first, r.Epoch, len(r.Clients))
+	if r.ErrorCode != "xui_usage_unavailable" || len(r.Clients) != 0 || r.Epoch != epoch {
+		t.Fatalf("report %s with %d clients in epoch %s", r.ErrorCode, len(r.Clients), r.Epoch)
 	}
-	data, _ := json.Marshal(r)
-	if len(data) > 900<<10 {
-		t.Fatalf("report of %d bytes", len(data))
+}
+
+// A connection's last bytes belong to its own user even when, by the time the
+// close notice arrives, a new connection from the same address has another.
+func TestClosingBytesStayWithTheirUser(t *testing.T) {
+	k := &fakeKernel{conns: map[uint64]*sockdiag.Conn{}}
+	owners := &fakeOwners{owners: map[netip.AddrPort]string{clientA: "ak-a"}}
+	m := newMeter(owners, k.dump, noNotices)
+	m.poll()
+	k.open(1, inbound, clientA, 1<<20, 0)
+	m.poll()
+	owners.owners[clientA] = "ak-b"
+	m.close(sockdiag.Conn{Cookie: 1, Local: inbound, Remote: clientA, BytesAcked: 3 << 20})
+	if got := totals(lastReport(t, m)); got["ak-a"].Down != 3<<20 || got["ak-b"].Down != 0 {
+		t.Fatalf("totals %v", got)
 	}
 }
 

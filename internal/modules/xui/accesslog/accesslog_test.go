@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/akastrmix/akastr-agent/internal/sockdiag"
 )
 
 func TestParseAcceptedUserLines(t *testing.T) {
@@ -186,6 +188,15 @@ func TestPruneForgetsEndedConnections(t *testing.T) {
 	if len(got["ak-a"]) != 1 || got["ak-a"][0] != open || len(got["ak-b"]) != 1 || got["ak-b"][0] != quietUDP {
 		t.Fatalf("after prune %v", got)
 	}
+	// A short TCP connection on a UDP-capable port that no prune saw open is
+	// known as TCP from its close notice.
+	short := Conn{8443, netip.MustParseAddrPort("192.168.1.6:1")}
+	l.add([]line{{"inbound-8443", short.Remote, "ak-b"}}, now, nil)
+	l.close(sockdiag.Conn{Local: netip.MustParseAddrPort("198.51.100.1:8443"), Remote: short.Remote})
+	l.prune(time.Now().Add(2*time.Minute), map[Conn]bool{open: true})
+	if got := l.Connections(map[string]bool{"ak-b": true}); len(got["ak-b"]) != 1 || got["ak-b"][0] != quietUDP {
+		t.Fatalf("closed short TCP kept %v", got)
+	}
 	// Once seen open, a connection on a UDP-capable port is TCP: it goes soon
 	// after it closes.
 	l.add([]line{{"inbound-8443", oldUDP.Remote, "ak-b"}}, now, nil)
@@ -236,7 +247,21 @@ func TestRunMapsConnectionsFromTheLog(t *testing.T) {
 			if email, ok := l.Owner(netip.MustParseAddrPort("198.51.100.1:443"), netip.MustParseAddrPort("203.0.113.9:9")); !ok || email != "ak-z" {
 				t.Fatalf("owner %q %v", email, ok)
 			}
-			return
+			// An inbound added later is known from its first line on.
+			config := filepath.Join(dir, "bin", "config.json")
+			raw, _ := os.ReadFile(config)
+			added := strings.Replace(string(raw), `"inbounds":[`, `"inbounds":[{"tag":"inbound-7443","port":7443,"protocol":"vless"},`, 1)
+			if err := os.WriteFile(config, []byte(added), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			appendTo(t, filepath.Join(dir, "access.log"), lineOn("inbound-7443", "203.0.113.8:8", "ak-new"))
+			for time.Now().Before(deadline) {
+				if email, _ := l.Owner(netip.MustParseAddrPort("198.51.100.1:7443"), netip.MustParseAddrPort("203.0.113.8:8")); email == "ak-new" {
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			t.Fatal("a new inbound's first line was lost")
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

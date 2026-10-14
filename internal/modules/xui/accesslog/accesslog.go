@@ -24,9 +24,12 @@ import (
 )
 
 const (
-	pollInterval  = time.Second
-	locateEvery   = 5 * time.Minute
-	locateRetry   = 10 * time.Second
+	pollInterval = time.Second
+	locateEvery  = 5 * time.Minute
+	locateRetry  = 10 * time.Second
+	// A line naming an inbound the cached configuration lacks rereads the
+	// configuration at most this often.
+	relocateEvery = 10 * time.Second
 	pruneInterval = time.Minute
 	// A closed TCP connection is forgotten after this grace, which leaves its
 	// close notice time to be counted. A connection that may be UDP has no
@@ -49,8 +52,10 @@ type Conn struct {
 // Log is the connection table and the loop that keeps it current.
 type Log struct {
 	proc, copy string
-	// live lists the open TCP connections of the host.
-	live func() (map[Conn]bool, error)
+	// live lists the open TCP connections of the host; closed calls back for
+	// each TCP connection the kernel destroys.
+	live   func() (map[Conn]bool, error)
+	closed func(context.Context, func(sockdiag.Conn)) error
 
 	mu    sync.RWMutex
 	conns map[Conn]entry
@@ -68,7 +73,11 @@ type entry struct {
 	tcp bool
 }
 
-func New() *Log { return newLog("/proc", liveTCP) }
+func New() *Log {
+	l := newLog("/proc", liveTCP)
+	l.closed = sockdiag.Closed
+	return l
+}
 
 func newLog(proc string, live func() (map[Conn]bool, error)) *Log {
 	return &Log{proc: proc, copy: persistentCopy, live: live, conns: map[Conn]entry{},
@@ -119,11 +128,16 @@ func (l *Log) Owner(local, remote netip.AddrPort) (string, bool) {
 // Run follows the log until ctx ends. Losing the log is not fatal: the table
 // keeps its connections and Err says why, until the log is found again.
 func (l *Log) Run(ctx context.Context) error {
+	if l.closed != nil {
+		// A short TCP connection may open and close between two prunes; its
+		// close notice tells it was TCP. Without notices, prunes still work.
+		go func() { _ = l.closed(ctx, l.close) }()
+	}
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	var f *follower
 	defer func() { f.close() }()
-	var locateAt, pruneAt time.Time
+	var locateAt, pruneAt, relocateAt time.Time
 	seeded := false
 	for {
 		now := time.Now()
@@ -157,6 +171,14 @@ func (l *Log) Run(ctx context.Context) error {
 					lines = append(lines, line{tag, addr, email})
 				}
 			})
+			// An inbound added since the configuration was read would lose its
+			// first lines, and a long connection logs only once.
+			if l.unknown(lines) && !now.Before(relocateAt) {
+				if _, inbounds, err := locate(l.proc); err == nil {
+					l.setInbounds(inbounds)
+				}
+				relocateAt = now.Add(relocateEvery)
+			}
 			l.add(lines, now, nil)
 			l.setErr(err)
 			if err != nil {
@@ -207,6 +229,30 @@ func (l *Log) setErr(err error) {
 	l.mu.Lock()
 	l.err = err
 	l.mu.Unlock()
+}
+
+// unknown reports whether a line names an inbound the configuration lacks.
+func (l *Log) unknown(lines []line) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	for _, ln := range lines {
+		if _, found := l.inbounds[ln.tag]; !found {
+			return true
+		}
+	}
+	return false
+}
+
+// close marks a connection the kernel destroyed as a closed TCP one, which
+// the next prune after keepClosed forgets.
+func (l *Log) close(c sockdiag.Conn) {
+	key := Conn{c.Local.Port(), c.Remote}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if e, found := l.conns[key]; found {
+		e.tcp, e.seen = true, time.Now()
+		l.conns[key] = e
+	}
 }
 
 func (l *Log) setInbounds(inbounds map[string]inbound) {

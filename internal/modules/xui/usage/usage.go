@@ -29,8 +29,11 @@ const (
 	// close notice, which may arrive after the poll, still counts once.
 	keepMissing = 6
 	maxSafeInt  = 1<<53 - 1
-	// A report lists every client of its epoch; past this many a new epoch
-	// starts, which keeps the report well within one protocol message.
+	// A client with no connection and no traffic for idleAfter leaves the
+	// report and counts from zero if it comes back.
+	idleAfter = 10 * time.Minute
+	// More clients than this would not fit one protocol message; the report
+	// then says the counts are unavailable rather than send part of them.
 	maxClients = 4096
 )
 
@@ -47,6 +50,7 @@ type Meter struct {
 	owners Owners
 	dump   func() ([]sockdiag.Conn, error)
 	closed func(context.Context, func(sockdiag.Conn)) error
+	now    func() time.Time
 	wake   chan struct{}
 
 	mu sync.Mutex
@@ -61,9 +65,11 @@ type Meter struct {
 
 var _ module.Reporter = (*Meter)(nil)
 
-// seen is what a connection had carried when it was last counted.
+// seen is what a connection had carried when it was last counted, and for
+// whom.
 type seen struct {
 	acked, received uint64
+	email           string
 	missing         int
 }
 
@@ -72,12 +78,14 @@ type total struct {
 	Up          uint64 `json:"up"`
 	Down        uint64 `json:"down"`
 	Connections int    `json:"connections"`
+	// active is when the client last had a connection or traffic.
+	active time.Time
 }
 
 func New(owners Owners) *Meter { return newMeter(owners, sockdiag.TCP, sockdiag.Closed) }
 
 func newMeter(owners Owners, dump func() ([]sockdiag.Conn, error), closed func(context.Context, func(sockdiag.Conn)) error) *Meter {
-	return &Meter{owners: owners, dump: dump, closed: closed, wake: make(chan struct{}, 1),
+	return &Meter{owners: owners, dump: dump, closed: closed, now: time.Now, wake: make(chan struct{}, 1),
 		epoch: protocol.NewUUID(), seen: map[uint64]*seen{}, clients: map[string]*total{}}
 }
 
@@ -139,13 +147,19 @@ func (m *Meter) poll() {
 			}
 		}
 		before.missing = 0
-		if t := m.count(c, before); t != nil {
+		if t := m.count(c, before, false); t != nil {
 			t.Connections++
+			t.active = m.now()
 		}
 	}
 	for cookie, s := range m.seen {
 		if s.missing > keepMissing {
 			delete(m.seen, cookie)
+		}
+	}
+	for email, t := range m.clients {
+		if t.Connections == 0 && m.now().Sub(t.active) >= idleAfter {
+			delete(m.clients, email)
 		}
 	}
 	m.started = true
@@ -163,7 +177,7 @@ func (m *Meter) close(c sockdiag.Conn) {
 	if before == nil {
 		before = &seen{}
 	}
-	m.count(c, before)
+	m.count(c, before, true)
 	// Keep the final count so a later notice or poll adds nothing.
 	m.seen[c.Cookie] = before
 }
@@ -171,7 +185,9 @@ func (m *Meter) close(c sockdiag.Conn) {
 // count adds the bytes since before to the connection's user and moves before
 // to now. It returns the user's total, or nil for a connection that is not an
 // inbound one of an owned client known from the log; those bytes are skipped.
-func (m *Meter) count(c sockdiag.Conn, before *seen) *total {
+// A closing connection counts for the user it was counted for while open: by
+// the time its notice arrives, another connection may have taken its address.
+func (m *Meter) count(c sockdiag.Conn, before *seen, closing bool) *total {
 	// Counters only grow; lower ones come from a poll taken before a close
 	// notice that was already counted.
 	if c.BytesAcked < before.acked || c.BytesReceived < before.received {
@@ -179,20 +195,24 @@ func (m *Meter) count(c sockdiag.Conn, before *seen) *total {
 	}
 	acked, received := before.acked, before.received
 	before.acked, before.received = c.BytesAcked, c.BytesReceived
-	email, ok := m.owners.Owner(c.Local, c.Remote)
+	email, ok := before.email, closing && before.email != ""
+	if !ok {
+		email, ok = m.owners.Owner(c.Local, c.Remote)
+	}
 	if !ok || !xui.Owned(email) {
 		return nil
 	}
+	before.email = email
 	t := m.clients[email]
 	if t == nil {
-		if len(m.clients) >= maxClients {
-			m.epoch, m.clients = protocol.NewUUID(), map[string]*total{}
-		}
 		t = &total{Email: email}
 		m.clients[email] = t
 	}
 	t.Down += c.BytesAcked - acked
 	t.Up += c.BytesReceived - received
+	if c.BytesAcked > acked || c.BytesReceived > received {
+		t.active = m.now()
+	}
 	// JSON integers stay exact below 2^53; a new epoch starts over.
 	if t.Down > maxSafeInt || t.Up > maxSafeInt {
 		m.epoch, m.clients = protocol.NewUUID(), map[string]*total{}
@@ -216,8 +236,12 @@ func (m *Meter) report(publish module.Publish) {
 	case m.owners.Err() != nil:
 		r.ErrorCode = "xui_log_unavailable"
 	}
-	for _, email := range slices.Sorted(maps.Keys(m.clients)) {
-		r.Clients = append(r.Clients, m.clients[email])
+	if len(m.clients) > maxClients {
+		r.ErrorCode = "xui_usage_unavailable"
+	} else {
+		for _, email := range slices.Sorted(maps.Keys(m.clients)) {
+			r.Clients = append(r.Clients, m.clients[email])
+		}
 	}
 	data, err := json.Marshal(r)
 	if err != nil {
