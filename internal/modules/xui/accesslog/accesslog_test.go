@@ -131,7 +131,8 @@ func fakeXray(t *testing.T, logSection string) (proc, dir string) {
 	must(os.Symlink(filepath.Join(dir, "bin", "xray-linux-amd64"), filepath.Join(pid, "exe")))
 	must(os.Symlink(dir, filepath.Join(pid, "cwd")))
 	must(os.WriteFile(filepath.Join(pid, "cmdline"), []byte("bin/xray-linux-amd64\x00-c\x00bin/config.json\x00"), 0o600))
-	must(os.WriteFile(filepath.Join(dir, "bin", "config.json"), []byte(`{"log":`+logSection+`,"inbounds":[]}`), 0o600))
+	must(os.WriteFile(filepath.Join(dir, "bin", "config.json"), []byte(`{"log":`+logSection+
+		`,"inbounds":[{"port":62789},{"port":443},{"port":"8443"},{"port":"1000-2000"}]}`), 0o600))
 	header := "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
 	must(os.WriteFile(filepath.Join(proc, "net", "tcp"), []byte(header), 0o600))
 	must(os.WriteFile(filepath.Join(proc, "net", "tcp6"), []byte(header), 0o600))
@@ -140,12 +141,13 @@ func fakeXray(t *testing.T, logSection string) (proc, dir string) {
 
 func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
-	if path, err := locate(proc); err != nil || path != filepath.Join(dir, "access.log") {
-		t.Fatalf("locate = %q, %v", path, err)
+	if path, ports, err := locate(proc); err != nil || path != filepath.Join(dir, "access.log") ||
+		len(ports) != 3 || !ports[443] || !ports[8443] || !ports[62789] {
+		t.Fatalf("locate = %q, %v, %v", path, ports, err)
 	}
 	for _, section := range []string{`{"access":"none"}`, `{"access":""}`, `{"access":"./access.log","maskAddress":"quarter"}`} {
 		proc, _ := fakeXray(t, section)
-		if _, err := locate(proc); err == nil {
+		if _, _, err := locate(proc); err == nil {
 			t.Fatalf("locate accepted %s", section)
 		}
 	}
@@ -157,7 +159,7 @@ func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	if err := os.Symlink("/usr/local/x-ui/bin/xray-linux-amd64", filepath.Join(other, "exe")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := locate(proc); err == nil {
+	if _, _, err := locate(proc); err == nil {
 		t.Fatal("locate chose between two Xray processes")
 	}
 }
@@ -209,6 +211,13 @@ func TestRunMapsConnectionsFromTheLog(t *testing.T) {
 		if len(got["ak-z"]) == 2 && l.Err() == nil {
 			if len(got["ak-old"]) != 1 || got["ak-old"][0] != netip.MustParseAddrPort("192.168.1.3:1") || len(got["ak-gone"]) != 0 {
 				t.Fatalf("seeded connections %v", got)
+			}
+			// The usage meter asks per connection: on an inbound port, from whom.
+			if email, ok := l.Owner(netip.MustParseAddrPort("203.0.113.9:9")); !ok || email != "ak-z" {
+				t.Fatalf("owner %q %v", email, ok)
+			}
+			if !l.Inbound(netip.MustParseAddrPort("198.51.100.1:443")) || l.Inbound(netip.MustParseAddrPort("198.51.100.1:22")) {
+				t.Fatal("inbound ports not taken from the running configuration")
 			}
 			return
 		}

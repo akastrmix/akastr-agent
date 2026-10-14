@@ -17,10 +17,10 @@ import (
 // locate finds the one Xray process 3x-ui runs and the access log its
 // configuration writes. A log that is off or masks addresses cannot say who a
 // connection belongs to.
-func locate(proc string) (string, error) {
+func locate(proc string) (string, map[uint16]bool, error) {
 	dirs, err := os.ReadDir(proc)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var pids []string
 	for _, d := range dirs {
@@ -33,41 +33,52 @@ func locate(proc string) (string, error) {
 		}
 	}
 	if len(pids) != 1 {
-		return "", fmt.Errorf("found %d Xray processes started by 3x-ui", len(pids))
+		return "", nil, fmt.Errorf("found %d Xray processes started by 3x-ui", len(pids))
 	}
 	dir := filepath.Join(proc, pids[0])
 	cwd, err := os.Readlink(filepath.Join(dir, "cwd"))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	config := configArg(strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00"))
 	if config == "" {
-		return "", errors.New("the Xray command line names no configuration file")
+		return "", nil, errors.New("the Xray command line names no configuration file")
 	}
 	raw, err := os.ReadFile(resolve(cwd, config))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var doc struct {
 		Log struct {
 			Access      string `json:"access"`
 			MaskAddress string `json:"maskAddress"`
 		} `json:"log"`
+		Inbounds []struct {
+			Port json.RawMessage `json:"port"`
+		} `json:"inbounds"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return "", errors.New("the Xray configuration is not valid JSON")
+		return "", nil, errors.New("the Xray configuration is not valid JSON")
 	}
 	if doc.Log.Access == "" || doc.Log.Access == "none" {
-		return "", errors.New("the Xray access log is off")
+		return "", nil, errors.New("the Xray access log is off")
 	}
 	if doc.Log.MaskAddress != "" {
-		return "", errors.New("the Xray access log masks addresses")
+		return "", nil, errors.New("the Xray access log masks addresses")
 	}
-	return resolve(cwd, doc.Log.Access), nil
+	// 3x-ui writes each port as a number. Ranges and environment references
+	// are skipped: connections on them stay unknown.
+	ports := map[uint16]bool{}
+	for _, ib := range doc.Inbounds {
+		if port, err := strconv.ParseUint(strings.Trim(string(ib.Port), `"`), 10, 16); err == nil && port > 0 {
+			ports[uint16(port)] = true
+		}
+	}
+	return resolve(cwd, doc.Log.Access), ports, nil
 }
 
 func configArg(args []string) string {

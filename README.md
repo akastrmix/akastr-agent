@@ -19,7 +19,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 - 公网 IPv4 与可选 IPv6 定时观察；
 - HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
 - 已有 SOCKS5 代理的端口与登录（只供主控派发 IPQuality，Agent 不运行代理）；代理地址始终使用 Agent 观测到的公网 IPv4；
-- 3x-ui：按 Cloud 下发的目标管理本机面板中的受管客户端，并上报入站与流量；
+- 3x-ui：按 Cloud 下发的目标管理本机面板中的受管客户端，并上报入站与流量；开了 Xray 访问日志时，还按连接从内核计每个受管客户端的实时流量（供公平使用判定）；
 - 限速：按 Cloud 下发的目标限制指定用户的下载，靠 3x-ui 的 Xray 访问日志认出连接属于谁；
 - IPQuality Runner：见下。
 

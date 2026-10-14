@@ -39,6 +39,8 @@ type Log struct {
 
 	mu    sync.RWMutex
 	conns map[netip.AddrPort]entry
+	// ports are the inbound ports of the running Xray configuration.
+	ports map[uint16]bool
 	err   error
 }
 
@@ -50,7 +52,8 @@ type entry struct {
 func New() *Log { return newLog("/proc") }
 
 func newLog(proc string) *Log {
-	return &Log{proc: proc, copy: persistentCopy, conns: map[netip.AddrPort]entry{}, err: errors.New("xray access log not read yet")}
+	return &Log{proc: proc, copy: persistentCopy, conns: map[netip.AddrPort]entry{}, ports: map[uint16]bool{},
+		err: errors.New("xray access log not read yet")}
 }
 
 // Err reports why the log is not being followed, or nil while it is.
@@ -73,6 +76,21 @@ func (l *Log) Connections(emails map[string]bool) map[string][]netip.AddrPort {
 	return out
 }
 
+// Inbound reports whether a local address is on an inbound port of Xray.
+func (l *Log) Inbound(local netip.AddrPort) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.ports[local.Port()]
+}
+
+// Owner returns the user a connection from the client address belongs to.
+func (l *Log) Owner(remote netip.AddrPort) (string, bool) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	e, found := l.conns[remote]
+	return e.email, found
+}
+
 // Run follows the log until ctx ends. Losing the log is not fatal: the table
 // keeps its connections and Err says why, until the log is found again.
 func (l *Log) Run(ctx context.Context) error {
@@ -85,7 +103,12 @@ func (l *Log) Run(ctx context.Context) error {
 	for {
 		now := time.Now()
 		if !now.Before(locateAt) {
-			path, err := locate(l.proc)
+			path, ports, err := locate(l.proc)
+			if err == nil {
+				l.mu.Lock()
+				l.ports = ports
+				l.mu.Unlock()
+			}
 			if err == nil && (f == nil || f.path != path) {
 				f.close()
 				f = &follower{path: path}

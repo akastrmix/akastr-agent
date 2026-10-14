@@ -140,6 +140,8 @@ key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `cl
 - 目标为空时，面板中已不存在的入站视为一致（不报 `xui_inbound_missing`），使已删除入站的 key 也能完成退役。
 - 有写入时重新读取面板核对，不一致返回 `xui_unconfirmed`。其他错误码：面板请求类（`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`）、`xui_inbound_missing`、`xui_inbound_changed`（入站协议、method 与目标凭据不再匹配）、`xui_inbound_invalid`、`xui_client_conflict`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`。
 
+**访问日志**：开启 `xui` 后，Agent 跟读 3x-ui 所运行 Xray 的访问日志，记下每条被接受连接的“来源地址:端口 → email”，供 `xui.usage` 与 `rate_limit` 使用。经过中转时，来源是中转机的地址，每条用户连接对应一条中转连接。启动时还会读 3x-ui 移出的副本（`/var/log/x-ui/3xipl-ap.log`）末尾，补上仍然在线的 TCP 连接。记录只在内存，不上报，也不写盘。日志须由运营者在面板开启且不掩码地址（`log.access` 不为 `none`，`maskAddress` 为空）；路径按 Xray 进程的工作目录解析。没开时 Agent 只是认不出连接，不影响面板对齐与快照。
+
 ### `rate_limit`
 
 key 是 Cloud 的限速组（一份订阅）。state 必须且只能包含两项：
@@ -149,7 +151,7 @@ key 是 Cloud 的限速组（一份订阅）。state 必须且只能包含两项
 
 组内所有客户端在本机所有入站上的连接共享这一个限速，只限下载（节点发往客户端的方向）。`down_mbps` 为 0 表示不限，Cloud 退役 key 前下发的空目标是 `{"down_mbps":0,"emails":[]}`。同一客户端出现在两个组里时，按较低的限速执行。
 
-- **认人**：Agent 跟读 3x-ui 所运行 Xray 的访问日志，记下每条被接受连接的“来源地址:端口 → email”。经过中转时，来源是中转机的地址，每条用户连接对应一条中转连接。启动时还会读 3x-ui 移出的副本（`/var/log/x-ui/3xipl-ap.log`）末尾，补上仍然在线的 TCP 连接。记录只在内存，不上报，也不写盘。日志须开启且不掩码地址（`log.access` 不为 `none`，`maskAddress` 为空）；路径按 Xray 进程的工作目录解析。
+- **认人**：按 `xui` 的访问日志认出每条连接属于谁（见上）。
 - **执行**：
   - 在有默认路由的网卡上挂 clsact egress。
   - 被限用户的每条已知连接，按目的地址:端口各加 TCP、UDP 两条 flower 过滤（IPv4 优先级 49001，IPv6 优先级 49002），同一用户的过滤共用一个 police 动作（编号 `0xAC000001` 起）。
@@ -169,10 +171,18 @@ key 是 Cloud 的限速组（一份订阅）。state 必须且只能包含两项
 | `ip.address` | `family`（`ipv4`/`ipv6`）、`address`、`observed_at`、`command_id`（UUID 或 null） |
 | `changeip.unchanged` | `command_id`、`address`、`observed_at` |
 | `xui.snapshot` | `inbounds`、`traffic`，见下 |
+| `xui.usage` | `epoch`、`error_code`、`clients`，见下 |
 
 `xui.snapshot` 每分钟读取一次面板，内容变化时发送，至少每 10 分钟发送一次，每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照被新快照取代。`inbounds` 每项为 `id`、`remark`、`protocol`、`listen`、`port`、`enable`、`settings`、`stream_settings`（后两者为 JSON object）；`traffic` 每项为受管客户端的 `email`、`up`、`down`（bytes）与本机已执行的 `reset_seq`，Cloud 只采用与其当前序号相同的计数。
 
 秘密集中的部分按白名单复制，3x-ui 以后新增的字段也不会带出：settings 只保留 VLESS 的 `encryption`，Shadowsocks 的 `method`、`password`、`network`，Hysteria 的 `version`；stream_settings 的 `tlsSettings` 只保留 `serverName`、`alpn` 和 `settings` 中的 `fingerprint`、`allowInsecure`、`echConfigList`，`realitySettings` 只保留 `serverNames`、`shortIds` 和 `settings` 中的 `publicKey`、`fingerprint`、`serverName`、`spiderX`、`mldsa65Verify`；其余传输字段只保留 `externalProxy`、`finalmask`（客户端也须使用的混淆设置）和 `tcpSettings.header.type`，其他（例如服务端的 `hysteriaSettings.auth`）都不上报。其他协议的 settings 为空对象，stream_settings 只有 `network` 与 `security`。其他用户的凭据、服务端私钥与密码、ECH 服务端密钥、Reality 种子与证书不离开节点。
+
+`xui.usage` 是 Agent 自己按 TCP 连接计的每客户流量，与面板计数无关。Xray 的 Vision 走内核直传时要到连接结束才把字节记入用户统计，这份计数不受影响。每分钟发送一次，连接 ready 后立即发送；只保留最新一份，未确认的旧计数被新的取代。
+
+- **怎么计**：每 5 秒向内核读一次本机 TCP 连接的 `tcp_info`：`bytes_acked` 记为下行（发往客户），`bytes_received` 记为上行，都含协议开销。连接关闭时再按内核的关闭通知补上最后一段。只算本地端口是 Xray 配置中的入站端口、且来源地址:端口被访问日志认出的连接；不计 UDP。没认出主人的连接不计；关闭通知在连接大量同时关闭、内核来不及排队时可能丢失，丢失的连接少计最后不到 5 秒。
+- `epoch`：本进程启动时生成的 UUID。计数从此刻开始，启动时已有的连接只计此后的字节；epoch 变化即从 0 重新计。
+- `clients`：本 epoch 内有过流量或当前有连接的受管客户端，email 不重复；每项必须且只能包含 `email`、`up`、`down`（本 epoch 累计 bytes，不减少）与 `connections`（当前认出的 TCP 连接数）。
+- `error_code`：空表示计数完整；`xui_log_unavailable` 表示读不到访问日志，新连接认不出、已认出的继续计；`xui_usage_unavailable` 表示读不到内核连接信息，计数停止。非空时计数可能偏少。
 
 ## IP 观察、ChangeIP 与 IPv4 核对
 

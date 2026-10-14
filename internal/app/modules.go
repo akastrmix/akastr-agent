@@ -23,6 +23,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/modules/socks5"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/usage"
 )
 
 // Fixed runtime limits. Cloud configures what a node does, not these bounds.
@@ -128,14 +129,17 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 			return err
 		}
 		runtime.desired.Add(xui.Name, panel)
-		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel))
-	}
-	if m.rateLimit != nil {
+		// One reading of the access log serves the usage meter and the limiter.
 		log := accesslog.New()
-		limiter := ratelimit.New(log)
-		runtime.desired.Add(ratelimit.Name, limiter)
-		runtime.workers = append(runtime.workers, log, limiter)
-	} else {
+		runtime.workers = append(runtime.workers, log)
+		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel), usage.New(log))
+		if m.rateLimit != nil {
+			limiter := ratelimit.New(log)
+			runtime.desired.Add(ratelimit.Name, limiter)
+			runtime.workers = append(runtime.workers, limiter)
+		}
+	}
+	if m.rateLimit == nil {
 		runtime.workers = append(runtime.workers, ratelimit.Leftovers{})
 	}
 	if m.ipWatch != nil {

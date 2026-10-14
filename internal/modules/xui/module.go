@@ -23,10 +23,12 @@ const (
 	Name = "xui"
 	// KindSnapshot reports the panel's inbounds and the owned clients' traffic.
 	KindSnapshot = "xui.snapshot"
-	ownedPrefix  = "ak-"
-	visionFlow   = "xtls-rprx-vision"
-	maxSafeInt   = 1<<53 - 1
-	maxComment   = 200
+	// KindUsage reports the owned clients' traffic counted from the kernel.
+	KindUsage   = "xui.usage"
+	ownedPrefix = "ak-"
+	visionFlow  = "xtls-rprx-vision"
+	maxSafeInt  = 1<<53 - 1
+	maxComment  = 200
 )
 
 var ownedEmail = regexp.MustCompile(`^ak-[a-z0-9]{1,61}$`)
