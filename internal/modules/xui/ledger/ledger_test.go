@@ -237,6 +237,21 @@ func TestAmbiguousConnectionsCountForNobody(t *testing.T) {
 	if len(h.flows("ak-a")) != 0 {
 		t.Fatal("an ambiguous connection is limited")
 	}
+	// The same when the line comes first and both appear in one dump, in
+	// either order.
+	for _, order := range [][2]uint64{{4, 5}, {5, 4}} {
+		h.line(h.now, 443, "203.0.113.9:1004", "ak-c", false)
+		h.open(4, nodeA, 443, "203.0.113.9:1004", 0)
+		h.open(5, nodeB, 443, "203.0.113.9:1004", 0)
+		h.l.dump = func() ([]sockdiag.Conn, error) { return []sockdiag.Conn{h.kernel[order[0]], h.kernel[order[1]]}, nil }
+		h.tick(time.Second)
+		h.l.dump = h.dump
+		if len(h.flows("ak-c")) != 0 {
+			t.Fatalf("dump order %v bound an ambiguous connection", order)
+		}
+		h.shut(4, 0, true)
+		h.shut(5, 0, true)
+	}
 }
 
 // A bound connection keeps its user to the end, last bytes included, even
@@ -314,6 +329,20 @@ func TestLinesWaitThenExpire(t *testing.T) {
 	if got := h.flows("ak-u"); !reflect.DeepEqual(got, []string{"tcp 198.51.100.1:8443 203.0.113.9:2002"}) {
 		t.Fatalf("flows after two hours %v", got)
 	}
+	// A line written while the connection was open but read after it closed
+	// is still its own; one written after the close may be a UDP flow.
+	written := h.now.Add(200 * time.Millisecond)
+	h.now = h.now.Add(400 * time.Millisecond)
+	h.shut(5, 1000, true)
+	h.now = h.now.Add(600 * time.Millisecond)
+	h.line(written, 8443, "203.0.113.9:2002", "ak-u", true)
+	if got := h.flows("ak-u"); len(got) != 0 {
+		t.Fatalf("a late line of a closed connection left %v", got)
+	}
+	h.line(h.now, 8443, "203.0.113.9:2002", "ak-u", true)
+	if got := h.flows("ak-u"); !reflect.DeepEqual(got, []string{"udp :8443 203.0.113.9:2002"}) {
+		t.Fatalf("a line after the close %v", got)
+	}
 }
 
 // A dump taken before a close notice and read after it neither reopens the
@@ -357,6 +386,15 @@ func TestIdleClientsLeaveAndComeBackFromZero(t *testing.T) {
 	h.send(2, 1000, 0)
 	h.tick(2 * time.Second)
 	h.expect(map[string][2]uint64{"ak-a": {1000, 1}})
+	// Idle again, but back before the next report: Cloud never saw it leave,
+	// so its count goes on rather than restarting.
+	h.shut(2, 0, true)
+	h.tick(idleAfter + time.Second)
+	h.open(3, nodeA, 443, "203.0.113.9:1003", 0)
+	h.line(h.now, 443, "203.0.113.9:1003", "ak-a", false)
+	h.send(3, 500, 0)
+	h.tick(2 * time.Second)
+	h.expect(map[string][2]uint64{"ak-a": {1500, 1}})
 }
 
 // Cloud must know when the counts may be short or too many to send, so it

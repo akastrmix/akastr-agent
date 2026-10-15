@@ -215,17 +215,23 @@ func (l *Ledger) poll() {
 			s.missing++
 		}
 	}
+	var added []*socket
 	for _, c := range conns {
 		s := l.sockets[c.Cookie]
 		switch {
 		case s == nil:
-			l.bindSocket(l.add(c, now), now)
+			added = append(added, l.add(c, now))
 		case !s.noticed:
 			// A dump taken before a close notice and read after it shows a
 			// connection that is gone; any other dump that shows it is right.
 			s.missing, s.closedAt = 0, time.Time{}
 			l.update(s, c, now)
 		}
+	}
+	// Only with the whole dump in can a line tell whether it names one
+	// connection or two.
+	for _, s := range added {
+		l.bindSocket(s, now)
 	}
 	for _, s := range l.sockets {
 		if s.closedAt.IsZero() && s.missing >= missingDumps {
@@ -275,7 +281,7 @@ func (l *Ledger) claim(batch []accesslog.Claim) {
 		c := l.claims[conn]
 		switch {
 		case c == nil:
-		case l.carries(conn, c.email):
+		case l.carries(conn, c):
 			// Another line of a connection already bound, as a multiplexed
 			// connection writes for each request: not a UDP flow.
 			delete(l.claims, conn)
@@ -331,10 +337,12 @@ func (l *Ledger) bindSocket(s *socket, now time.Time) {
 	}
 }
 
-// carries reports whether an open connection at conn is already bound to email.
-func (l *Ledger) carries(conn accesslog.Conn, email string) bool {
+// carries reports whether a connection at conn bound to the line's user was
+// open when the line was written. A line read after the connection closed
+// may still be its own; one written after the close is not.
+func (l *Ledger) carries(conn accesslog.Conn, c *claim) bool {
 	for _, s := range l.byConn[conn] {
-		if s.email == email && s.closedAt.IsZero() {
+		if s.email == c.email && (s.closedAt.IsZero() || !c.at.After(s.closedAt)) {
 			return true
 		}
 	}
@@ -419,7 +427,7 @@ func (l *Ledger) dropOldClaims() {
 	}
 }
 
-// tally counts each client's open connections and forgets idle clients.
+// tally counts each client's open connections.
 func (l *Ledger) tally(now time.Time) {
 	for _, t := range l.clients {
 		t.Connections = 0
@@ -428,11 +436,6 @@ func (l *Ledger) tally(now time.Time) {
 		if t := l.clients[s.email]; t != nil && s.closedAt.IsZero() {
 			t.Connections++
 			t.active = now
-		}
-	}
-	for email, t := range l.clients {
-		if t.Connections == 0 && now.Sub(t.active) >= idleAfter {
-			delete(l.clients, email)
 		}
 	}
 }
@@ -475,7 +478,15 @@ type report struct {
 func (l *Ledger) report(publish module.Publish) {
 	logErr := l.log.Err()
 	l.mu.Lock()
-	l.tally(l.now())
+	now := l.now()
+	l.tally(now)
+	// Idle clients leave only here, so that the report saying so comes before
+	// any report in which the client starts again from zero.
+	for email, t := range l.clients {
+		if t.Connections == 0 && now.Sub(t.active) >= idleAfter {
+			delete(l.clients, email)
+		}
+	}
 	r := report{Epoch: l.epoch, Clients: []*total{}}
 	switch {
 	case l.dumpErr != nil:
