@@ -59,7 +59,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/app`：解析启用的模块并组成运行时；连接层只收发消息，命令、上报与确认都交给对应模块。
 - `internal/daemon`：组织 WSS、更新循环、候选版本激活与退出；CLI 只负责参数和进程信号。
 
-新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands`、`module.Desired`、`module.Reporter` 或 `module.Worker` 中合适的形态，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型、[目标格式](PROTOCOL.md#目标状态)或[上报 kind](PROTOCOL.md#上报与回执)。连接层、更新与安装都不需要改。
+新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands`、`module.Desired`、`module.Reporter` 或 `module.Worker` 中合适的形态，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型、[目标格式](PROTOCOL.md#目标状态)或[上报 kind](PROTOCOL.md#上报与回执)。连接层、更新与安装都不需要改。模块若在进程之外留下状态（例如限速的 tc 规则、防火墙规则），设计时就要说清这些状态在正常停止、更新换进程（不经停止）、崩溃、模块关闭和卸载时怎样处理：清理，或在 Cloud ADR 写明接受的残留；清理只动自己做了标记的部分。
 
 节点配置只放模块开关和很少变化的设置：配置一变，整个进程就经第 8 节的更新路径重启，新配置先校验，失败回到旧 slot。经常变化的业务数据（例如防火墙规则、xray 用户）不进节点配置，否则每次修改都会重启节点；Cloud 通过 WSS 以[目标状态](PROTOCOL.md#目标状态)下发，`Desired` 模块对比本机现状，只改有差别的部分。同一目标重复应用结果不变，所以断线后全量重发、定期纠正手工改动都是安全的；只有不可重复的动作才用 operation。
 
