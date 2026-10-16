@@ -31,6 +31,7 @@ type panelReply struct {
 type inbound struct {
 	ID             int          `json:"id"`
 	Remark         string       `json:"remark"`
+	Tag            string       `json:"tag"`
 	Protocol       string       `json:"protocol"`
 	Listen         string       `json:"listen"`
 	Port           int          `json:"port"`

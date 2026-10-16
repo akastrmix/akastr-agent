@@ -2,9 +2,11 @@
 // passes on, line by line, who a connection Xray accepted belongs to. A
 // connection is known there by the inbound port it arrived on and the client
 // address and port Xray accepted it from; behind a relay that is the relay's
-// address, one per relayed connection. The package keeps no connections:
-// internal/modules/xui/ledger matches the lines to the kernel's. Nothing
-// here leaves the process.
+// address, one per relayed connection. A line names its inbound by tag, which
+// the panel's inbounds turn into a port: 3x-ui adds an inbound to the running
+// Xray without rewriting the configuration Xray started with. The package
+// keeps no connections: internal/modules/xui/ledger matches the lines to the
+// kernel's. Nothing here leaves the process.
 //
 // 3x-ui appends the log to a copy and truncates it in place, hourly or every
 // ten seconds while a client exceeds its IP limit, and Xray appends, so the
@@ -15,7 +17,9 @@ package accesslog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/netip"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,9 +28,10 @@ const (
 	pollInterval = time.Second
 	locateEvery  = 5 * time.Minute
 	locateRetry  = 10 * time.Second
-	// A line naming an inbound the cached configuration lacks rereads the
-	// configuration at most this often.
-	relocateEvery = 10 * time.Second
+	// A line naming an inbound the panel did not list rereads the list at most
+	// this often; a tag the panel still lacks waits for the next scheduled read.
+	relistEvery = 10 * time.Second
+	listTimeout = 10 * time.Second
 	// A line read while following the log is at most this old. A line that
 	// seems older, or later than now, was stamped on another clock or in
 	// another time zone, and counts as written when it was read.
@@ -57,19 +62,57 @@ type Claim struct {
 	UDP bool
 }
 
+// Inbound is one of the panel's inbounds: the tag its lines carry, its port
+// and protocol, the network its settings name (such as Shadowsocks'
+// "tcp,udp") and the network of its transport.
+type Inbound struct {
+	Tag, Protocol      string
+	Port               int
+	Network, Transport string
+}
+
+// Inbounds lists the panel's inbounds.
+type Inbounds func(context.Context) ([]Inbound, error)
+
+// inbound is what a tag stands for.
+type inbound struct {
+	port uint16
+	// tcp and udp are how clients can reach the inbound. The kernel's TCP
+	// table does not show UDP.
+	tcp, udp bool
+}
+
+// index maps each inbound's tag to its port and how clients reach it.
+func index(list []Inbound) map[string]inbound {
+	inbounds := map[string]inbound{}
+	for _, ib := range list {
+		if ib.Tag == "" || ib.Port <= 0 || ib.Port > 65535 {
+			continue
+		}
+		udpOnly := strings.HasPrefix(ib.Protocol, "hysteria") || ib.Transport == "kcp" || ib.Transport == "quic"
+		tcp, udp := !udpOnly, udpOnly
+		if ib.Network != "" && !udpOnly {
+			tcp, udp = strings.Contains(ib.Network, "tcp"), strings.Contains(ib.Network, "udp")
+		}
+		inbounds[ib.Tag] = inbound{port: uint16(ib.Port), tcp: tcp, udp: udp}
+	}
+	return inbounds
+}
+
 // Log follows the access log.
 type Log struct {
 	proc, copy string
+	list       Inbounds
 	now        func() time.Time
 
 	mu  sync.Mutex
 	err error
 }
 
-func New() *Log { return newLog("/proc", persistentCopy) }
+func New(list Inbounds) *Log { return newLog("/proc", persistentCopy, list) }
 
-func newLog(proc, copy string) *Log {
-	return &Log{proc: proc, copy: copy, now: time.Now, err: errors.New("xray access log not read yet")}
+func newLog(proc, copy string, list Inbounds) *Log {
+	return &Log{proc: proc, copy: copy, list: list, now: time.Now, err: errors.New("xray access log not read yet")}
 }
 
 // Err reports why the log is not being followed, or nil while it is.
@@ -95,11 +138,22 @@ func (l *Log) Run(ctx context.Context, emit func([]Claim)) error {
 	var f *follower
 	defer func() { f.close() }()
 	var inbounds map[string]inbound
-	var locateAt, relocateAt time.Time
+	// unlisted holds the tags of lines the panel did not list when asked.
+	unlisted := map[string]bool{}
+	var locateAt, relistAt time.Time
 	for {
 		now := l.now()
 		if !now.Before(locateAt) {
-			path, found, err := locate(l.proc)
+			path, err := locate(l.proc)
+			if err == nil {
+				// The lines already in the log are read on opening it, so the
+				// inbounds must be known first; later a failed read keeps them.
+				if found, listErr := l.inbounds(ctx); listErr == nil {
+					inbounds, unlisted = found, map[string]bool{}
+				} else if inbounds == nil {
+					err = fmt.Errorf("3x-ui inbounds unavailable: %w", listErr)
+				}
+			}
 			switch {
 			case err != nil:
 				f.close()
@@ -108,9 +162,6 @@ func (l *Log) Run(ctx context.Context, emit func([]Claim)) error {
 			case f == nil || f.path != path:
 				f.close()
 				f = &follower{path: path, copy: l.copy}
-			}
-			if err == nil {
-				inbounds = found
 			}
 			locateAt = now.Add(locateEvery)
 			if f == nil {
@@ -125,13 +176,18 @@ func (l *Log) Run(ctx context.Context, emit func([]Claim)) error {
 					lines = append(lines, ln)
 				}
 			})
-			// An inbound added since the configuration was read would lose its
-			// first lines, and a long connection logs only once.
-			if unknown(lines, inbounds) && !now.Before(relocateAt) {
-				if _, found, err := locate(l.proc); err == nil {
+			// An inbound added since the last read would lose its first lines,
+			// and a long connection logs only once.
+			if unknown(lines, inbounds, unlisted) && !now.Before(relistAt) {
+				if found, err := l.inbounds(ctx); err == nil {
 					inbounds = found
+					for _, ln := range lines {
+						if _, listed := inbounds[ln.tag]; !listed {
+							unlisted[ln.tag] = true
+						}
+					}
 				}
-				relocateAt = now.Add(relocateEvery)
+				relistAt = now.Add(relistEvery)
 			}
 			if claims := l.claims(lines, inbounds); len(claims) > 0 {
 				emit(claims)
@@ -150,18 +206,29 @@ func (l *Log) Run(ctx context.Context, emit func([]Claim)) error {
 	}
 }
 
-// unknown reports whether a line names an inbound the configuration lacks.
-func unknown(lines []line, inbounds map[string]inbound) bool {
+func (l *Log) inbounds(ctx context.Context) (map[string]inbound, error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
+	defer cancel()
+	list, err := l.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return index(list), nil
+}
+
+// unknown reports whether a line names an inbound neither listed nor found
+// missing from the panel.
+func unknown(lines []line, inbounds map[string]inbound, unlisted map[string]bool) bool {
 	for _, ln := range lines {
-		if _, found := inbounds[ln.tag]; !found {
+		if _, found := inbounds[ln.tag]; !found && !unlisted[ln.tag] {
 			return true
 		}
 	}
 	return false
 }
 
-// claims turns lines into claims, skipping those of inbounds the
-// configuration does not name.
+// claims turns lines into claims, skipping those of inbounds the panel does
+// not list.
 func (l *Log) claims(lines []line, inbounds map[string]inbound) []Claim {
 	now := l.now()
 	out := make([]Claim, 0, len(lines))

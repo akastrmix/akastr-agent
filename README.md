@@ -35,6 +35,7 @@ Akastr Agent 只负责节点本地执行与观察：
 - 执行本地固定的 ChangeIP provider；
 - 在专用 Runner 上执行固定版本、固定 checksum 的 IPQuality 脚本；
 - 可选的 `xui` 模块按 Cloud 下发的目标管理本机 3x-ui 中的受管客户端，并上报入站与流量；可与换 IP 同时开启。
+- 可选的 `rate_limit` 模块按 Cloud 下发的目标限制指定客户的下载速度，需要同时开启 `xui`。
 
 AkastrCloud 负责业务编排：
 

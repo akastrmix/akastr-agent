@@ -130,7 +130,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 		runtime.desired.Add(xui.Name, panel)
 		// One account of the connections serves the usage report and the limiter.
-		connections := ledger.New(accesslog.New())
+		connections := ledger.New(accesslog.New(panel.Inbounds))
 		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel), connections)
 		if m.rateLimit != nil {
 			limiter := ratelimit.New(connections)

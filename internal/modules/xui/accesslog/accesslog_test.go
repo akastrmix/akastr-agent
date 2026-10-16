@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -259,25 +260,18 @@ func fakeXray(t *testing.T, logSection string) (proc, dir string) {
 	must(os.Symlink(filepath.Join(dir, "bin", "xray-linux-amd64"), filepath.Join(pid, "exe")))
 	must(os.Symlink(dir, filepath.Join(pid, "cwd")))
 	must(os.WriteFile(filepath.Join(pid, "cmdline"), []byte("bin/xray-linux-amd64\x00-c\x00bin/config.json\x00"), 0o600))
-	must(os.WriteFile(filepath.Join(dir, "bin", "config.json"), []byte(`{"log":`+logSection+`,"inbounds":[
-		{"tag":"api","port":62789,"protocol":"tunnel"},
-		{"tag":"inbound-443","port":443,"protocol":"vless","streamSettings":{"network":"tcp"}},
-		{"tag":"inbound-8443","port":"8443","protocol":"shadowsocks","settings":{"network":"tcp,udp"}},
-		{"tag":"inbound-9443","port":9443,"protocol":"hysteria2"},
-		{"tag":"inbound-range","port":"1000-2000","protocol":"vless"}]}`), 0o600))
+	must(os.WriteFile(filepath.Join(dir, "bin", "config.json"), []byte(`{"log":`+logSection+`,"inbounds":[]}`), 0o600))
 	return proc, dir
 }
 
 func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
-	want := map[string]inbound{"api": {port: 62789, tcp: true}, "inbound-443": {port: 443, tcp: true},
-		"inbound-8443": {port: 8443, tcp: true, udp: true}, "inbound-9443": {port: 9443, udp: true}}
-	if path, inbounds, err := locate(proc); err != nil || path != filepath.Join(dir, "access.log") || !reflect.DeepEqual(inbounds, want) {
-		t.Fatalf("locate = %q, %v, %v", path, inbounds, err)
+	if path, err := locate(proc); err != nil || path != filepath.Join(dir, "access.log") {
+		t.Fatalf("locate = %q, %v", path, err)
 	}
 	for _, section := range []string{`{"access":"none"}`, `{"access":""}`, `{"access":"./access.log","maskAddress":"quarter"}`} {
 		proc, _ := fakeXray(t, section)
-		if _, _, err := locate(proc); err == nil {
+		if _, err := locate(proc); err == nil {
 			t.Fatalf("locate accepted %s", section)
 		}
 	}
@@ -289,13 +283,14 @@ func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	if err := os.Symlink("/usr/local/x-ui/bin/xray-linux-amd64", filepath.Join(other, "exe")); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := locate(proc); err == nil {
+	if _, err := locate(proc); err == nil {
 		t.Fatal("locate chose between two Xray processes")
 	}
 }
 
 // Run passes the lines already in the copy and the log, then new ones, as
-// claims on the inbound's port; a line of an inbound added later is not lost.
+// claims on the inbound's port; a line of an inbound the panel added to the
+// running Xray later is not lost.
 // An old line keeps its time; a new line stamped on another clock counts as
 // read now. An old line of an inbound that takes TCP too is no UDP flow.
 func TestRunPassesClaims(t *testing.T) {
@@ -305,8 +300,17 @@ func TestRunPassesClaims(t *testing.T) {
 	appendTo(t, path, lineAt("2026/10/12 11:30:00.000000", "inbound-8443", "203.0.113.2:2", "ak-b")+
 		lineAt("2026/10/12 11:30:00.000000", "inbound-unknown", "203.0.113.3:3", "ak-c")+
 		lineAt("2026/10/12 11:40:00.000000", "inbound-9443", "203.0.113.4:4", "ak-h"))
-	l := newLog(proc, copy)
 	var mu sync.Mutex
+	inbounds := []Inbound{
+		{Tag: "inbound-443", Protocol: "vless", Port: 443, Transport: "tcp"},
+		{Tag: "inbound-8443", Protocol: "shadowsocks", Port: 8443, Network: "tcp,udp", Transport: "tcp"},
+		{Tag: "inbound-9443", Protocol: "hysteria", Port: 9443, Transport: "hysteria"},
+	}
+	l := newLog(proc, copy, func(context.Context) ([]Inbound, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(inbounds), nil
+	})
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.Local)
 	l.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
 	claims := make(chan []Claim, 10)
@@ -334,13 +338,8 @@ func TestRunPassesClaims(t *testing.T) {
 	// An inbound added later is known from its first line on.
 	mu.Lock()
 	now = now.Add(30 * time.Second)
+	inbounds = append(inbounds, Inbound{Tag: "inbound-7443", Protocol: "vless", Port: 7443, Transport: "tcp"})
 	mu.Unlock()
-	config := filepath.Join(dir, "bin", "config.json")
-	raw, _ := os.ReadFile(config)
-	added := strings.Replace(string(raw), `"inbounds":[`, `"inbounds":[{"tag":"inbound-7443","port":7443,"protocol":"vless"},`, 1)
-	if err := os.WriteFile(config, []byte(added), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	appendTo(t, path, lineAt("2026/10/12 07:59:59.500000", "inbound-7443", "203.0.113.8:8", "ak-new")+
 		lineAt("2026/10/12 12:00:29.500000", "inbound-443", "203.0.113.9:9", "ak-d")+
 		lineAt("2026/10/12 12:00:29.500000", "inbound-8443", "203.0.113.2:5", "ak-b"))

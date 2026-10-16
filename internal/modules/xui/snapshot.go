@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
+	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
@@ -133,6 +134,26 @@ func (s *Snapshots) read(ctx context.Context) ([]byte, error) {
 		return nil, errorCode("xui_snapshot_too_large")
 	}
 	return data, nil
+}
+
+// Inbounds lists the panel's inbounds for the access log. It reads no
+// traffic, so it does not wait for Apply.
+func (p *Panel) Inbounds(ctx context.Context) ([]accesslog.Inbound, error) {
+	all, err := p.adapter.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	list := make([]accesslog.Inbound, 0, len(all))
+	for _, ib := range all {
+		var settings, stream struct {
+			Network string `json:"network"`
+		}
+		_ = json.Unmarshal([]byte(ib.Settings), &settings)
+		_ = json.Unmarshal([]byte(ib.StreamSettings), &stream)
+		list = append(list, accesslog.Inbound{Tag: ib.Tag, Protocol: ib.Protocol, Port: ib.Port,
+			Network: settings.Network, Transport: stream.Network})
+	}
+	return list, nil
 }
 
 // publicConfig keeps what a client needs to connect to an inbound Cloud can
