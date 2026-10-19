@@ -144,7 +144,7 @@ key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `cl
 
 ### `rate_limit`
 
-key 是 Cloud 的限速组（一份订阅）。state 必须且只能包含两项：
+key 是 Cloud 的限速单位（一份订阅在一个策略组下的账号）。state 必须且只能包含两项：
 
 - `down_mbps`：0–10000 的整数，单位 Mbps；
 - `emails`：这一组的受管客户端，不重复，格式与 `xui` 相同的 `ak-`。
