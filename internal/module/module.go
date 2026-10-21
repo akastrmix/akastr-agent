@@ -29,6 +29,8 @@ type Commands interface {
 	// Recover finishes a command whose process stopped while it was running,
 	// without repeating its side effect.
 	Recover(protocol.OperationOffer) protocol.ExecutionResult
+	// Failed is the command type's failed result for an offer that never ran.
+	Failed(offer protocol.OperationOffer, code string) protocol.ExecutionResult
 }
 
 // Desired handles a module whose Cloud-owned settings are keyed targets that

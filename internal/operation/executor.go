@@ -13,6 +13,8 @@ import (
 type Handler interface {
 	Run(context.Context, protocol.OperationOffer) protocol.ExecutionResult
 	Recover(protocol.OperationOffer) protocol.ExecutionResult
+	// Failed is the command type's failed result for an offer that never ran.
+	Failed(offer protocol.OperationOffer, code string) protocol.ExecutionResult
 }
 
 // Executor is the single owner of live execution, journal recovery and terminal
@@ -78,6 +80,12 @@ func (e *Executor) execute(ctx context.Context, offer protocol.OperationOffer, g
 	var result protocol.ExecutionResult
 	if _, err := e.engine.Begin(offer.CommandID, offer.CommandType, group); err != nil {
 		active, found := e.engine.Active(offer.CommandID)
+		// Another command holds the group, which happens only after Cloud gave up on an
+		// accepted one. This one does not run; nothing is journaled, so Cloud's next
+		// offer of it, if any, is decided afresh.
+		if !found && errors.Is(err, ErrConflict) {
+			return handler.Failed(offer, "operation_busy"), nil
+		}
 		if !found || active.Kind != offer.CommandType || active.ExclusiveGroup != group {
 			return result, fmt.Errorf("begin operation: %w", err)
 		}

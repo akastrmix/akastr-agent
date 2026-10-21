@@ -31,6 +31,10 @@ func (h *Handler) Recover(protocol.OperationOffer) protocol.ExecutionResult {
 	return h.failure("interrupted_unknown", "", "", "")
 }
 
+func (h *Handler) Failed(_ protocol.OperationOffer, code string) protocol.ExecutionResult {
+	return h.failure(code, "", "", "")
+}
+
 func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protocol.ExecutionResult {
 	payload, err := DecodePayload(offer.Payload)
 	if err != nil {

@@ -39,7 +39,7 @@ apt-get install --yes ca-certificates curl
 - SOCKS5 入口：已有代理的端口、用户名和密码，供 IPQuality 检测使用；
 - 3x-ui 代理交付：面板的本机地址（`127.0.0.1` 或 `::1`，含路径）、账号与密码；须关闭 3x-ui 自带的订阅服务，对齐规则见 [PROTOCOL.md](PROTOCOL.md#xui)。要对 Reality（Vision）用户做公平使用判定，还须在 3x-ui 面板的 Xray 设置里把访问日志（Access Log）设为 `./access.log`，并保持“地址掩码”（Mask Address）为空：Agent 靠这份日志认出每条连接属于谁，再从内核读它的流量；没开时后台显示原因，这台节点的 Reality 用户暂不判定；
 - 限速：需要同时开启 3x-ui，并按上一条开启访问日志；没开时后台显示“访问日志不可用”。限速规则见 [PROTOCOL.md](PROTOCOL.md#rate_limit)；
-- IPQuality Runner：见下文，全局只能有一台。
+- IPQuality Runner：见下文，可以开多台。
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于节点上 root-only 的配置文件。
 
@@ -51,7 +51,7 @@ apt-get install --yes ca-certificates curl
 
 Runner 模块没有设置项。可检测的就是开启了 SOCKS5 入口的节点；每次检测时主控把该节点的代理登录随任务发给 Runner，Runner 不保存任何代理密码，也不写入日志。
 
-Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，具体 commit 与 SHA-256 见 [`pin.go`](../internal/modules/ipqualityrunner/script/pin.go)；脚本运行时下载并代入 shell 的 DNSBL 列表也改从同一 commit 读取，不跟随上游 main 分支。并发严格为 1，多个检测由 AkastrCloud 持久排队。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。
+Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，具体 commit 与 SHA-256 见 [`pin.go`](../internal/modules/ipqualityrunner/script/pin.go)；脚本运行时下载并代入 shell 的 DNSBL 列表也改从同一 commit 读取，不跟随上游 main 分支。每台并发严格为 1，AkastrCloud 把检测分给空闲的 Runner，都忙时持久排队。除作为安装前置的 `curl` 外，安装器只在缺少 Runner 命令时安装 `bash`、`jq`、`bc`、`netcat-openbsd`、`dnsutils` 和 `iproute2`，并在改动本地 Agent 前确认 `/bin/bash`、`jq`、`curl`、`bc`、`nc`、`dig` 与 `ip` 均可执行。
 
 检测次数与缓存由 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)管理；重装 Runner 不能绕过限制。
 

@@ -18,14 +18,14 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 |---|---|---|
 | `ip_watch` | `interval_seconds`（10–300）、`ipv6` | 上报 `ip.address` 与 `changeip.unchanged` |
 | `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`、`args` | 执行 `changeip.execute`；需要 `ip_watch` |
-| `socks5` | `port`、`username`、`password`（该代理的登录） | 只供 Cloud 读取；Agent 不运行代理 |
+| `socks5` | `port`、`username`、`password`（该代理的登录） | 只给 Cloud 用的配置段：Cloud 派发 IPQuality 时取出登录；Agent 不读取、不运行代理 |
 | `ipquality_runner` | 无字段（`{}`） | 执行 `ipquality.execute` |
 | `xui` | `panel_url`、`username`、`password` | 按目标状态管理本机 3x-ui 的受管客户端，上报 `xui.snapshot` |
 | `rate_limit` | 无字段（`{}`） | 按目标状态限制受管用户的下载；需要 `xui` |
 
 `xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
 
-Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`，`rate_limit` 需要 `xui`）；除此之外模块可任意组合，全局只能有一台 active Runner 由 Cloud 保证。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
+Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`，`rate_limit` 需要 `xui`）；除此之外模块可任意组合；Runner 可以有多台，由 Cloud 分配检测，每台同时只派一条。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -40,7 +40,7 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version` 与本地正整数 `configuration_revision`。版本不得低于密封 bootstrap 的最低版本，也不得高于 Cloud 当前批准 release，并须精确匹配 desired revision。校验后 Cloud 原子推进尚未收敛的 applied revision 与版本，按自己保存的该 revision 配置记下节点运行的模块，再返回 `hello.accepted` 并使连接进入 ready。不满足时 Cloud 以 close code `4001`（reason `agent update required`）关闭连接，Agent 随即检查更新。主控只允许一个 active Runner。相同节点的新认证连接会替换既有连接。
+Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version` 与本地正整数 `configuration_revision`。版本不得低于密封 bootstrap 的最低版本，也不得高于 Cloud 当前批准 release，并须精确匹配 desired revision。校验后 Cloud 原子推进尚未收敛的 applied revision 与版本，按自己保存的该 revision 配置记下节点运行的模块，再返回 `hello.accepted` 并使连接进入 ready。不满足时 Cloud 以 close code `4001`（reason `agent update required`）关闭连接，Agent 随即检查更新。相同节点的新认证连接会替换既有连接。
 
 ## 更新检查
 
@@ -77,7 +77,9 @@ Agent 在进程没有准备替换为更新候选时发送 `operation.accepted`�
 
 已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时以及连接期间每 30 秒，主控继续发送相同 offer，并以 accepted ack 恢复执行权；这覆盖主控已提交 acceptance、但 ack 尚未到达节点便断线的窗口，也让节点已完成却未送达的结果在一个周期内重放。active ChangeIP journal 一律收敛为 `change_trigger_unknown`，recent 记录重放原终态，两者都不会再次执行 provider；首次 accepted ack 后尚无 journal 的 command 才开始一次本地执行。主控从未 accepted 的过期 command 不会获得执行权。
 
-offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。payload 不得选择 program、argv、shell fragment、文件或任意 URL。凭据只允许下面列出的 IPQuality 临时登录，不得将面板账号密码放入 offer。
+offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。
+
+每种 command 属于一个本地 exclusive group（`changeip.execute` 为 `target-network`，`ipquality.execute` 为 `ipquality-runner`）。组内已有另一条 command 在执行时，新的一条不执行、不写入本地 journal，直接以 `failed`、code `operation_busy` 和该类型的结果字段回复；连接与进程照常，Cloud 按普通失败处理。Cloud 正常不会这样派发，只在管理员放弃已接单的 command 后可能出现。payload 不得选择 program、argv、shell fragment、文件或任意 URL。凭据只允许下面列出的 IPQuality 临时登录，不得将面板账号密码放入 offer。
 
 ### `changeip.execute`
 
@@ -88,7 +90,7 @@ HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或
 ### `ipquality.execute`
 
 payload 只包含 `expected_ipv4`、`proxy_port`、`proxy_username` 和 `proxy_password`；结果中的 `script_version` 由 Runner 报告实际执行的固定脚本版本。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 或目标 ID 字段。登录来自目标节点的 `socks5` 模块，由 Cloud 在 offer 时解密放入；Runner 只在本次执行的内存中使用，不写入配置、操作日志或普通日志，Cloud 也不把 payload 存入数据库。
-Runner 同一时间只允许一个 command。Cloud 给每次检测 20 分钟期限，不论是否已接单，到期即判失败；此后送达的结果仍返回 `persisted=true` 的 ack，但不再采用。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
+Runner 同一时间只执行一个 command，Cloud 只把检测派给空闲的 Runner：派出 60 秒仍未接单，Cloud 把这条 command 记为过期，另派给下一台；接单后 20 分钟仍无结果，Cloud 判这次检测失败，此后送达的结果仍返回 `persisted=true` 的 ack，只结束这条 command。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
 
 ```text
 /bin/bash <script_path> -4 -n -x <local_socks5_relay_url>

@@ -25,6 +25,39 @@ func (h *blockingHandler) Recover(protocol.OperationOffer) protocol.ExecutionRes
 	h.recoveries.Add(1)
 	return protocol.ExecutionResult{Outcome: "failed", Code: "interrupted_unknown"}
 }
+func (h *blockingHandler) Failed(_ protocol.OperationOffer, code string) protocol.ExecutionResult {
+	return protocol.ExecutionResult{Outcome: "failed", Code: code}
+}
+
+// A second command in a busy group used to end the connection and the process; it now
+// fails alone, without running, and the running one finishes normally.
+func TestExecutorFailsAnOfferWhoseGroupIsBusy(t *testing.T) {
+	engine, err := Open(Options{StateFile: filepath.Join(t.TempDir(), "operations.json"), RecentLimit: 16})
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(engine)
+	handler := &blockingHandler{started: make(chan struct{}), release: make(chan struct{})}
+	first := protocol.OperationOffer{CommandID: protocol.NewUUID(), CommandType: "ipquality.execute"}
+	second := protocol.OperationOffer{CommandID: protocol.NewUUID(), CommandType: "ipquality.execute"}
+	done := make(chan error, 1)
+	go func() {
+		_, err := executor.Execute(t.Context(), first, "ipquality-runner", handler)
+		done <- err
+	}()
+	<-handler.started
+	result, err := executor.Execute(t.Context(), second, "ipquality-runner", handler)
+	if err != nil || result.Outcome != "failed" || result.Code != "operation_busy" || handler.runs.Load() != 1 {
+		t.Fatalf("result=%+v err=%v runs=%d", result, err, handler.runs.Load())
+	}
+	if _, active := engine.Active(second.CommandID); active {
+		t.Fatal("a refused offer must not be journaled")
+	}
+	close(handler.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestExecutorJoinsLiveDuplicateAndReplaysAfterRestart(t *testing.T) {
 	options := Options{StateFile: filepath.Join(t.TempDir(), "operations.json"), RecentLimit: 16}
