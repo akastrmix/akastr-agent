@@ -22,8 +22,8 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/modules/ratelimit"
 	"github.com/akastrmix/akastr-agent/internal/modules/socks5"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
-	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
-	"github.com/akastrmix/akastr-agent/internal/modules/xui/ledger"
+	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
+	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
 
 // Fixed runtime limits. Cloud configures what a node does, not these bounds.

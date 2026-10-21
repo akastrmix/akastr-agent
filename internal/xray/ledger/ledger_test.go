@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/modules/xui/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/sockdiag"
+	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 )
 
 var (

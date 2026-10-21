@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/akastrmix/akastr-agent/internal/modules/xui/ledger"
+	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
 
 // fakeTC records tc calls and keeps the filters they leave, so listings

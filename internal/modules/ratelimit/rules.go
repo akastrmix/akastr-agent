@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/akastrmix/akastr-agent/internal/modules/xui/ledger"
+	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
 
 const (

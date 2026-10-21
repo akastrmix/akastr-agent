@@ -5,7 +5,7 @@
 // address, one per relayed connection. A line names its inbound by tag, which
 // the panel's inbounds turn into a port: 3x-ui adds an inbound to the running
 // Xray without rewriting the configuration Xray started with. The package
-// keeps no connections: internal/modules/xui/ledger matches the lines to the
+// keeps no connections: internal/xray/ledger matches the lines to the
 // kernel's. Nothing here leaves the process.
 //
 // 3x-ui appends the log to a copy and truncates it in place, hourly or every
