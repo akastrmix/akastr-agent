@@ -58,11 +58,15 @@ func TestRecordsOfLinesAndEndedConnections(t *testing.T) {
 	untimed.Written = time.Time{}
 	nowhere := line("ak-a", "203.0.113.1:1002")
 	nowhere.Dest = accesslog.Dest{}
+	// Shadowsocks 2022 lines name no network; once bound, the connection was TCP.
+	unsaid := line("ak-c", "203.0.113.1:1004")
+	unsaid.Dest.Network = ""
 	blocked := line("ak-b", "[2001:db8::7]:5000")
 	blocked.Dest, blocked.Outbound, blocked.Blocked = accesslog.Dest{Network: "udp", Host: "10.0.0.1", Port: 53}, "blocked", true
-	r.Lines([]accesslog.Line{line("ak-a", "203.0.113.1:999"), backlog, untimed, nowhere, line("operator-own", "203.0.113.1:1003"), blocked})
+	r.Lines([]accesslog.Line{line("ak-a", "203.0.113.1:999"), backlog, untimed, nowhere, line("operator-own", "203.0.113.1:1003"), blocked, unsaid})
 	// The connection of an old line still gets its end record.
 	r.Ended(ledger.Ended{Line: backlog, At: written.Add(90 * time.Second), Up: 40, Down: 2000, Requests: 3})
+	r.Ended(ledger.Ended{Line: unsaid, At: written, Up: 1, Down: 2, Requests: 1})
 	var out sent
 	r.send(out.publish)
 	if len(out) != 1 {
@@ -77,7 +81,9 @@ func TestRecordsOfLinesAndEndedConnections(t *testing.T) {
 	want := []string{
 		`{"at":"2026-10-26T12:15:07.123456Z","blocked":false,"email":"ak-a","host":"example.com","network":"tcp","outbound":"direct","port":443,"source":"203.0.113.1:999"}`,
 		`{"at":"2026-10-26T12:15:07.123456Z","blocked":true,"email":"ak-b","host":"10.0.0.1","network":"udp","outbound":"blocked","port":53,"source":"[2001:db8::7]:5000"}`,
+		`{"at":"2026-10-26T12:15:07.123456Z","blocked":false,"email":"ak-c","host":"example.com","network":"","outbound":"direct","port":443,"source":"203.0.113.1:1004"}`,
 		`{"at":"2026-10-26T12:15:07.123456Z","blocked":false,"down":2000,"email":"ak-a","ended_at":"2026-10-26T12:16:37.123456Z","host":"example.com","network":"tcp","outbound":"direct","port":443,"requests":3,"source":"203.0.113.1:1000","up":40}`,
+		`{"at":"2026-10-26T12:15:07.123456Z","blocked":false,"down":2,"email":"ak-c","ended_at":"2026-10-26T12:15:07.123456Z","host":"example.com","network":"tcp","outbound":"direct","port":443,"requests":1,"source":"203.0.113.1:1004","up":1}`,
 	}
 	if dropped != 0 || strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("records\n%s\ndropped %d", strings.Join(got, "\n"), dropped)

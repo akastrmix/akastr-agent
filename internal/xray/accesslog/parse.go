@@ -79,14 +79,18 @@ func parse(raw []byte) (entry, bool) {
 }
 
 // parseDest reads a destination as Xray writes it: tcp:example.com:443,
-// udp:8.8.8.8:53 or tcp:[2001:db8::1]:443. The client chooses the host, so
-// only the characters of names and addresses are read: others grow when
-// escaped and could make a report outgrow a protocol message.
+// udp:8.8.8.8:53 or tcp:[2001:db8::1]:443. Shadowsocks 2022 writes no
+// network, example.com:443, for TCP and UDP alike. The client chooses the
+// host, so only the characters of names and addresses are read: others grow
+// when escaped and could make a report outgrow a protocol message.
 func parseDest(s string) Dest {
-	network, hostport, _ := strings.Cut(s, ":")
+	network, hostport := "", s
+	if n, rest, found := strings.Cut(s, ":"); found && (n == "tcp" || n == "udp") {
+		network, hostport = n, rest
+	}
 	host, port, err := net.SplitHostPort(hostport)
 	n, portErr := strconv.ParseUint(port, 10, 16)
-	if (network != "tcp" && network != "udp") || err != nil || portErr != nil || n == 0 || !plainHost(host) {
+	if err != nil || portErr != nil || n == 0 || !plainHost(host) {
 		return Dest{}
 	}
 	return Dest{Network: network, Host: host, Port: uint16(n)}

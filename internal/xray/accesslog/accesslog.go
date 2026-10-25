@@ -74,8 +74,9 @@ type Line struct {
 	Blocked bool
 }
 
-// Dest is where a request asked to go. Network is "tcp" or "udp", or empty
-// when the line did not say in a form this package reads.
+// Dest is where a request asked to go. Host is empty when the line did not
+// say in a form this package reads; Network is "tcp" or "udp", or empty when
+// the line does not say, as Shadowsocks 2022 lines never do.
 type Dest struct {
 	Network, Host string
 	Port          uint16

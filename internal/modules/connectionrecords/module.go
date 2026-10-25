@@ -58,7 +58,8 @@ type record struct {
 	*ending
 }
 
-// ending is what an end record adds: all four fields or none.
+// ending is what an end record adds: all four fields or none. Its line was
+// bound to a TCP connection, so its network is TCP whatever the line says.
 type ending struct {
 	EndedAt  string `json:"ended_at"`
 	Up       uint64 `json:"up"`
@@ -101,14 +102,16 @@ func (r *Records) Lines(lines []accesslog.Line) {
 func (r *Records) Ended(e ledger.Ended) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.add(e.Line, &ending{EndedAt: e.At.UTC().Format(timeLayout), Up: e.Up, Down: e.Down, Requests: e.Requests})
+	line := e.Line
+	line.Dest.Network = "tcp"
+	r.add(line, &ending{EndedAt: e.At.UTC().Format(timeLayout), Up: e.Up, Down: e.Down, Requests: e.Requests})
 }
 
 // add queues the record of a line of an owned client, which only a line
 // with its time, destination and outbound can make. Cloud refuses a batch
 // with one record it cannot read, and the batch would be sent again forever.
 func (r *Records) add(line accesslog.Line, end *ending) {
-	if !xui.Owned(line.Email) || line.Written.IsZero() || line.Dest.Network == "" || line.Outbound == "" || len(line.Outbound) > maxOutbound {
+	if !xui.Owned(line.Email) || line.Written.IsZero() || line.Dest.Host == "" || line.Outbound == "" || len(line.Outbound) > maxOutbound {
 		return
 	}
 	source := netip.AddrPortFrom(line.Conn.Remote.Addr().WithZone(""), line.Conn.Remote.Port())

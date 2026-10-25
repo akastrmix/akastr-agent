@@ -22,6 +22,9 @@ func TestParseAcceptedUserLines(t *testing.T) {
 		{"2026/10/12 12:42:51.677607 from 203.0.113.7:33704 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1", "inbound-1", "203.0.113.7:33704", "ak-a1", Dest{"tcp", "example.com", 443}, "direct"},
 		{"2026/10/12 12:42:51.677607 from tcp:203.0.113.7:4000 accepted udp:8.8.8.8:53 [inbound-2 -> direct] email: ak-b2", "inbound-2", "203.0.113.7:4000", "ak-b2", Dest{"udp", "8.8.8.8", 53}, "direct"},
 		{"2026/10/12 12:42:51.677607 from [::ffff:203.0.113.7]:6000 accepted tcp:[2001:db8::9]:80 [inbound-3 ==> blocked] email: ak-c3", "inbound-3", "203.0.113.7:6000", "ak-c3", Dest{"tcp", "2001:db8::9", 80}, "blocked"},
+		// Shadowsocks 2022 names no network.
+		{"2026/10/12 12:42:51.677607 from 203.0.113.7:8000 accepted api.example:443 [inbound-5 >> direct] email: ak-e5", "inbound-5", "203.0.113.7:8000", "ak-e5", Dest{"", "api.example", 443}, "direct"},
+		{"2026/10/12 12:42:51.677607 from 203.0.113.7:8001 accepted [2001:db8::9]:53 [inbound-5 >> direct] email: ak-e5", "inbound-5", "203.0.113.7:8001", "ak-e5", Dest{"", "2001:db8::9", 53}, "direct"},
 		// A destination it cannot read still says whose the connection is.
 		{"2026/10/12 12:42:51.677607 from 203.0.113.7:7000 accepted unknown [inbound-4 >> direct] email: ak-d4", "inbound-4", "203.0.113.7:7000", "ak-d4", Dest{}, "direct"},
 		{"2026/10/12 12:42:51.677607 from 203.0.113.7:7001 accepted tcp:ex\"<a>mple.com:443 [inbound-4 >> direct] email: ak-d4", "inbound-4", "203.0.113.7:7001", "ak-d4", Dest{}, "direct"},
