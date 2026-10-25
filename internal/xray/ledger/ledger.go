@@ -7,8 +7,9 @@
 // are left unbound: neither counts nor is limited, rather than one being
 // counted for the wrong user.
 //
-// The ledger reports each owned client's traffic to Cloud as xui.usage and
-// gives the rate limiter each user's connections. Xray adds the bytes of a
+// The ledger keeps each user's traffic for the xui module's usage report,
+// gives the rate limiter each user's connections and tells whoever keeps
+// connection records when a bound connection ended. Xray adds the bytes of a
 // spliced Vision connection to its user statistics only when the connection
 // ends; these counts grow while it runs.
 //
@@ -19,7 +20,6 @@ package ledger
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"maps"
 	"net/netip"
@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
-	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/sockdiag"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
@@ -37,8 +36,7 @@ import (
 const (
 	// The kernel is asked for every connection this often; a closing
 	// connection's last bytes come with its close notice.
-	dumpInterval   = 2 * time.Second
-	reportInterval = time.Minute
+	dumpInterval = 2 * time.Second
 	// A connection missing from this many dumps in a row has closed.
 	missingDumps = 2
 	// A closed connection is kept this long, so a line read after the close
@@ -53,18 +51,25 @@ const (
 	// Beyond this many waiting lines, the oldest are dropped.
 	maxClaims  = 65536
 	maxSafeInt = 1<<53 - 1
-	// A client with no connection and no traffic for idleAfter leaves the
-	// report and counts from zero if it comes back.
+	// A user with no connection and no traffic for idleAfter leaves the
+	// usage and counts from zero if it comes back.
 	idleAfter = 10 * time.Minute
-	// More clients than this would not fit one protocol message; the report
-	// then says the counts are unavailable rather than send part of them.
-	maxClients = 4096
 )
 
 // Log is the access log, which names the user of each connection.
 type Log interface {
-	Run(ctx context.Context, emit func([]accesslog.Claim)) error
+	Run(ctx context.Context, emit func([]accesslog.Line)) error
 	Err() error
+}
+
+// Ended is a bound connection that closed: the line that bound it, when it
+// was found closed, what it carried for its user, and how many lines named a
+// request on it, that one included. A multiplexed connection carries many.
+type Ended struct {
+	Line     accesslog.Line
+	At       time.Time
+	Up, Down uint64
+	Requests int
 }
 
 // Flow is one connection or UDP flow of a user, as the rate limiter matches
@@ -78,14 +83,14 @@ type Flow struct {
 	Remote netip.AddrPort
 }
 
-// Ledger is the account. Only the newest usage report matters, so an
-// unacknowledged one is replaced, never queued.
+// Ledger is the account.
 type Ledger struct {
 	log    Log
 	dump   func() ([]sockdiag.Conn, error)
 	closed func(context.Context, func(sockdiag.Conn)) error
 	now    func() time.Time
-	wake   chan struct{}
+	// ended is told of each bound connection once it is gone for good.
+	ended func(Ended)
 
 	mu sync.Mutex
 	// dumped is when the last successful dump started, zero before the first.
@@ -99,18 +104,24 @@ type Ledger struct {
 	// epoch names the period the totals count from.
 	epoch   string
 	clients map[string]*total
-	pending *protocol.ReportBody
+	// finished are bound connections removed since ended was last told.
+	finished []Ended
 }
 
-var _ module.Reporter = (*Ledger)(nil)
+var _ module.Worker = (*Ledger)(nil)
 
 // socket is one TCP connection of the host.
 type socket struct {
 	cookie uint64
 	conn   accesslog.Conn
 	local  netip.AddrPort
-	// email is the bound user, empty until then.
-	email string
+	// email is the bound user, empty until then, and line the line that
+	// bound it; requests counts the lines that named it.
+	email    string
+	line     accesslog.Line
+	requests int
+	// up and down are what the user was given.
+	up, down uint64
 	// The counters when first seen, the latest, and what the user was given.
 	firstAcked, firstReceived     uint64
 	acked, received               uint64
@@ -128,31 +139,52 @@ type socket struct {
 }
 
 type claim struct {
-	email string
-	// at is when the line was written, arrived when the ledger got it.
-	at, arrived time.Time
-	udp         bool
+	line accesslog.Line
+	// arrived is when the ledger got the line; requests counts it and the
+	// lines of its user it replaced while waiting, one connection's requests.
+	arrived  time.Time
+	requests int
 }
 
 type total struct {
-	Email       string `json:"email"`
-	Up          uint64 `json:"up"`
-	Down        uint64 `json:"down"`
-	Connections int    `json:"connections"`
-	// active is when the client last had a connection or traffic.
+	Total
+	// active is when the user last had a connection or traffic.
 	active time.Time
 }
 
-func New(log Log) *Ledger { return newLedger(log, sockdiag.TCP, sockdiag.Closed) }
+// Usage is what each user's connections carried in this epoch, and why the
+// counts may be short.
+type Usage struct {
+	Epoch string
+	// Kernel is why the kernel's connections cannot be read, which stops the
+	// counts; Log is why the access log cannot, so new connections go unfound.
+	Kernel, Log error
+	Users       []Total
+}
+
+type Total struct {
+	Email    string
+	Up, Down uint64
+	// Connections are the user's open bound connections.
+	Connections int
+}
+
+// New keeps the account of the connections log names; ended, when not nil,
+// is told of each bound connection once it is gone and must return quickly.
+func New(log Log, ended func(Ended)) *Ledger {
+	l := newLedger(log, sockdiag.TCP, sockdiag.Closed)
+	l.ended = ended
+	return l
+}
 
 func newLedger(log Log, dump func() ([]sockdiag.Conn, error), closed func(context.Context, func(sockdiag.Conn)) error) *Ledger {
-	return &Ledger{log: log, dump: dump, closed: closed, now: time.Now, wake: make(chan struct{}, 1),
+	return &Ledger{log: log, dump: dump, closed: closed, now: time.Now,
 		sockets: map[uint64]*socket{}, byConn: map[accesslog.Conn][]*socket{}, claims: map[accesslog.Conn]*claim{},
 		epoch: protocol.NewUUID(), clients: map[string]*total{}}
 }
 
-// Run keeps the account and reports it every minute until ctx ends.
-func (l *Ledger) Run(ctx context.Context, publish module.Publish) error {
+// Run keeps the account until ctx ends.
+func (l *Ledger) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	defer func() {
@@ -178,28 +210,33 @@ func (l *Ledger) Run(ctx context.Context, publish module.Publish) error {
 	}()
 	polls := time.NewTicker(dumpInterval)
 	defer polls.Stop()
-	reports := time.NewTicker(reportInterval)
-	defer reports.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-polls.C:
 			l.poll()
-		case <-reports.C:
-			l.report(publish)
-		case <-l.wake:
-			l.report(publish)
 		}
 	}
 }
 
-// poll takes in a dump of the kernel's TCP connections.
+// poll takes in a dump of the kernel's TCP connections, then tells of the
+// bound connections it found gone.
 func (l *Ledger) poll() {
 	start := l.now()
 	conns, err := l.dump()
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.take(start, conns, err)
+	finished := l.finished
+	l.finished = nil
+	l.mu.Unlock()
+	for _, e := range finished {
+		l.ended(e)
+	}
+}
+
+// take updates the account from one dump; the caller holds the lock.
+func (l *Ledger) take(start time.Time, conns []sockdiag.Conn, err error) {
 	now := l.now()
 	if err != nil {
 		if l.dumpErr == nil {
@@ -267,30 +304,31 @@ func (l *Ledger) close(c sockdiag.Conn) {
 }
 
 // claim takes in the access log's lines, in the order they were written.
-func (l *Ledger) claim(batch []accesslog.Claim) {
+func (l *Ledger) claim(batch []accesslog.Line) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	// The newest line of a connection is the one that counts.
-	touched := make([]accesslog.Conn, 0, len(batch))
-	for _, c := range batch {
-		l.claims[c.Conn] = &claim{email: c.Email, at: c.At, arrived: now, udp: c.UDP}
-		touched = append(touched, c.Conn)
-	}
-	for _, conn := range touched {
-		c := l.claims[conn]
-		switch {
-		case c == nil:
-		case l.carries(conn, c):
+	for _, line := range batch {
+		c := &claim{line: line, arrived: now, requests: 1}
+		// A line a TCP connection takes ends what waited at its address.
+		if s := l.carrier(line.Conn, c); s != nil {
 			// Another line of a connection already bound, as a multiplexed
 			// connection writes for each request: not a UDP flow.
-			delete(l.claims, conn)
-		default:
-			if s := l.candidate(conn, c); s != nil {
-				l.bind(s, c, now)
-				delete(l.claims, conn)
-			}
+			s.requests++
+			delete(l.claims, line.Conn)
+			continue
 		}
+		if s := l.candidate(line.Conn, c); s != nil {
+			l.bind(s, c, now)
+			delete(l.claims, line.Conn)
+			continue
+		}
+		// The newest line of a connection is the one that waits; the user's
+		// earlier ones are requests on the same connection.
+		if waiting := l.claims[line.Conn]; waiting != nil && waiting.line.Email == line.Email {
+			c.requests += waiting.requests
+		}
+		l.claims[line.Conn] = c
 	}
 	if len(l.claims) > maxClaims {
 		l.dropOldClaims()
@@ -307,6 +345,9 @@ func (l *Ledger) add(c sockdiag.Conn, now time.Time) *socket {
 }
 
 func (l *Ledger) remove(s *socket) {
+	if s.email != "" && l.ended != nil {
+		l.finished = append(l.finished, Ended{Line: s.line, At: s.closedAt, Up: s.up, Down: s.down, Requests: s.requests})
+	}
 	delete(l.sockets, s.cookie)
 	rest := slices.DeleteFunc(l.byConn[s.conn], func(o *socket) bool { return o == s })
 	if len(rest) == 0 {
@@ -337,16 +378,16 @@ func (l *Ledger) bindSocket(s *socket, now time.Time) {
 	}
 }
 
-// carries reports whether a connection at conn bound to the line's user was
-// open when the line was written. A line read after the connection closed
+// carrier is a connection at conn bound to the line's user that was open
+// when the line was written, or nil. A line read after the connection closed
 // may still be its own; one written after the close is not.
-func (l *Ledger) carries(conn accesslog.Conn, c *claim) bool {
+func (l *Ledger) carrier(conn accesslog.Conn, c *claim) *socket {
 	for _, s := range l.byConn[conn] {
-		if s.email == c.email && (s.closedAt.IsZero() || !c.at.After(s.closedAt)) {
-			return true
+		if s.email == c.line.Email && (s.closedAt.IsZero() || !c.line.At.After(s.closedAt)) {
+			return s
 		}
 	}
-	return false
+	return nil
 }
 
 // candidate is the one unbound connection a line can belong to: one that
@@ -355,7 +396,7 @@ func (l *Ledger) carries(conn accesslog.Conn, c *claim) bool {
 func (l *Ledger) candidate(conn accesslog.Conn, c *claim) *socket {
 	var found *socket
 	for _, s := range l.byConn[conn] {
-		if s.email != "" || c.at.Before(s.after) || (!s.closedAt.IsZero() && c.at.After(s.closedAt)) {
+		if s.email != "" || c.line.At.Before(s.after) || (!s.closedAt.IsZero() && c.line.At.After(s.closedAt)) {
 			continue
 		}
 		if found != nil {
@@ -370,7 +411,7 @@ func (l *Ledger) candidate(conn accesslog.Conn, c *claim) *socket {
 // soon after it was first seen; a connection open before the first dump
 // counts from that dump, and one found late from now.
 func (l *Ledger) bind(s *socket, c *claim, now time.Time) {
-	s.email = c.email
+	s.email, s.line, s.requests = c.line.Email, c.line, c.requests
 	switch {
 	case now.Sub(s.firstSeen) > lateBind:
 		s.countedAcked, s.countedReceived = s.acked, s.received
@@ -381,16 +422,15 @@ func (l *Ledger) bind(s *socket, c *claim, now time.Time) {
 }
 
 // credit adds what a bound connection carried since it was last counted to
-// its user, when the user is an owned client.
+// its user.
 func (l *Ledger) credit(s *socket, now time.Time) {
 	down, up := s.acked-s.countedAcked, s.received-s.countedReceived
 	s.countedAcked, s.countedReceived = s.acked, s.received
-	if !xui.Owned(s.email) {
-		return
-	}
+	s.down += down
+	s.up += up
 	t := l.clients[s.email]
 	if t == nil {
-		t = &total{Email: s.email, active: now}
+		t = &total{Total: Total{Email: s.email}, active: now}
 		l.clients[s.email] = t
 	}
 	if down == 0 && up == 0 {
@@ -413,7 +453,7 @@ func (l *Ledger) expire(now time.Time) {
 		}
 	}
 	for conn, c := range l.claims {
-		if (c.udp && now.Sub(c.at) > udpKeep) || (!c.udp && now.Sub(c.arrived) > claimWait) {
+		if (c.line.UDP && now.Sub(c.line.At) > udpKeep) || (!c.line.UDP && now.Sub(c.arrived) > claimWait) {
 			delete(l.claims, conn)
 		}
 	}
@@ -452,8 +492,8 @@ func (l *Ledger) Flows(emails map[string]bool) map[string][]Flow {
 		}
 	}
 	for conn, c := range l.claims {
-		if c.udp && emails[c.email] && now.Sub(c.at) <= udpKeep {
-			out[c.email] = append(out[c.email], Flow{Proto: "udp", Local: netip.AddrPortFrom(netip.Addr{}, conn.Port), Remote: conn.Remote})
+		if c.line.UDP && emails[c.line.Email] && now.Sub(c.line.At) <= udpKeep {
+			out[c.line.Email] = append(out[c.line.Email], Flow{Proto: "udp", Local: netip.AddrPortFrom(netip.Addr{}, conn.Port), Remote: conn.Remote})
 		}
 	}
 	return out
@@ -469,65 +509,24 @@ func (l *Ledger) Err() error {
 	return l.dumpErr
 }
 
-type report struct {
-	Epoch     string   `json:"epoch"`
-	ErrorCode string   `json:"error_code"`
-	Clients   []*total `json:"clients"`
-}
-
-func (l *Ledger) report(publish module.Publish) {
+// Usage tallies each user's traffic since the epoch began, in email order.
+// A user with no connection and no traffic for idleAfter leaves here and
+// counts from zero if it comes back; with one reader, the report that leaves
+// it out comes before any in which it starts again.
+func (l *Ledger) Usage() Usage {
 	logErr := l.log.Err()
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	now := l.now()
 	l.tally(now)
-	// Idle clients leave only here, so that the report saying so comes before
-	// any report in which the client starts again from zero.
 	for email, t := range l.clients {
 		if t.Connections == 0 && now.Sub(t.active) >= idleAfter {
 			delete(l.clients, email)
 		}
 	}
-	r := report{Epoch: l.epoch, Clients: []*total{}}
-	switch {
-	case l.dumpErr != nil:
-		r.ErrorCode = "xui_usage_unavailable"
-	case logErr != nil:
-		r.ErrorCode = "xui_log_unavailable"
+	u := Usage{Epoch: l.epoch, Kernel: l.dumpErr, Log: logErr, Users: make([]Total, 0, len(l.clients))}
+	for _, email := range slices.Sorted(maps.Keys(l.clients)) {
+		u.Users = append(u.Users, l.clients[email].Total)
 	}
-	if len(l.clients) > maxClients {
-		r.ErrorCode = "xui_usage_unavailable"
-	} else {
-		for _, email := range slices.Sorted(maps.Keys(l.clients)) {
-			r.Clients = append(r.Clients, l.clients[email])
-		}
-	}
-	data, err := json.Marshal(r)
-	if err != nil {
-		l.mu.Unlock()
-		return
-	}
-	l.pending = &protocol.ReportBody{ReportID: protocol.NewUUID(), Kind: xui.KindUsage, Data: json.RawMessage(data)}
-	body := *l.pending
-	l.mu.Unlock()
-	// Without a session the next report or ready session sends it.
-	_ = publish(body)
+	return u
 }
-
-func (l *Ledger) ControlReady() {
-	select {
-	case l.wake <- struct{}{}:
-	default:
-	}
-}
-
-func (l *Ledger) Acknowledge(reportID string) (bool, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.pending == nil || l.pending.ReportID != reportID {
-		return false, nil
-	}
-	l.pending = nil
-	return true, nil
-}
-
-func (l *Ledger) UpdateSafe() error { return nil }

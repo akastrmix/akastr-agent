@@ -16,20 +16,27 @@ import (
 func TestParseAcceptedUserLines(t *testing.T) {
 	cases := []struct {
 		line, tag, addr, email string
+		dest                   Dest
+		outbound               string
 	}{
-		{"2026/10/12 12:42:51.677607 from 203.0.113.7:33704 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1", "inbound-1", "203.0.113.7:33704", "ak-a1"},
-		{"2026/10/12 12:42:51.677607 from tcp:203.0.113.7:4000 accepted udp:8.8.8.8:53 [inbound-2 -> direct] email: ak-b2", "inbound-2", "203.0.113.7:4000", "ak-b2"},
-		{"2026/10/12 12:42:51.677607 from [::ffff:203.0.113.7]:6000 accepted tcp:example.com:443 [inbound-3 >> direct] email: ak-c3", "inbound-3", "203.0.113.7:6000", "ak-c3"},
+		{"2026/10/12 12:42:51.677607 from 203.0.113.7:33704 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1", "inbound-1", "203.0.113.7:33704", "ak-a1", Dest{"tcp", "example.com", 443}, "direct"},
+		{"2026/10/12 12:42:51.677607 from tcp:203.0.113.7:4000 accepted udp:8.8.8.8:53 [inbound-2 -> direct] email: ak-b2", "inbound-2", "203.0.113.7:4000", "ak-b2", Dest{"udp", "8.8.8.8", 53}, "direct"},
+		{"2026/10/12 12:42:51.677607 from [::ffff:203.0.113.7]:6000 accepted tcp:[2001:db8::9]:80 [inbound-3 ==> blocked] email: ak-c3", "inbound-3", "203.0.113.7:6000", "ak-c3", Dest{"tcp", "2001:db8::9", 80}, "blocked"},
+		// A destination it cannot read still says whose the connection is.
+		{"2026/10/12 12:42:51.677607 from 203.0.113.7:7000 accepted unknown [inbound-4 >> direct] email: ak-d4", "inbound-4", "203.0.113.7:7000", "ak-d4", Dest{}, "direct"},
+		{"2026/10/12 12:42:51.677607 from 203.0.113.7:7001 accepted tcp:ex\"<a>mple.com:443 [inbound-4 >> direct] email: ak-d4", "inbound-4", "203.0.113.7:7001", "ak-d4", Dest{}, "direct"},
+		{"2026/10/12 12:42:51.677607 from 203.0.113.7:7002 accepted tcp:.:443 [inbound-4 >> direct] email: ak-d4", "inbound-4", "203.0.113.7:7002", "ak-d4", Dest{}, "direct"},
 	}
 	stamp := time.Date(2026, 10, 12, 12, 42, 51, 677607000, time.Local)
 	for _, c := range cases {
-		ln, ok := parse([]byte(c.line))
-		if !ok || ln.tag != c.tag || ln.addr != netip.MustParseAddrPort(c.addr) || ln.email != c.email || !ln.at.Equal(stamp) {
-			t.Fatalf("parse(%q) = %+v %v", c.line, ln, ok)
+		e, ok := parse([]byte(c.line))
+		if !ok || e.tag != c.tag || e.addr != netip.MustParseAddrPort(c.addr) || e.email != c.email || !e.at.Equal(stamp) ||
+			e.dest != c.dest || e.outbound != c.outbound {
+			t.Fatalf("parse(%q) = %+v %v", c.line, e, ok)
 		}
 	}
-	if ln, ok := parse([]byte("garbled from 203.0.113.7:1 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1")); !ok || !ln.at.IsZero() {
-		t.Fatalf("a line without a time = %+v %v", ln, ok)
+	if e, ok := parse([]byte("garbled from 203.0.113.7:1 accepted tcp:example.com:443 [inbound-1 >> direct] email: ak-a1")); !ok || !e.at.IsZero() {
+		t.Fatalf("a line without a time = %+v %v", e, ok)
 	}
 	for _, line := range []string{
 		"2026/10/12 12:42:51.677607 from 203.0.113.7:33704 rejected  proxy/vless/encoding: invalid request user id",
@@ -86,11 +93,11 @@ func pollEmails(t *testing.T, f *follower) string {
 	t.Helper()
 	var got []string
 	if err := f.poll(func(b []byte, backlog bool) {
-		ln, _ := parse(b)
+		e, _ := parse(b)
 		if backlog {
-			ln.email += "*"
+			e.email += "*"
 		}
-		got = append(got, ln.email)
+		got = append(got, e.email)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +248,8 @@ func TestFollowerReadsBackWhatATruncationTook(t *testing.T) {
 	}
 }
 
-// fakeXray lays out what locate reads under /proc for 3x-ui's Xray.
+// fakeXray lays out what locate reads under /proc for 3x-ui's Xray, with
+// 3x-ui's usual outbounds.
 func fakeXray(t *testing.T, logSection string) (proc, dir string) {
 	t.Helper()
 	root := t.TempDir()
@@ -260,14 +268,16 @@ func fakeXray(t *testing.T, logSection string) (proc, dir string) {
 	must(os.Symlink(filepath.Join(dir, "bin", "xray-linux-amd64"), filepath.Join(pid, "exe")))
 	must(os.Symlink(dir, filepath.Join(pid, "cwd")))
 	must(os.WriteFile(filepath.Join(pid, "cmdline"), []byte("bin/xray-linux-amd64\x00-c\x00bin/config.json\x00"), 0o600))
-	must(os.WriteFile(filepath.Join(dir, "bin", "config.json"), []byte(`{"log":`+logSection+`,"inbounds":[]}`), 0o600))
+	must(os.WriteFile(filepath.Join(dir, "bin", "config.json"), []byte(`{"log":`+logSection+`,"inbounds":[],`+
+		`"outbounds":[{"tag":"direct","protocol":"freedom"},{"tag":"blocked","protocol":"blackhole"},{"tag":"drop-ads","protocol":"blackhole"}]}`), 0o600))
 	return proc, dir
 }
 
 func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
-	if path, err := locate(proc); err != nil || path != filepath.Join(dir, "access.log") {
-		t.Fatalf("locate = %q, %v", path, err)
+	if found, err := locate(proc); err != nil || found.log != filepath.Join(dir, "access.log") ||
+		!reflect.DeepEqual(found.blackholes, map[string]bool{"blocked": true, "drop-ads": true}) {
+		t.Fatalf("locate = %+v, %v", found, err)
 	}
 	for _, section := range []string{`{"access":"none"}`, `{"access":""}`, `{"access":"./access.log","maskAddress":"quarter"}`} {
 		proc, _ := fakeXray(t, section)
@@ -288,12 +298,13 @@ func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 	}
 }
 
-// Run passes the lines already in the copy and the log, then new ones, as
-// claims on the inbound's port; a line of an inbound the panel added to the
-// running Xray later is not lost.
-// An old line keeps its time; a new line stamped on another clock counts as
-// read now. An old line of an inbound that takes TCP too is no UDP flow.
-func TestRunPassesClaims(t *testing.T) {
+// Run passes the lines already in the copy and the log, then new ones, on the
+// inbound's port; a line of an inbound the panel added to the running Xray
+// later is not lost. An old line keeps its time; a new line stamped on
+// another clock counts as read now but keeps the time it carries. An old line
+// of an inbound that takes TCP too is no UDP flow. A line sent to a blackhole
+// outbound is blocked, whatever the outbound is called.
+func TestRunPassesLines(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
 	path, copy := filepath.Join(dir, "access.log"), filepath.Join(dir, "3xipl-ap.log")
 	appendTo(t, copy, lineAt("2026/10/12 11:00:00.000000", "inbound-443", "203.0.113.1:1", "ak-a"))
@@ -313,27 +324,33 @@ func TestRunPassesClaims(t *testing.T) {
 	})
 	now := time.Date(2026, 10, 12, 12, 0, 0, 0, time.Local)
 	l.now = func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
-	claims := make(chan []Claim, 10)
+	batches := make(chan []Line, 10)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error)
-	go func() { done <- l.Run(ctx, func(c []Claim) { claims <- c }) }()
+	go func() { done <- l.Run(ctx, func(lines []Line) { batches <- lines }) }()
 	defer func() { cancel(); <-done }()
-	next := func() []Claim {
+	next := func() []Line {
 		select {
-		case c := <-claims:
-			return c
+		case lines := <-batches:
+			return lines
 		case <-time.After(3 * time.Second):
-			t.Fatalf("no claims; err %v", l.Err())
+			t.Fatalf("no lines; err %v", l.Err())
 			return nil
 		}
 	}
-	want := []Claim{
-		{Conn{443, netip.MustParseAddrPort("203.0.113.1:1")}, "ak-a", time.Date(2026, 10, 12, 11, 0, 0, 0, time.Local), false},
-		{Conn{8443, netip.MustParseAddrPort("203.0.113.2:2")}, "ak-b", time.Date(2026, 10, 12, 11, 30, 0, 0, time.Local), false},
-		{Conn{9443, netip.MustParseAddrPort("203.0.113.4:4")}, "ak-h", time.Date(2026, 10, 12, 11, 40, 0, 0, time.Local), true},
+	web := Dest{"tcp", "example.com", 443}
+	line := func(port uint16, addr, email string, at, written time.Time, backlog, udp bool) Line {
+		return Line{Conn: Conn{port, netip.MustParseAddrPort(addr)}, Email: email, At: at, Written: written,
+			Backlog: backlog, UDP: udp, Dest: web, Outbound: "direct"}
+	}
+	at := func(h, m, s, ms int) time.Time { return time.Date(2026, 10, 12, h, m, s, ms*1e6, time.Local) }
+	want := []Line{
+		line(443, "203.0.113.1:1", "ak-a", at(11, 0, 0, 0), at(11, 0, 0, 0), true, false),
+		line(8443, "203.0.113.2:2", "ak-b", at(11, 30, 0, 0), at(11, 30, 0, 0), true, false),
+		line(9443, "203.0.113.4:4", "ak-h", at(11, 40, 0, 0), at(11, 40, 0, 0), true, true),
 	}
 	if got := next(); !reflect.DeepEqual(got, want) || l.Err() != nil {
-		t.Fatalf("first claims %+v, err %v", got, l.Err())
+		t.Fatalf("first lines %+v, err %v", got, l.Err())
 	}
 	// An inbound added later is known from its first line on.
 	mu.Lock()
@@ -342,13 +359,17 @@ func TestRunPassesClaims(t *testing.T) {
 	mu.Unlock()
 	appendTo(t, path, lineAt("2026/10/12 07:59:59.500000", "inbound-7443", "203.0.113.8:8", "ak-new")+
 		lineAt("2026/10/12 12:00:29.500000", "inbound-443", "203.0.113.9:9", "ak-d")+
-		lineAt("2026/10/12 12:00:29.500000", "inbound-8443", "203.0.113.2:5", "ak-b"))
-	want = []Claim{
-		{Conn{7443, netip.MustParseAddrPort("203.0.113.8:8")}, "ak-new", l.now(), false},
-		{Conn{443, netip.MustParseAddrPort("203.0.113.9:9")}, "ak-d", time.Date(2026, 10, 12, 12, 0, 29, 500000000, time.Local), false},
-		{Conn{8443, netip.MustParseAddrPort("203.0.113.2:5")}, "ak-b", time.Date(2026, 10, 12, 12, 0, 29, 500000000, time.Local), true},
+		lineAt("2026/10/12 12:00:29.500000", "inbound-8443", "203.0.113.2:5", "ak-b")+
+		"2026/10/12 12:00:29.600000 from 203.0.113.9:10 accepted tcp:10.0.0.1:80 [inbound-443 -> drop-ads] email: ak-d\n")
+	blocked := line(443, "203.0.113.9:10", "ak-d", at(12, 0, 29, 600), at(12, 0, 29, 600), false, false)
+	blocked.Dest, blocked.Outbound, blocked.Blocked = Dest{"tcp", "10.0.0.1", 80}, "drop-ads", true
+	want = []Line{
+		line(7443, "203.0.113.8:8", "ak-new", l.now(), at(7, 59, 59, 500), false, false),
+		line(443, "203.0.113.9:9", "ak-d", at(12, 0, 29, 500), at(12, 0, 29, 500), false, false),
+		line(8443, "203.0.113.2:5", "ak-b", at(12, 0, 29, 500), at(12, 0, 29, 500), false, true),
+		blocked,
 	}
 	if got := next(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("new claims %+v", got)
+		t.Fatalf("new lines %+v", got)
 	}
 }

@@ -2,7 +2,6 @@ package ledger
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -12,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/sockdiag"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 )
@@ -30,16 +28,18 @@ type harness struct {
 	dumpErr error
 	logErr  error
 	now     time.Time
+	ended   []Ended
 }
 
 func newHarness(t *testing.T) *harness {
 	h := &harness{t: t, kernel: map[uint64]sockdiag.Conn{}, now: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)}
 	h.l = newLedger(h, h.dump, func(context.Context, func(sockdiag.Conn)) error { return nil })
 	h.l.now = func() time.Time { return h.now }
+	h.l.ended = func(e Ended) { h.ended = append(h.ended, e) }
 	return h
 }
 
-func (h *harness) Run(ctx context.Context, _ func([]accesslog.Claim)) error {
+func (h *harness) Run(ctx context.Context, _ func([]accesslog.Line)) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -82,34 +82,19 @@ func (h *harness) tick(d time.Duration) {
 
 // line passes a line written at at about remote on port.
 func (h *harness) line(at time.Time, port uint16, remote, email string, udp bool) {
-	h.l.claim([]accesslog.Claim{{Conn: accesslog.Conn{Port: port, Remote: netip.MustParseAddrPort(remote)}, Email: email, At: at, UDP: udp}})
+	h.l.claim([]accesslog.Line{lineAt(at, port, remote, email, udp)})
 }
 
-func (h *harness) report() report {
-	h.t.Helper()
-	var sent []protocol.ReportBody
-	h.l.report(func(r protocol.ReportBody) error { sent = append(sent, r); return nil })
-	if len(sent) != 1 || sent[0].Kind != "xui.usage" {
-		h.t.Fatalf("sent %v", sent)
-	}
-	// The report goes out as JSON inside the envelope, not as encoded bytes.
-	raw, ok := sent[0].Data.(json.RawMessage)
-	if !ok {
-		h.t.Fatalf("report data is %T", sent[0].Data)
-	}
-	r, err := protocol.DecodeStrict[report](raw, "xui.usage", "epoch", "error_code", "clients")
-	if err != nil {
-		h.t.Fatal(err)
-	}
-	return r
+func lineAt(at time.Time, port uint16, remote, email string, udp bool) accesslog.Line {
+	return accesslog.Line{Conn: accesslog.Conn{Port: port, Remote: netip.MustParseAddrPort(remote)}, Email: email, At: at, Written: at, UDP: udp}
 }
 
-// totals are each client's down bytes and connections.
+// totals are each user's down bytes and connections.
 func (h *harness) totals() map[string][2]uint64 {
 	h.t.Helper()
 	out := map[string][2]uint64{}
-	for _, c := range h.report().Clients {
-		out[c.Email] = [2]uint64{c.Down, uint64(c.Connections)}
+	for _, u := range h.l.Usage().Users {
+		out[u.Email] = [2]uint64{u.Down, uint64(u.Connections)}
 	}
 	return out
 }
@@ -397,42 +382,27 @@ func TestIdleClientsLeaveAndComeBackFromZero(t *testing.T) {
 	h.expect(map[string][2]uint64{"ak-a": {1500, 1}})
 }
 
-// Cloud must know when the counts may be short or too many to send, so it
-// does not judge on them; only owned clients are reported.
-func TestReportSaysWhenCountsMayBeShort(t *testing.T) {
+// The usage says why the counts may be short, in the same epoch.
+func TestUsageSaysWhenCountsMayBeShort(t *testing.T) {
 	h := newHarness(t)
 	h.tick(0)
-	r := h.report()
-	if r.ErrorCode != "" || len(r.Clients) != 0 || r.Epoch == "" {
-		t.Fatalf("healthy report %+v", r)
+	u := h.l.Usage()
+	if u.Kernel != nil || u.Log != nil || len(u.Users) != 0 || u.Epoch == "" {
+		t.Fatalf("healthy usage %+v", u)
 	}
-	h.open(1, nodeA, 443, "203.0.113.9:1001", 0)
-	h.line(h.now, 443, "203.0.113.9:1001", "operator-own", false)
-	h.send(1, 100, 0)
-	h.tick(2 * time.Second)
 	h.logErr = errors.New("the Xray access log is off")
-	if r := h.report(); r.ErrorCode != "xui_log_unavailable" || len(r.Clients) != 0 {
-		t.Fatalf("log off reported %+v", r)
+	if u := h.l.Usage(); u.Log == nil || u.Kernel != nil {
+		t.Fatalf("log off: %+v", u)
 	}
 	h.dumpErr = errors.New("sock_diag: permission denied")
 	h.tick(2 * time.Second)
-	if r := h.report(); r.ErrorCode != "xui_usage_unavailable" || h.l.Err() == nil {
-		t.Fatalf("kernel unavailable reported %q", r.ErrorCode)
+	if u := h.l.Usage(); u.Kernel == nil || h.l.Err() == nil {
+		t.Fatalf("kernel unavailable: %+v", u)
 	}
 	h.dumpErr, h.logErr = nil, nil
 	h.tick(2 * time.Second)
-	again := h.report()
-	if again.ErrorCode != "" || again.Epoch != r.Epoch || h.l.Err() != nil {
+	if again := h.l.Usage(); again.Kernel != nil || again.Log != nil || again.Epoch != u.Epoch || h.l.Err() != nil {
 		t.Fatalf("after recovery %+v", again)
-	}
-	for i := 0; i <= maxClients; i++ {
-		remote := fmt.Sprintf("203.0.113.1:%d", 10000+i)
-		h.open(uint64(100+i), nodeA, 443, remote, 1)
-		h.line(h.now, 443, remote, fmt.Sprintf("ak-c%d", i), false)
-	}
-	h.tick(2 * time.Second)
-	if r := h.report(); r.ErrorCode != "xui_usage_unavailable" || len(r.Clients) != 0 || r.Epoch != again.Epoch {
-		t.Fatalf("report %s with %d clients in epoch %s", r.ErrorCode, len(r.Clients), r.Epoch)
 	}
 }
 
@@ -440,31 +410,59 @@ func TestReportSaysWhenCountsMayBeShort(t *testing.T) {
 func TestHugeCountsStartANewEpoch(t *testing.T) {
 	h := newHarness(t)
 	h.tick(0)
-	epoch := h.report().Epoch
+	epoch := h.l.Usage().Epoch
 	h.open(1, nodeA, 443, "203.0.113.9:1001", 0)
 	h.line(h.now, 443, "203.0.113.9:1001", "ak-a", false)
 	h.send(1, maxSafeInt+1, 0)
 	h.tick(2 * time.Second)
-	r := h.report()
-	if r.Epoch == epoch || len(r.Clients) != 0 {
-		t.Fatalf("report %+v", r)
+	u := h.l.Usage()
+	if u.Epoch == epoch || len(u.Users) != 0 {
+		t.Fatalf("usage %+v", u)
 	}
 	h.send(1, 10, 0)
 	h.tick(2 * time.Second)
 	h.expect(map[string][2]uint64{"ak-a": {10, 1}})
 }
 
-// Only the newest report waits for its acknowledgement.
-func TestAcknowledgeSettlesTheNewestReport(t *testing.T) {
+// A bound connection is told once it is gone for good: the line that bound
+// it, when it closed, what it carried for its user, and the requests on it,
+// including those logged before the kernel showed it. A connection nobody
+// owns is not told.
+func TestEndedConnectionsTellTheirLineAndRequests(t *testing.T) {
 	h := newHarness(t)
-	var sent []protocol.ReportBody
-	publish := func(r protocol.ReportBody) error { sent = append(sent, r); return nil }
-	h.l.report(publish)
-	h.l.report(publish)
-	if ok, _ := h.l.Acknowledge(sent[0].ReportID); ok {
-		t.Fatal("a replaced report was settled")
+	h.tick(0)
+	// A multiplexed connection logs three requests before the next dump.
+	first := lineAt(h.now, 443, "203.0.113.9:1001", "ak-a", false)
+	first.Dest = accesslog.Dest{Network: "tcp", Host: "example.com", Port: 443}
+	h.l.claim([]accesslog.Line{first, lineAt(h.now, 443, "203.0.113.9:1001", "ak-a", false),
+		lineAt(h.now.Add(time.Millisecond), 443, "203.0.113.9:1001", "ak-a", false)})
+	h.open(1, nodeA, 443, "203.0.113.9:1001", 300)
+	h.open(2, nodeA, 443, "203.0.113.9:1002", 0)
+	h.tick(2 * time.Second)
+	h.send(1, 700, 40)
+	h.line(h.now, 443, "203.0.113.9:1001", "ak-a", true)
+	h.tick(2 * time.Second)
+	h.shut(1, 1000, true)
+	closed := h.now
+	h.shut(2, 50, true)
+	h.tick(keepClosed)
+	if len(h.ended) != 0 {
+		t.Fatalf("told before the connection was gone for good: %+v", h.ended)
 	}
-	if ok, _ := h.l.Acknowledge(sent[1].ReportID); !ok {
-		t.Fatal("the newest report was not settled")
+	h.tick(2 * time.Second)
+	if len(h.ended) != 1 {
+		t.Fatalf("ended %+v", h.ended)
+	}
+	e := h.ended[0]
+	if e.Line.Email != "ak-a" || !e.At.Equal(closed) || e.Down != 2000 || e.Up != 40 || e.Requests != 4 {
+		t.Fatalf("ended %+v", e)
+	}
+	// The newest of the waiting lines bound it, and it says where it went.
+	if !e.Line.At.Equal(first.At.Add(time.Millisecond)) || e.Line.Dest != (accesslog.Dest{}) {
+		t.Fatalf("bound by %+v", e.Line)
+	}
+	h.tick(time.Minute)
+	if len(h.ended) != 1 {
+		t.Fatalf("told twice: %+v", h.ended)
 	}
 }

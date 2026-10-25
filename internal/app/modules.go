@@ -16,6 +16,7 @@ import (
 	changefeature "github.com/akastrmix/akastr-agent/internal/modules/changeip"
 	changecommand "github.com/akastrmix/akastr-agent/internal/modules/changeip/command"
 	changehttp "github.com/akastrmix/akastr-agent/internal/modules/changeip/httpcurl"
+	"github.com/akastrmix/akastr-agent/internal/modules/connectionrecords"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
 	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
@@ -44,6 +45,7 @@ type modules struct {
 	runner    *ipqualityrunner.Config
 	xui       *xui.Config
 	rateLimit *ratelimit.Config
+	records   *connectionrecords.Config
 }
 
 func parseModules(sections map[string]json.RawMessage) (modules, error) {
@@ -63,6 +65,8 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 			m.runner, err = parseSection(ipqualityrunner.ParseConfig, raw)
 		case ratelimit.Name:
 			m.rateLimit, err = parseSection(ratelimit.ParseConfig, raw)
+		case connectionrecords.Name:
+			m.records, err = parseSection(connectionrecords.ParseConfig, raw)
 		default:
 			return modules{}, fmt.Errorf("configuration module %q is unknown to this Agent", name)
 		}
@@ -74,9 +78,12 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 	if m.changeIP != nil && m.ipWatch == nil {
 		return modules{}, errors.New("module changeip requires ip_watch")
 	}
-	// Users are found through the access log of the 3x-ui Xray.
+	// Users and requests are found through the access log of the 3x-ui Xray.
 	if m.rateLimit != nil && m.xui == nil {
 		return modules{}, errors.New("module rate_limit requires xui")
+	}
+	if m.records != nil && m.xui == nil {
+		return modules{}, errors.New("module connection_records requires xui")
 	}
 	return m, nil
 }
@@ -129,9 +136,19 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 			return err
 		}
 		runtime.desired.Add(xui.Name, panel)
-		// One account of the connections serves the usage report and the limiter.
-		connections := ledger.New(accesslog.New(panel.Inbounds))
-		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel), connections)
+		// The log is read once, and one account of the connections serves the
+		// usage report, the limiter and the connection records.
+		log := accesslog.New(panel.Inbounds)
+		var lines ledger.Log = log
+		var ended func(ledger.Ended)
+		if m.records != nil {
+			records := connectionrecords.New()
+			lines, ended = sharedLog{log, records.Lines}, records.Ended
+			runtime.reporters = append(runtime.reporters, records)
+		}
+		connections := ledger.New(lines, ended)
+		runtime.workers = append(runtime.workers, connections)
+		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel), xui.NewUsage(connections.Usage))
 		if m.rateLimit != nil {
 			limiter := ratelimit.New(connections)
 			runtime.desired.Add(ratelimit.Name, limiter)
@@ -181,4 +198,17 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		runtime.addCommands(ipqualityrunner.New(provider, qualityscript.PinnedVersion))
 	}
 	return nil
+}
+
+// sharedLog passes the access log's lines to the ledger, then to also.
+type sharedLog struct {
+	*accesslog.Log
+	also func([]accesslog.Line)
+}
+
+func (s sharedLog) Run(ctx context.Context, emit func([]accesslog.Line)) error {
+	return s.Log.Run(ctx, func(lines []accesslog.Line) {
+		emit(lines)
+		s.also(lines)
+	})
 }

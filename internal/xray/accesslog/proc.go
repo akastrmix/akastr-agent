@@ -10,13 +10,22 @@ import (
 	"strings"
 )
 
-// locate finds the one Xray process 3x-ui runs and the access log its
-// configuration writes. A log that is off or masks addresses cannot say who a
-// connection belongs to.
-func locate(proc string) (string, error) {
+// running is what the configuration of the Xray that 3x-ui runs says: where
+// it writes the access log, and the tags of the outbounds that drop whatever
+// is sent to them.
+type running struct {
+	log        string
+	blackholes map[string]bool
+}
+
+// locate finds the one Xray process 3x-ui runs and reads its configuration.
+// A log that is off or masks addresses cannot say who a connection belongs
+// to. 3x-ui restarts Xray to change outbounds, so the file names them as they
+// run.
+func locate(proc string) (running, error) {
 	dirs, err := os.ReadDir(proc)
 	if err != nil {
-		return "", err
+		return running{}, err
 	}
 	var pids []string
 	for _, d := range dirs {
@@ -29,41 +38,51 @@ func locate(proc string) (string, error) {
 		}
 	}
 	if len(pids) != 1 {
-		return "", fmt.Errorf("found %d Xray processes started by 3x-ui", len(pids))
+		return running{}, fmt.Errorf("found %d Xray processes started by 3x-ui", len(pids))
 	}
 	dir := filepath.Join(proc, pids[0])
 	cwd, err := os.Readlink(filepath.Join(dir, "cwd"))
 	if err != nil {
-		return "", err
+		return running{}, err
 	}
 	cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))
 	if err != nil {
-		return "", err
+		return running{}, err
 	}
 	config := configArg(strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00"))
 	if config == "" {
-		return "", errors.New("the Xray command line names no configuration file")
+		return running{}, errors.New("the Xray command line names no configuration file")
 	}
 	raw, err := os.ReadFile(resolve(cwd, config))
 	if err != nil {
-		return "", err
+		return running{}, err
 	}
 	var doc struct {
 		Log struct {
 			Access      string `json:"access"`
 			MaskAddress string `json:"maskAddress"`
 		} `json:"log"`
+		Outbounds []struct {
+			Tag      string `json:"tag"`
+			Protocol string `json:"protocol"`
+		} `json:"outbounds"`
 	}
 	if err := json.Unmarshal(raw, &doc); err != nil {
-		return "", errors.New("the Xray configuration is not valid JSON")
+		return running{}, errors.New("the Xray configuration is not valid JSON")
 	}
 	if doc.Log.Access == "" || doc.Log.Access == "none" {
-		return "", errors.New("the Xray access log is off")
+		return running{}, errors.New("the Xray access log is off")
 	}
 	if doc.Log.MaskAddress != "" {
-		return "", errors.New("the Xray access log masks addresses")
+		return running{}, errors.New("the Xray access log masks addresses")
 	}
-	return resolve(cwd, doc.Log.Access), nil
+	found := running{log: resolve(cwd, doc.Log.Access), blackholes: map[string]bool{}}
+	for _, o := range doc.Outbounds {
+		if o.Protocol == "blackhole" && o.Tag != "" {
+			found.blackholes[o.Tag] = true
+		}
+	}
+	return found, nil
 }
 
 func configArg(args []string) string {

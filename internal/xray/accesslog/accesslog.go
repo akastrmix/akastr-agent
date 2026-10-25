@@ -1,12 +1,12 @@
 // Package accesslog reads the access log of the Xray that 3x-ui runs and
-// passes on, line by line, who a connection Xray accepted belongs to. A
-// connection is known there by the inbound port it arrived on and the client
-// address and port Xray accepted it from; behind a relay that is the relay's
-// address, one per relayed connection. A line names its inbound by tag, which
-// the panel's inbounds turn into a port: 3x-ui adds an inbound to the running
-// Xray without rewriting the configuration Xray started with. The package
-// keeps no connections: internal/xray/ledger matches the lines to the
-// kernel's. Nothing here leaves the process.
+// passes on, line by line, who a connection Xray accepted belongs to and what
+// it asked for. A connection is known there by the inbound port it arrived on
+// and the client address and port Xray accepted it from; behind a relay that
+// is the relay's address, one per relayed connection. A line names its
+// inbound by tag, which the panel's inbounds turn into a port: 3x-ui adds an
+// inbound to the running Xray without rewriting the configuration Xray
+// started with. The package keeps no connections: internal/xray/ledger
+// matches the lines to the kernel's.
 //
 // 3x-ui appends the log to a copy and truncates it in place, hourly or every
 // ten seconds while a client exceeds its IP limit, and Xray appends, so the
@@ -47,19 +47,38 @@ type Conn struct {
 	Remote netip.AddrPort
 }
 
-// Claim is one access log line: Xray accepted a request of Email on Conn.
-type Claim struct {
+// Line is one access log line: Xray accepted a request of Email on Conn for
+// Dest and sent it out through Outbound.
+type Line struct {
 	Conn  Conn
 	Email string
-	// At is when the line was written. It is zero for an old line without
-	// a readable time.
+	// At is when the line counts as written for finding its connection: the
+	// time it carries, or when it was read when that time is off. It is zero
+	// for an old line without a readable time.
 	At time.Time
+	// Written is the time the line carries, zero when it has none.
+	Written time.Time
+	// Backlog is set for a line read on opening the log, which an earlier
+	// process may have read already.
+	Backlog bool
 	// UDP is set when the line may belong to a UDP flow rather than a TCP
 	// connection: the inbound takes UDP, and the line is new or the inbound
 	// takes nothing else. The log does not say which a line of an inbound
 	// that takes both is for; an old one is most likely a TCP connection
 	// closed long ago, and as a UDP flow it would stay limited for hours.
-	UDP bool
+	UDP      bool
+	Dest     Dest
+	Outbound string
+	// Blocked is set when Outbound is a blackhole in the running
+	// configuration, whatever it is called.
+	Blocked bool
+}
+
+// Dest is where a request asked to go. Network is "tcp" or "udp", or empty
+// when the line did not say in a form this package reads.
+type Dest struct {
+	Network, Host string
+	Port          uint16
 }
 
 // Inbound is one of the panel's inbounds: the tag its lines carry, its port
@@ -132,19 +151,20 @@ func (l *Log) setErr(err error) {
 // the order they were written. On opening the log it first passes the lines
 // already there, starting with the end of 3x-ui's copy. Losing the log is
 // not fatal: Err says why until the log is found again.
-func (l *Log) Run(ctx context.Context, emit func([]Claim)) error {
+func (l *Log) Run(ctx context.Context, emit func([]Line)) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	var f *follower
 	defer func() { f.close() }()
 	var inbounds map[string]inbound
+	var blackholes map[string]bool
 	// unlisted holds the tags of lines the panel did not list when asked.
 	unlisted := map[string]bool{}
 	var locateAt, relistAt time.Time
 	for {
 		now := l.now()
 		if !now.Before(locateAt) {
-			path, err := locate(l.proc)
+			found, err := locate(l.proc)
 			if err == nil {
 				// The lines already in the log are read on opening it, so the
 				// inbounds must be known first; later a failed read keeps them.
@@ -159,9 +179,12 @@ func (l *Log) Run(ctx context.Context, emit func([]Claim)) error {
 				f.close()
 				f = nil
 				l.setErr(err)
-			case f == nil || f.path != path:
+			case f == nil || f.path != found.log:
 				f.close()
-				f = &follower{path: path, copy: l.copy}
+				f = &follower{path: found.log, copy: l.copy}
+			}
+			if err == nil {
+				blackholes = found.blackholes
 			}
 			locateAt = now.Add(locateEvery)
 			if f == nil {
@@ -169,28 +192,28 @@ func (l *Log) Run(ctx context.Context, emit func([]Claim)) error {
 			}
 		}
 		if f != nil {
-			var lines []line
+			var entries []entry
 			err := f.poll(func(raw []byte, backlog bool) {
-				if ln, ok := parse(raw); ok {
-					ln.backlog = backlog
-					lines = append(lines, ln)
+				if e, ok := parse(raw); ok {
+					e.backlog = backlog
+					entries = append(entries, e)
 				}
 			})
 			// An inbound added since the last read would lose its first lines,
 			// and a long connection logs only once.
-			if unknown(lines, inbounds, unlisted) && !now.Before(relistAt) {
+			if unknown(entries, inbounds, unlisted) && !now.Before(relistAt) {
 				if found, err := l.inbounds(ctx); err == nil {
 					inbounds = found
-					for _, ln := range lines {
-						if _, listed := inbounds[ln.tag]; !listed {
-							unlisted[ln.tag] = true
+					for _, e := range entries {
+						if _, listed := inbounds[e.tag]; !listed {
+							unlisted[e.tag] = true
 						}
 					}
 				}
 				relistAt = now.Add(relistEvery)
 			}
-			if claims := l.claims(lines, inbounds); len(claims) > 0 {
-				emit(claims)
+			if lines := l.lines(entries, inbounds, blackholes); len(lines) > 0 {
+				emit(lines)
 			}
 			l.setErr(err)
 			if err != nil {
@@ -218,33 +241,33 @@ func (l *Log) inbounds(ctx context.Context) (map[string]inbound, error) {
 
 // unknown reports whether a line names an inbound neither listed nor found
 // missing from the panel.
-func unknown(lines []line, inbounds map[string]inbound, unlisted map[string]bool) bool {
-	for _, ln := range lines {
-		if _, found := inbounds[ln.tag]; !found && !unlisted[ln.tag] {
+func unknown(entries []entry, inbounds map[string]inbound, unlisted map[string]bool) bool {
+	for _, e := range entries {
+		if _, found := inbounds[e.tag]; !found && !unlisted[e.tag] {
 			return true
 		}
 	}
 	return false
 }
 
-// claims turns lines into claims, skipping those of inbounds the panel does
-// not list.
-func (l *Log) claims(lines []line, inbounds map[string]inbound) []Claim {
+// lines passes on the entries of inbounds the panel lists.
+func (l *Log) lines(entries []entry, inbounds map[string]inbound, blackholes map[string]bool) []Line {
 	now := l.now()
-	out := make([]Claim, 0, len(lines))
-	for _, ln := range lines {
-		ib, found := inbounds[ln.tag]
+	out := make([]Line, 0, len(entries))
+	for _, e := range entries {
+		ib, found := inbounds[e.tag]
 		if !found {
 			continue
 		}
-		at := ln.at
+		at := e.at
 		switch {
-		case ln.backlog && at.After(now):
+		case e.backlog && at.After(now):
 			at = now
-		case !ln.backlog && (at.After(now) || now.Sub(at) > maxDelay):
+		case !e.backlog && (at.After(now) || now.Sub(at) > maxDelay):
 			at = now
 		}
-		out = append(out, Claim{Conn: Conn{ib.port, ln.addr}, Email: ln.email, At: at, UDP: ib.udp && !(ln.backlog && ib.tcp)})
+		out = append(out, Line{Conn: Conn{ib.port, e.addr}, Email: e.email, At: at, Written: e.at, Backlog: e.backlog,
+			UDP: ib.udp && !(e.backlog && ib.tcp), Dest: e.dest, Outbound: e.outbound, Blocked: blackholes[e.outbound]})
 	}
 	return out
 }

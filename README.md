@@ -21,6 +21,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 - 已有 SOCKS5 代理的端口与登录（只供主控派发 IPQuality，Agent 不运行代理）；代理地址始终使用 Agent 观测到的公网 IPv4；
 - 3x-ui：按 Cloud 下发的目标管理本机面板中的受管客户端，并上报入站与流量；开了 Xray 访问日志时，还按连接从内核计每个受管客户端的实时流量（供公平使用判定）；
 - 限速：按 Cloud 下发的目标限制指定用户的下载，靠 3x-ui 的 Xray 访问日志认出连接属于谁；
+- 连接记录：把受管客户端在访问日志里的每次请求（时间、来源、目标、出站、是否被拦截）和连接结束时的流量上报给 Cloud 留作审计；
 - IPQuality Runner：见下。
 
 Runner 使用主控随任务下发的目标 SOCKS5 登录，执行固定版本、经过摘要校验的官方 IPQuality 脚本，每台严格单并发，本身不保存代理密码。配置范围与固定版本入口见[安装教程](docs/INSTALLATION.md#ipquality-runner)。
@@ -36,6 +37,7 @@ Akastr Agent 只负责节点本地执行与观察：
 - 在专用 Runner 上执行固定版本、固定 checksum 的 IPQuality 脚本；
 - 可选的 `xui` 模块按 Cloud 下发的目标管理本机 3x-ui 中的受管客户端，并上报入站与流量；可与换 IP 同时开启。
 - 可选的 `rate_limit` 模块按 Cloud 下发的目标限制指定客户的下载速度，需要同时开启 `xui`。
+- 可选的 `connection_records` 模块上报受管客户端的连接记录，需要同时开启 `xui`。
 
 AkastrCloud 负责业务编排：
 

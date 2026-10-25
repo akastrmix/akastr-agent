@@ -39,6 +39,7 @@ apt-get install --yes ca-certificates curl
 - SOCKS5 入口：已有代理的端口、用户名和密码，供 IPQuality 检测使用；
 - 3x-ui 代理交付：面板的本机地址（`127.0.0.1` 或 `::1`，含路径）、账号与密码；须关闭 3x-ui 自带的订阅服务，对齐规则见 [PROTOCOL.md](PROTOCOL.md#xui)。要对 Reality（Vision）用户做公平使用判定，还须在 3x-ui 面板的 Xray 设置里把访问日志（Access Log）设为 `./access.log`，并保持“地址掩码”（Mask Address）为空：Agent 靠这份日志认出每条连接属于谁，再从内核读它的流量；没开时后台显示原因，这台节点的 Reality 用户暂不判定；
 - 限速：需要同时开启 3x-ui，并按上一条开启访问日志；没开时后台显示“访问日志不可用”。限速规则见 [PROTOCOL.md](PROTOCOL.md#rate_limit)；
+- 连接记录：需要同时开启 3x-ui，并按上文开启访问日志；没开时没有记录。上报内容见 [PROTOCOL.md](PROTOCOL.md#上报与回执)；
 - IPQuality Runner：见下文，可以开多台。
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于节点上 root-only 的配置文件。

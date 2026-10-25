@@ -43,6 +43,7 @@ func TestModuleConfigurationFailsClosed(t *testing.T) {
 		"plain HTTP ChangeIP":       `{` + watch + `,"changeip":{"provider":"http_bearer","url":"http://x.test/","bearer_token":"t"}}`,
 		"SOCKS5 without login":      `{` + watch + `,"socks5":{"port":1080}}`,
 		"runner with profiles":      `{"ipquality_runner":{"profiles":[]}}`,
+		"records without xui":       `{` + watch + `,"connection_records":{}}`,
 	} {
 		if _, err := model(t, modules); err == nil {
 			t.Errorf("%s accepted", name)

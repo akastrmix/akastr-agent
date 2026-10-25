@@ -4,7 +4,7 @@
 
 每个安装实例只存在一个 `akastr-agent.service` 和一个 Go 主进程。主进程主动连接 AkastrCloud 的 WSS 控制端点，并在内部检查主控批准的更新（见第 8 节）；节点没有额外 updater service、timer 或常驻辅助进程，也不开放通用管理 HTTP 服务。实例只公布配置中明确启用的能力。
 
-每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、3x-ui 客户端管理、限速、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点，模块可以任意组合，只受技术依赖约束（ChangeIP 需要公网 IP 观察，限速需要 3x-ui 客户端管理）；Runner 可以有多台，由 Cloud 分配检测。
+每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、3x-ui 客户端管理、限速、连接记录、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点，模块可以任意组合，只受技术依赖约束（ChangeIP 需要公网 IP 观察，限速与连接记录需要 3x-ui 客户端管理）；Runner 可以有多台，由 Cloud 分配检测。
 
 项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。节点由后台先创建，得到节点 UUID 与长期机器 token；provider secret 只在以机器 token 加密的持久 bootstrap 里，不以明文进入 PostgreSQL。节点上的配置就是 Cloud 下发的 bootstrap 明文，Agent 不再转写成第二种格式。配置有单调的 desired/applied revision，两者不等时 Cloud 不派发操作；配置更新由主进程自动取回收敛，不需要重跑安装命令。
 
@@ -48,8 +48,9 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
-- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，并上报入站与受管客户端流量的快照。
-- `internal/xray`：本机 Xray 的共用读取，供 xui 和限速模块使用，同一份日志只读一次。`accesslog` 跟读 3x-ui 所运行 Xray 的访问日志（截断时从 3x-ui 的副本补读），逐行交出“入站端口 + 来源地址:端口 → 用户”，不保存连接；`ledger` 是唯一的连接账本：把这些行绑定到内核的 TCP 连接上，按内核计数把流量归到用户并每分钟上报（Vision 直传期间面板计数不增长，这份计数照常增长），也把每个用户的连接与 UDP 流交给限速。
+- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，上报入站与受管客户端流量的快照，并每分钟上报连接账本里受管客户端的内核计数（Vision 直传期间面板计数不增长，这份计数照常增长）。
+- `internal/xray`：本机 Xray 的共用读取，不认识任何模块，同一份日志只读一次，由 `internal/app` 分给账本和连接记录。`accesslog` 跟读 3x-ui 所运行 Xray 的访问日志（截断时从 3x-ui 的副本补读），逐行交出“入站端口 + 来源地址:端口 → 用户”以及原始时间、目标、出站和是否进了 `blackhole` 出站（读 Xray 正在运行的配置得知），不保存连接；`ledger` 是唯一的连接账本：把这些行绑定到内核的 TCP 连接上，按内核计数把流量归到用户，把每个用户的连接与 UDP 流交给限速，并在绑定的连接确认关闭后告诉连接记录它的那一行、流量和承载的请求数。
+- `internal/modules/connectionrecords`：把受管客户端的日志行和连接结束事件变成记录，在内存里有界排队、分批上报；不写盘。
 - `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
 - `internal/modules/ratelimit`：按目标把指定用户的下载限速。按连接账本中的连接与 UDP 流，在默认路由网卡的 clsact egress 上加 flower 过滤，同一组共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
 - `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
