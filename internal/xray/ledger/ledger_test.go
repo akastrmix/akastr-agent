@@ -89,12 +89,28 @@ func lineAt(at time.Time, port uint16, remote, email string, udp bool) accesslog
 	return accesslog.Line{Conn: accesslog.Conn{Port: port, Remote: netip.MustParseAddrPort(remote)}, Email: email, At: at, Written: at, UDP: udp}
 }
 
-// totals are each user's down bytes and connections.
+// totals are each user's down bytes over its bound connections, open or
+// ended, and its open connections.
 func (h *harness) totals() map[string][2]uint64 {
 	h.t.Helper()
 	out := map[string][2]uint64{}
-	for _, u := range h.l.Usage().Users {
-		out[u.Email] = [2]uint64{u.Down, uint64(u.Connections)}
+	add := func(email string, down uint64) {
+		t := out[email]
+		t[0] += down
+		out[email] = t
+	}
+	for _, e := range h.ended {
+		add(e.Line.Email, e.Down)
+	}
+	for _, s := range h.l.sockets {
+		if s.email != "" {
+			add(s.email, s.down)
+		}
+	}
+	for email, n := range h.l.Connections().Users {
+		t := out[email]
+		t[1] = uint64(n)
+		out[email] = t
 	}
 	return out
 }
@@ -353,75 +369,27 @@ func TestCloseNoticesCountTheLastBytesOnce(t *testing.T) {
 	}
 }
 
-// A client idle for a while leaves the report and comes back counting from
-// zero, which Cloud reads as new traffic since the previous report.
-func TestIdleClientsLeaveAndComeBackFromZero(t *testing.T) {
+// The connections say why there may be more than they count.
+func TestConnectionsSayWhenTheyMayBeShort(t *testing.T) {
 	h := newHarness(t)
 	h.tick(0)
-	h.open(1, nodeA, 443, "203.0.113.9:1001", 0)
-	h.line(h.now, 443, "203.0.113.9:1001", "ak-a", false)
-	h.tick(2 * time.Second)
-	h.shut(1, 5000, true)
-	h.tick(idleAfter - time.Second)
-	h.expect(map[string][2]uint64{"ak-a": {5000, 0}})
-	h.tick(2 * time.Second)
-	h.expect(map[string][2]uint64{})
-	h.open(2, nodeA, 443, "203.0.113.9:1002", 0)
-	h.line(h.now, 443, "203.0.113.9:1002", "ak-a", false)
-	h.send(2, 1000, 0)
-	h.tick(2 * time.Second)
-	h.expect(map[string][2]uint64{"ak-a": {1000, 1}})
-	// Idle again, but back before the next report: Cloud never saw it leave,
-	// so its count goes on rather than restarting.
-	h.shut(2, 0, true)
-	h.tick(idleAfter + time.Second)
-	h.open(3, nodeA, 443, "203.0.113.9:1003", 0)
-	h.line(h.now, 443, "203.0.113.9:1003", "ak-a", false)
-	h.send(3, 500, 0)
-	h.tick(2 * time.Second)
-	h.expect(map[string][2]uint64{"ak-a": {1500, 1}})
-}
-
-// The usage says why the counts may be short, in the same epoch.
-func TestUsageSaysWhenCountsMayBeShort(t *testing.T) {
-	h := newHarness(t)
-	h.tick(0)
-	u := h.l.Usage()
-	if u.Kernel != nil || u.Log != nil || len(u.Users) != 0 || u.Epoch == "" {
-		t.Fatalf("healthy usage %+v", u)
+	if c := h.l.Connections(); c.Kernel != nil || c.Log != nil || len(c.Users) != 0 {
+		t.Fatalf("healthy connections %+v", c)
 	}
 	h.logErr = errors.New("the Xray access log is off")
-	if u := h.l.Usage(); u.Log == nil || u.Kernel != nil {
-		t.Fatalf("log off: %+v", u)
+	if c := h.l.Connections(); c.Log == nil || c.Kernel != nil {
+		t.Fatalf("log off: %+v", c)
 	}
 	h.dumpErr = errors.New("sock_diag: permission denied")
 	h.tick(2 * time.Second)
-	if u := h.l.Usage(); u.Kernel == nil || h.l.Err() == nil {
-		t.Fatalf("kernel unavailable: %+v", u)
+	if c := h.l.Connections(); c.Kernel == nil || h.l.Err() == nil {
+		t.Fatalf("kernel unavailable: %+v", c)
 	}
 	h.dumpErr, h.logErr = nil, nil
 	h.tick(2 * time.Second)
-	if again := h.l.Usage(); again.Kernel != nil || again.Log != nil || again.Epoch != u.Epoch || h.l.Err() != nil {
-		t.Fatalf("after recovery %+v", again)
+	if c := h.l.Connections(); c.Kernel != nil || c.Log != nil || h.l.Err() != nil {
+		t.Fatalf("after recovery %+v", c)
 	}
-}
-
-// Counts past what JSON carries exactly start a new epoch.
-func TestHugeCountsStartANewEpoch(t *testing.T) {
-	h := newHarness(t)
-	h.tick(0)
-	epoch := h.l.Usage().Epoch
-	h.open(1, nodeA, 443, "203.0.113.9:1001", 0)
-	h.line(h.now, 443, "203.0.113.9:1001", "ak-a", false)
-	h.send(1, maxSafeInt+1, 0)
-	h.tick(2 * time.Second)
-	u := h.l.Usage()
-	if u.Epoch == epoch || len(u.Users) != 0 {
-		t.Fatalf("usage %+v", u)
-	}
-	h.send(1, 10, 0)
-	h.tick(2 * time.Second)
-	h.expect(map[string][2]uint64{"ak-a": {10, 1}})
 }
 
 // A bound connection is told once it is gone for good: the line that bound

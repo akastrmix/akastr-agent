@@ -7,11 +7,11 @@
 // are left unbound: neither counts nor is limited, rather than one being
 // counted for the wrong user.
 //
-// The ledger keeps each user's traffic for the xui module's usage report,
+// The ledger tells the xui module how many connections each user holds,
 // gives the rate limiter each user's connections and tells whoever keeps
-// connection records when a bound connection ended. Xray adds the bytes of a
-// spliced Vision connection to its user statistics only when the connection
-// ends; these counts grow while it runs.
+// connection records what a bound connection carried once it ended. A user's
+// traffic is Xray's own count, which 3x-ui reports; these per-connection
+// bytes say only where it went.
 //
 // UDP flows have no connection in the kernel's TCP table. A line of an
 // inbound that takes UDP, and that no TCP connection took, counts as a UDP
@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
-	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/sockdiag"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 )
@@ -49,11 +48,7 @@ const (
 	lateBind = 30 * time.Second
 	udpKeep  = 2 * time.Hour
 	// Beyond this many waiting lines, the oldest are dropped.
-	maxClaims  = 65536
-	maxSafeInt = 1<<53 - 1
-	// A user with no connection and no traffic for idleAfter leaves the
-	// usage and counts from zero if it comes back.
-	idleAfter = 10 * time.Minute
+	maxClaims = 65536
 )
 
 // Log is the access log, which names the user of each connection.
@@ -101,9 +96,6 @@ type Ledger struct {
 	// claims are the newest line of each connection the log named that is
 	// still waiting for its TCP connection or counts as a UDP flow.
 	claims map[accesslog.Conn]*claim
-	// epoch names the period the totals count from.
-	epoch   string
-	clients map[string]*total
 	// finished are bound connections removed since ended was last told.
 	finished []Ended
 }
@@ -146,27 +138,13 @@ type claim struct {
 	requests int
 }
 
-type total struct {
-	Total
-	// active is when the user last had a connection or traffic.
-	active time.Time
-}
-
-// Usage is what each user's connections carried in this epoch, and why the
-// counts may be short.
-type Usage struct {
-	Epoch string
+// Connections are each user's open bound TCP connections, and why there may
+// be more than they say.
+type Connections struct {
 	// Kernel is why the kernel's connections cannot be read, which stops the
 	// counts; Log is why the access log cannot, so new connections go unfound.
 	Kernel, Log error
-	Users       []Total
-}
-
-type Total struct {
-	Email    string
-	Up, Down uint64
-	// Connections are the user's open bound connections.
-	Connections int
+	Users       map[string]int
 }
 
 // New keeps the account of the connections log names; ended, when not nil,
@@ -179,8 +157,7 @@ func New(log Log, ended func(Ended)) *Ledger {
 
 func newLedger(log Log, dump func() ([]sockdiag.Conn, error), closed func(context.Context, func(sockdiag.Conn)) error) *Ledger {
 	return &Ledger{log: log, dump: dump, closed: closed, now: time.Now,
-		sockets: map[uint64]*socket{}, byConn: map[accesslog.Conn][]*socket{}, claims: map[accesslog.Conn]*claim{},
-		epoch: protocol.NewUUID(), clients: map[string]*total{}}
+		sockets: map[uint64]*socket{}, byConn: map[accesslog.Conn][]*socket{}, claims: map[accesslog.Conn]*claim{}}
 }
 
 // Run keeps the account until ctx ends.
@@ -262,7 +239,7 @@ func (l *Ledger) take(start time.Time, conns []sockdiag.Conn, err error) {
 			// A dump taken before a close notice and read after it shows a
 			// connection that is gone; any other dump that shows it is right.
 			s.missing, s.closedAt = 0, time.Time{}
-			l.update(s, c, now)
+			l.update(s, c)
 		}
 	}
 	// Only with the whole dump in can a line tell whether it names one
@@ -277,7 +254,6 @@ func (l *Ledger) take(start time.Time, conns []sockdiag.Conn, err error) {
 	}
 	l.dumped = start
 	l.expire(now)
-	l.tally(now)
 }
 
 // close takes in the final counters of a connection the kernel destroyed.
@@ -296,7 +272,7 @@ func (l *Ledger) close(c sockdiag.Conn) {
 		l.bindSocket(s, now)
 		return
 	}
-	l.update(s, c, now)
+	l.update(s, c)
 	if s.closedAt.IsZero() {
 		s.closedAt = now
 	}
@@ -359,13 +335,13 @@ func (l *Ledger) remove(s *socket) {
 
 // update moves a connection's counters forward. Counters only grow; lower
 // ones come from a dump taken before a close notice and are skipped.
-func (l *Ledger) update(s *socket, c sockdiag.Conn, now time.Time) {
+func (l *Ledger) update(s *socket, c sockdiag.Conn) {
 	if c.BytesAcked < s.acked || c.BytesReceived < s.received {
 		return
 	}
 	s.acked, s.received = c.BytesAcked, c.BytesReceived
 	if s.email != "" {
-		l.credit(s, now)
+		credit(s)
 	}
 }
 
@@ -418,31 +394,15 @@ func (l *Ledger) bind(s *socket, c *claim, now time.Time) {
 	case s.after.IsZero():
 		s.countedAcked, s.countedReceived = s.firstAcked, s.firstReceived
 	}
-	l.credit(s, now)
+	credit(s)
 }
 
-// credit adds what a bound connection carried since it was last counted to
-// its user.
-func (l *Ledger) credit(s *socket, now time.Time) {
-	down, up := s.acked-s.countedAcked, s.received-s.countedReceived
+// credit gives a bound connection's user what it carried since it was last
+// counted.
+func credit(s *socket) {
+	s.down += s.acked - s.countedAcked
+	s.up += s.received - s.countedReceived
 	s.countedAcked, s.countedReceived = s.acked, s.received
-	s.down += down
-	s.up += up
-	t := l.clients[s.email]
-	if t == nil {
-		t = &total{Total: Total{Email: s.email}, active: now}
-		l.clients[s.email] = t
-	}
-	if down == 0 && up == 0 {
-		return
-	}
-	t.Down += down
-	t.Up += up
-	t.active = now
-	// JSON integers stay exact below 2^53; a new epoch starts over.
-	if t.Down > maxSafeInt || t.Up > maxSafeInt {
-		l.epoch, l.clients = protocol.NewUUID(), map[string]*total{}
-	}
 }
 
 // expire forgets closed connections and lines whose time is over.
@@ -464,19 +424,6 @@ func (l *Ledger) dropOldClaims() {
 	slices.SortFunc(conns, func(a, b accesslog.Conn) int { return l.claims[a].arrived.Compare(l.claims[b].arrived) })
 	for _, conn := range conns[:len(conns)-maxClaims*9/10] {
 		delete(l.claims, conn)
-	}
-}
-
-// tally counts each client's open connections.
-func (l *Ledger) tally(now time.Time) {
-	for _, t := range l.clients {
-		t.Connections = 0
-	}
-	for _, s := range l.sockets {
-		if t := l.clients[s.email]; t != nil && s.closedAt.IsZero() {
-			t.Connections++
-			t.active = now
-		}
 	}
 }
 
@@ -509,24 +456,16 @@ func (l *Ledger) Err() error {
 	return l.dumpErr
 }
 
-// Usage tallies each user's traffic since the epoch began, in email order.
-// A user with no connection and no traffic for idleAfter leaves here and
-// counts from zero if it comes back; with one reader, the report that leaves
-// it out comes before any in which it starts again.
-func (l *Ledger) Usage() Usage {
+// Connections counts each user's open bound connections.
+func (l *Ledger) Connections() Connections {
 	logErr := l.log.Err()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := l.now()
-	l.tally(now)
-	for email, t := range l.clients {
-		if t.Connections == 0 && now.Sub(t.active) >= idleAfter {
-			delete(l.clients, email)
+	c := Connections{Kernel: l.dumpErr, Log: logErr, Users: map[string]int{}}
+	for _, s := range l.sockets {
+		if s.email != "" && s.closedAt.IsZero() {
+			c.Users[s.email]++
 		}
 	}
-	u := Usage{Epoch: l.epoch, Kernel: l.dumpErr, Log: logErr, Users: make([]Total, 0, len(l.clients))}
-	for _, email := range slices.Sorted(maps.Keys(l.clients)) {
-		u.Users = append(u.Users, l.clients[email].Total)
-	}
-	return u
+	return c
 }

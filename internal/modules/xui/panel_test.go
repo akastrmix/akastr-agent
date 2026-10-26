@@ -3,6 +3,7 @@ package xui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/state"
+	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
 
 func jsonEncode(w io.Writer, value any) error { return json.NewEncoder(w).Encode(value) }
@@ -374,7 +376,7 @@ func TestSnapshotKeepsSecretsOnTheNode(t *testing.T) {
 	c := owned("ak-a")
 	c.ResetSeq = 2
 	panel.Apply(context.Background(), targets(t, map[string][]Client{"1": {c}}))
-	data, err := NewSnapshots(panel).read(context.Background())
+	data, err := NewSnapshots(panel, func() ledger.Connections { return ledger.Connections{} }, func() (bool, error) { return false, nil }).read(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,6 +387,58 @@ func TestSnapshotKeepsSecretsOnTheNode(t *testing.T) {
 	}
 	if !strings.Contains(string(data), `"publicKey":"pub"`) || !strings.Contains(string(data), "obfs-shared") || !strings.Contains(string(data), `{"email":"ak-a","up":0,"down":0,"reset_seq":2}`) {
 		t.Fatalf("snapshot lacks public fields or traffic: %s", data)
+	}
+}
+
+// Each minute's snapshot is a new report even when nothing changed, since
+// Cloud reads speed from two snapshots in a row; it says only the owned
+// clients' connections, why they may be short, and whether Xray splices.
+func TestSnapshotTellsEachMinute(t *testing.T) {
+	panel := startPanel(t, newFakePanel(vlessInbound(1)))
+	conns := ledger.Connections{Users: map[string]int{"ak-b": 2, "ak-a": 1, "admin": 4}}
+	spliced, spliceErr := false, error(nil)
+	s := NewSnapshots(panel, func() ledger.Connections { return conns }, func() (bool, error) { return spliced, spliceErr })
+	var sent []protocol.ReportBody
+	publish := func(r protocol.ReportBody) error { sent = append(sent, r); return nil }
+	decode := func(r protocol.ReportBody) snapshot {
+		t.Helper()
+		var got snapshot
+		if err := json.Unmarshal(r.Data.(json.RawMessage), &got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	s.tick(context.Background(), publish)
+	got := decode(sent[0])
+	if got.Splice == nil || *got.Splice != "off" || got.Connections.ErrorCode != nil ||
+		!slices.Equal(got.Connections.Clients, []clientConnections{{"ak-a", 1}, {"ak-b", 2}}) {
+		t.Fatalf("snapshot %+v", got)
+	}
+	// Unacknowledged, the same snapshot goes again under its own id.
+	s.tick(context.Background(), publish)
+	if sent[1].ReportID != sent[0].ReportID {
+		t.Fatal("an unacknowledged snapshot was replaced by an identical one")
+	}
+	if ok, _ := s.Acknowledge(sent[0].ReportID); !ok {
+		t.Fatal("acknowledgement not taken")
+	}
+	s.tick(context.Background(), publish)
+	if sent[2].ReportID == sent[0].ReportID {
+		t.Fatal("a quiet minute sent no new snapshot")
+	}
+
+	conns.Log = errors.New("the Xray access log is off")
+	spliced, spliceErr = true, errors.New("found 0 Xray processes started by 3x-ui")
+	s.tick(context.Background(), publish)
+	if got := decode(sent[3]); got.Splice != nil || got.Connections.ErrorCode == nil || *got.Connections.ErrorCode != "xui_log_unavailable" {
+		t.Fatalf("snapshot %+v", got)
+	}
+	conns.Kernel = errors.New("sock_diag: permission denied")
+	spliced, spliceErr = true, nil
+	s.tick(context.Background(), publish)
+	if got := decode(sent[4]); *got.Splice != "on" || *got.Connections.ErrorCode != "xui_connections_unavailable" {
+		t.Fatalf("snapshot %+v", got)
 	}
 }
 

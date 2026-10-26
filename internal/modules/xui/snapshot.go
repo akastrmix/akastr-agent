@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -12,38 +13,58 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
+	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
 
 const (
-	snapshotInterval  = time.Minute
-	snapshotHeartbeat = 10 * time.Minute
+	snapshotInterval = time.Minute
 	// Leaves room for the envelope within protocol.MaxMessage.
 	maxSnapshotBytes = 900 * 1024
 )
 
-// Snapshots reports the panel's inbounds and the owned clients' traffic each
-// minute when they changed, and at least every ten minutes. Only the newest
-// snapshot matters, so an unacknowledged one is replaced, never queued.
+// Snapshots reports the panel's inbounds, the owned clients' traffic and open
+// connections, and whether Xray splices, each minute even when nothing
+// changed: Cloud reads speed from the difference between two snapshots, so
+// an idle minute must say so. Only the newest snapshot matters, so an
+// unacknowledged one is replaced, never queued.
 type Snapshots struct {
-	panel *Panel
-	wake  chan struct{}
+	panel       *Panel
+	connections func() ledger.Connections
+	// spliced says whether Xray hands Vision downloads to the kernel.
+	spliced func() (bool, error)
+	wake    chan struct{}
 
 	mu       sync.Mutex
 	pending  *protocol.ReportBody
 	pendData []byte
-	lastData []byte
-	lastAt   time.Time
 }
 
 var _ module.Reporter = (*Snapshots)(nil)
 
-func NewSnapshots(panel *Panel) *Snapshots {
-	return &Snapshots{panel: panel, wake: make(chan struct{}, 1)}
+func NewSnapshots(panel *Panel, connections func() ledger.Connections, spliced func() (bool, error)) *Snapshots {
+	return &Snapshots{panel: panel, connections: connections, spliced: spliced, wake: make(chan struct{}, 1)}
 }
 
 type snapshot struct {
 	Inbounds []snapshotInbound `json:"inbounds"`
 	Traffic  []clientTraffic   `json:"traffic"`
+	// Splice is "off" when Xray counts Vision downloads as they flow, "on"
+	// when only as each connection ends, and null when its process cannot be
+	// read.
+	Splice      *string     `json:"splice"`
+	Connections connections `json:"connections"`
+}
+
+// connections are the owned clients' open TCP connections; a client left out
+// has none, unless ErrorCode says why they cannot all be found.
+type connections struct {
+	ErrorCode *string             `json:"error_code"`
+	Clients   []clientConnections `json:"clients"`
+}
+
+type clientConnections struct {
+	Email       string `json:"email"`
+	Connections int    `json:"connections"`
 }
 
 type snapshotInbound struct {
@@ -69,21 +90,18 @@ type clientTraffic struct {
 func (s *Snapshots) Run(ctx context.Context, publish module.Publish) error {
 	ticker := time.NewTicker(snapshotInterval)
 	defer ticker.Stop()
-	force := true
 	for {
-		s.tick(ctx, publish, force)
-		force = false
+		s.tick(ctx, publish)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
 		case <-s.wake:
-			force = true
 		}
 	}
 }
 
-func (s *Snapshots) tick(ctx context.Context, publish module.Publish, force bool) {
+func (s *Snapshots) tick(ctx context.Context, publish module.Publish) {
 	readContext, cancel := context.WithTimeout(ctx, 30*time.Second)
 	data, err := s.read(readContext)
 	cancel()
@@ -92,14 +110,10 @@ func (s *Snapshots) tick(ctx context.Context, publish module.Publish, force bool
 		return
 	}
 	s.mu.Lock()
-	switch {
-	case s.pending != nil && bytes.Equal(s.pendData, data):
-	case force || s.pending != nil || !bytes.Equal(s.lastData, data) || time.Since(s.lastAt) >= snapshotHeartbeat:
+	// An unacknowledged snapshot that says the same is sent again as it is.
+	if s.pending == nil || !bytes.Equal(s.pendData, data) {
 		s.pending = &protocol.ReportBody{ReportID: protocol.NewUUID(), Kind: KindSnapshot, Data: json.RawMessage(data)}
 		s.pendData = data
-	default:
-		s.mu.Unlock()
-		return
 	}
 	report := *s.pending
 	s.mu.Unlock()
@@ -108,11 +122,48 @@ func (s *Snapshots) tick(ctx context.Context, publish module.Publish, force bool
 }
 
 func (s *Snapshots) read(ctx context.Context) ([]byte, error) {
+	result, err := s.readPanel(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if spliced, err := s.spliced(); err == nil {
+		splice := "off"
+		if spliced {
+			splice = "on"
+		}
+		result.Splice = &splice
+	}
+	result.Connections = ownedConnections(s.connections())
+	data, err := json.Marshal(result)
+	if err != nil || len(data) > maxSnapshotBytes {
+		return nil, errorCode("xui_snapshot_too_large")
+	}
+	return data, nil
+}
+
+func ownedConnections(c ledger.Connections) connections {
+	out := connections{Clients: []clientConnections{}}
+	switch {
+	case c.Kernel != nil:
+		out.ErrorCode = new("xui_connections_unavailable")
+	case c.Log != nil:
+		out.ErrorCode = new("xui_log_unavailable")
+	}
+	for email, n := range c.Users {
+		if Owned(email) {
+			out.Clients = append(out.Clients, clientConnections{Email: email, Connections: n})
+		}
+	}
+	slices.SortFunc(out.Clients, func(a, b clientConnections) int { return strings.Compare(a.Email, b.Email) })
+	return out
+}
+
+func (s *Snapshots) readPanel(ctx context.Context) (snapshot, error) {
 	s.panel.mu.Lock()
 	defer s.panel.mu.Unlock()
 	inbounds, err := s.panel.adapter.list(ctx)
 	if err != nil {
-		return nil, err
+		return snapshot{}, err
 	}
 	result := snapshot{Inbounds: []snapshotInbound{}, Traffic: []clientTraffic{}}
 	for _, ib := range inbounds {
@@ -129,11 +180,7 @@ func (s *Snapshots) read(ctx context.Context) ([]byte, error) {
 			}
 		}
 	}
-	data, err := json.Marshal(result)
-	if err != nil || len(data) > maxSnapshotBytes {
-		return nil, errorCode("xui_snapshot_too_large")
-	}
-	return data, nil
+	return result, nil
 }
 
 // Inbounds lists the panel's inbounds for the access log. It reads no
@@ -238,7 +285,6 @@ func (s *Snapshots) Acknowledge(reportID string) (bool, error) {
 	if s.pending == nil || s.pending.ReportID != reportID {
 		return false, nil
 	}
-	s.lastData, s.lastAt = s.pendData, time.Now()
 	s.pending, s.pendData = nil, nil
 	return true, nil
 }

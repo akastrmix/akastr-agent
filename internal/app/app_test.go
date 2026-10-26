@@ -68,7 +68,7 @@ type fixtureEntry struct {
 
 // Cloud tests read the same file for the opposite direction.
 func TestPairedProtocolFixturesValidateCloudToAgentMessages(t *testing.T) {
-	data, err := os.ReadFile("../protocol/testdata/agent-protocol-v10.json")
+	data, err := os.ReadFile("../protocol/testdata/agent-protocol-v11.json")
 	if err != nil {
 		t.Fatal(err)
 	}

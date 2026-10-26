@@ -25,6 +25,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
+	"github.com/akastrmix/akastr-agent/internal/xray/process"
 )
 
 // Fixed runtime limits. Cloud configures what a node does, not these bounds.
@@ -137,7 +138,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 		runtime.desired.Add(xui.Name, panel)
 		// The log is read once, and one account of the connections serves the
-		// usage report, the limiter and the connection records.
+		// snapshot's connection counts, the limiter and the connection records.
 		log := accesslog.New(panel.Inbounds)
 		var lines ledger.Log = log
 		var ended func(ledger.Ended)
@@ -148,7 +149,14 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 		connections := ledger.New(lines, ended)
 		runtime.workers = append(runtime.workers, connections)
-		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel), xui.NewUsage(connections.Usage))
+		spliced := func() (bool, error) {
+			xray, err := process.Find("/proc")
+			if err != nil {
+				return false, err
+			}
+			return xray.Spliced()
+		}
+		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel, connections.Connections, spliced))
 		if m.rateLimit != nil {
 			limiter := ratelimit.New(connections)
 			runtime.desired.Add(ratelimit.Name, limiter)

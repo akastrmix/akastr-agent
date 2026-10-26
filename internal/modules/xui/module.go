@@ -21,14 +21,13 @@ import (
 
 const (
 	Name = "xui"
-	// KindSnapshot reports the panel's inbounds and the owned clients' traffic.
+	// KindSnapshot reports the panel's inbounds, the owned clients' traffic
+	// and connections, and whether Xray counts Vision downloads as they flow.
 	KindSnapshot = "xui.snapshot"
-	// KindUsage reports the owned clients' traffic counted from the kernel.
-	KindUsage   = "xui.usage"
-	ownedPrefix = "ak-"
-	visionFlow  = "xtls-rprx-vision"
-	maxSafeInt  = 1<<53 - 1
-	maxComment  = 200
+	ownedPrefix  = "ak-"
+	visionFlow   = "xtls-rprx-vision"
+	maxSafeInt   = 1<<53 - 1
+	maxComment   = 200
 )
 
 var ownedEmail = regexp.MustCompile(`^ak-[a-z0-9]{1,61}$`)

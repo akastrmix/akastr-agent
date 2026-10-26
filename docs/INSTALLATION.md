@@ -37,7 +37,7 @@ apt-get install --yes ca-certificates curl
 - 公网 IP 观察：开启换 IP 时必须开启（开关锁定）。检查间隔 10–300 秒，一般保持 60 秒；可选同时观察 IPv6，无公网 IPv6 时忽略；
 - 换 IP：粘贴服务商完整 `curl` 命令，或填写固定本机程序；关闭时若该节点仍有启用的自动换 IP 计划或待执行任务，后台会拒绝保存；
 - SOCKS5 入口：已有代理的端口、用户名和密码，供 IPQuality 检测使用；
-- 3x-ui 代理交付：面板的本机地址（`127.0.0.1` 或 `::1`，含路径）、账号与密码；须关闭 3x-ui 自带的订阅服务，对齐规则见 [PROTOCOL.md](PROTOCOL.md#xui)。要对 Reality（Vision）用户做公平使用判定，还须在 3x-ui 面板的 Xray 设置里把访问日志（Access Log）设为 `./access.log`，并保持“地址掩码”（Mask Address）为空：Agent 靠这份日志认出每条连接属于谁，再从内核读它的流量；没开时后台显示原因，这台节点的 Reality 用户暂不判定；
+- 3x-ui 代理交付：面板的本机地址（`127.0.0.1` 或 `::1`，含路径）、账号与密码；须关闭 3x-ui 自带的订阅服务，对齐规则见 [PROTOCOL.md](PROTOCOL.md#xui)。还须按下文[关闭 Xray 内核直传](#3x-ui-节点关闭-xray-内核直传)，否则 Reality（Vision）的下载要到连接结束才计入用量，后台显示“实时计数未开启”，这台节点不做公平使用判定。要看连接数、限速或留连接记录，还须在 3x-ui 面板的 Xray 设置里把访问日志（Access Log）设为 `./access.log`，并保持“地址掩码”（Mask Address）为空：Agent 靠这份日志认出每条连接属于谁；没开时后台显示原因；
 - 限速：需要同时开启 3x-ui，并按上一条开启访问日志；没开时后台显示“访问日志不可用”。限速规则见 [PROTOCOL.md](PROTOCOL.md#rate_limit)；
 - 连接记录：需要同时开启 3x-ui，并按上文开启访问日志；没开时没有记录。上报内容见 [PROTOCOL.md](PROTOCOL.md#上报与回执)；
 - IPQuality Runner：见下文，可以开多台。
@@ -47,6 +47,20 @@ apt-get install --yes ca-certificates curl
 “固定本机程序”填写节点上已有程序或脚本的干净绝对路径，例如 `/usr/local/bin/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。程序必须是 Agent service 可读取的非 symlink regular file 并具有执行权限；脚本需要有效 shebang。它不接受相对路径、控制字符、shell/env/busybox 入口，以及 sandbox 隐藏的 home、runtime user 或临时目录。主控以后只能触发这组固定 argv，不能远程换程序或参数。
 
 公布 SOCKS5 只描述已有代理，Agent 不安装、不配置代理服务。填写 1–65535 的监听端口和该代理的用户名、密码；登录只用于主控派发 IPQuality 检测，不进入安装命令或列表。主控始终使用 Agent 最近一次观测到的公网 IPv4，不使用域名或手填 IP。节点尚未上报过公网 IPv4 时不会派发 IPQuality。
+
+### 3x-ui 节点：关闭 Xray 内核直传
+
+Xray 默认把 Vision 连接的下载交给系统内核直接转发（splice），自己不经手，要到连接结束才把这些字节记进用户统计，所以长下载在进行中看不到用量。关闭后由 Xray 自己搬运，随传随计；网络上看到的流量不变，代价是节点每下载 1 GB 多用约 3 秒 CPU（2026-10-27 在测试节点实测）。
+
+在 3x-ui 节点上以 root 执行一次。**重启 x-ui 会断开这台机器上的全部代理连接**，客户端一般会自动重连，请选在不忙的时候：
+
+```sh
+mkdir -p /etc/systemd/system/x-ui.service.d
+printf '[Service]\nEnvironment=XRAY_BUF_SPLICE=disable\n' > /etc/systemd/system/x-ui.service.d/akastr-usage.conf
+systemctl daemon-reload && systemctl restart x-ui
+```
+
+这是一个单独的文件，不改 3x-ui 自己的服务文件，3x-ui 升级一般会保留它；万一失效，后台的节点详情会显示“实时计数未开启”，重做一次即可。Agent 只读取 Xray 进程是否带着这个设置，不会自己改它；卸载 Agent 也不会撤销它。要恢复直传，删除 `/etc/systemd/system/x-ui.service.d/akastr-usage.conf` 后同样执行 `systemctl daemon-reload && systemctl restart x-ui`。
 
 ### IPQuality Runner
 

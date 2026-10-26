@@ -48,8 +48,8 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
-- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，上报入站与受管客户端流量的快照，并每分钟上报连接账本里受管客户端的内核计数（Vision 直传期间面板计数不增长，这份计数照常增长）。
-- `internal/xray`：本机 Xray 的共用读取，不认识任何模块，同一份日志只读一次，由 `internal/app` 分给账本和连接记录。`accesslog` 跟读 3x-ui 所运行 Xray 的访问日志（截断时从 3x-ui 的副本补读），逐行交出“入站端口 + 来源地址:端口 → 用户”以及原始时间、目标、出站和是否进了 `blackhole` 出站（读 Xray 正在运行的配置得知），不保存连接；`ledger` 是唯一的连接账本：把这些行绑定到内核的 TCP 连接上，按内核计数把流量归到用户，把每个用户的连接与 UDP 流交给限速，并在绑定的连接确认关闭后告诉连接记录它的那一行、流量和承载的请求数。
+- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，每分钟上报快照：入站、受管客户端的流量（Xray 自己的计数，客户用量的唯一来源）、连接账本里它们的 TCP 连接数，以及 Xray 是否走内核直传（直传时 Vision 下载要到连接结束才计入）。
+- `internal/xray`：本机 Xray 的共用读取，不认识任何模块，同一份日志只读一次，由 `internal/app` 分给账本和连接记录。`process` 找到 3x-ui 所运行的唯一 Xray 进程，读出它的配置文件路径和是否直传（环境变量只读这一项）；`accesslog` 跟读 3x-ui 所运行 Xray 的访问日志（截断时从 3x-ui 的副本补读），逐行交出“入站端口 + 来源地址:端口 → 用户”以及原始时间、目标、出站和是否进了 `blackhole` 出站（读 Xray 正在运行的配置得知），不保存连接；`ledger` 是唯一的连接账本：把这些行绑定到内核的 TCP 连接上，数出每个用户当前的连接，把每个用户的连接与 UDP 流交给限速，并在绑定的连接确认关闭后告诉连接记录它的那一行、按内核计数的流量和承载的请求数。它不汇总用户流量。
 - `internal/modules/connectionrecords`：把受管客户端的日志行和连接结束事件变成记录，在内存里有界排队、分批上报；不写盘。
 - `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
 - `internal/modules/ratelimit`：按目标把指定用户的下载限速。按连接账本中的连接与 UDP 流，在默认路由网卡的 clsact egress 上加 flower 过滤，同一组共用一个 police；失败时撤掉自己的全部规则（宁可不限）。

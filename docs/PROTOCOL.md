@@ -1,4 +1,4 @@
-# Akastr Agent 协议 `2026-10-10.v10`
+# Akastr Agent 协议 `2026-10-27.v11`
 
 AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 1 MiB。未知字段、未知 message type、未知上报 kind、binary frame、无效 UUID 和未来协议版本均会失败关闭；Agent 收到的消息、模块配置与目标中，必填字段为 null 视同缺失。
 
@@ -143,7 +143,7 @@ key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `cl
 - 目标为空时，面板中已不存在的入站视为一致（不报 `xui_inbound_missing`），使已删除入站的 key 也能完成退役。
 - 有写入时重新读取面板核对，不一致返回 `xui_unconfirmed`。其他错误码：面板请求类（`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`）、`xui_inbound_missing`、`xui_inbound_changed`（入站协议、method 与目标凭据不再匹配）、`xui_inbound_invalid`、`xui_client_conflict`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`。
 
-**访问日志与连接账本**：开启 `xui` 后，Agent 跟读 3x-ui 所运行 Xray 的访问日志，按行中的入站标签对照 3x-ui 面板的入站清单（面板新增或改端口的入站直接加进运行中的 Xray，不改它启动时的配置，所以以面板为准）：每 5 分钟读一次，遇到清单中没有的标签时立即重读，读到清单前不跟读日志；每行得到“入站端口 + 来源地址:端口 → email”。经过中转时，来源是中转机的地址，每条用户连接对应一条中转连接。Agent 同时每 2 秒向内核读一次本机 TCP 连接，并接收内核的连接关闭通知，把日志行对到连接上：一行只认领在它写下时已经建立、尚未关闭、也还没有主人的连接，恰好一条时绑定，绑定后直到连接关闭都不改。日志不含本机地址，所以同一来源地址:端口同时连到本机两个地址的同一端口时，两条都不绑定，不计也不限，不会算到别人头上。可走 UDP 的入站（Hysteria、mKCP、QUIC、开了 UDP 的 Shadowsocks）上没有被 TCP 连接认领的行，算作该用户的 UDP 流，行写下后 2 小时内有效；但打开日志时读到的旧行，在同时收 TCP 和 UDP 的入站上只用来认 TCP 连接：日志分不出这种行是 TCP 还是 UDP，旧的多半是早已断开的 TCP 连接。3x-ui 截断日志前会把它追加到副本（`/var/log/x-ui/3xipl-ap.log`），Agent 从副本补读截断前没读到的行；打开日志时先读副本末尾，以认出启动前就在的连接。行时间按本机时区解析；跟读时与本机时间相差超过 1 分钟的行，按读到的时间算。连接与日志行只在内存，不写盘；离开节点的只有 `xui.usage` 的汇总，以及开启 `connection_records` 时的连接记录。日志须由运营者在面板开启且不掩码地址（`log.access` 不为 `none`，`maskAddress` 为空）；路径按 Xray 进程的工作目录解析。没开时 Agent 只是认不出连接，不影响面板对齐与快照。
+**访问日志与连接账本**：开启 `xui` 后，Agent 跟读 3x-ui 所运行 Xray 的访问日志，按行中的入站标签对照 3x-ui 面板的入站清单（面板新增或改端口的入站直接加进运行中的 Xray，不改它启动时的配置，所以以面板为准）：每 5 分钟读一次，遇到清单中没有的标签时立即重读，读到清单前不跟读日志；每行得到“入站端口 + 来源地址:端口 → email”。经过中转时，来源是中转机的地址，每条用户连接对应一条中转连接。Agent 同时每 2 秒向内核读一次本机 TCP 连接，并接收内核的连接关闭通知，把日志行对到连接上：一行只认领在它写下时已经建立、尚未关闭、也还没有主人的连接，恰好一条时绑定，绑定后直到连接关闭都不改。日志不含本机地址，所以同一来源地址:端口同时连到本机两个地址的同一端口时，两条都不绑定，不计也不限，不会算到别人头上。可走 UDP 的入站（Hysteria、mKCP、QUIC、开了 UDP 的 Shadowsocks）上没有被 TCP 连接认领的行，算作该用户的 UDP 流，行写下后 2 小时内有效；但打开日志时读到的旧行，在同时收 TCP 和 UDP 的入站上只用来认 TCP 连接：日志分不出这种行是 TCP 还是 UDP，旧的多半是早已断开的 TCP 连接。3x-ui 截断日志前会把它追加到副本（`/var/log/x-ui/3xipl-ap.log`），Agent 从副本补读截断前没读到的行；打开日志时先读副本末尾，以认出启动前就在的连接。行时间按本机时区解析；跟读时与本机时间相差超过 1 分钟的行，按读到的时间算。连接与日志行只在内存，不写盘；离开节点的只有 `xui.snapshot` 里的连接数，以及开启 `connection_records` 时的连接记录。日志须由运营者在面板开启且不掩码地址（`log.access` 不为 `none`，`maskAddress` 为空）；路径按 Xray 进程的工作目录解析。没开时 Agent 只是认不出连接，不影响面板对齐与快照。
 
 ### `rate_limit`
 
@@ -173,25 +173,22 @@ key 是 Cloud 的限速单位（一份订阅在一个策略组下的账号）。
 |---|---|
 | `ip.address` | `family`（`ipv4`/`ipv6`）、`address`、`observed_at`、`command_id`（UUID 或 null） |
 | `changeip.unchanged` | `command_id`、`address`、`observed_at` |
-| `xui.snapshot` | `inbounds`、`traffic`，见下 |
-| `xui.usage` | `epoch`、`error_code`、`clients`，见下 |
+| `xui.snapshot` | `inbounds`、`traffic`、`splice`、`connections`，见下 |
 | `connection_records.batch` | `records`、`dropped`，见下 |
 
-`xui.snapshot` 每分钟读取一次面板，内容变化时发送，至少每 10 分钟发送一次，每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照被新快照取代。`inbounds` 每项为 `id`、`remark`、`protocol`、`listen`、`port`、`enable`、`settings`、`stream_settings`（后两者为 JSON object）；`traffic` 每项为受管客户端的 `email`、`up`、`down`（bytes）与本机已执行的 `reset_seq`，Cloud 只采用与其当前序号相同的计数。
+`xui.snapshot` 每分钟读取一次面板并发送，内容没变也发（Cloud 用相邻两份快照的差算速度，闲着的一分钟也要报出来），每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照原样重发，内容变了才被新快照取代。
+
+- `inbounds` 每项为 `id`、`remark`、`protocol`、`listen`、`port`、`enable`、`settings`、`stream_settings`（后两者为 JSON object）。
+- `traffic` 每项为受管客户端的 `email`、`up`、`down`（bytes）与本机已执行的 `reset_seq`，Cloud 只采用与其当前序号相同的计数。这是 Xray 自己按用户的计数，是客户用量与公平使用判定的唯一来源。
+- `splice`：`off` 表示 Xray 不走内核直传，Vision 下载随传随计；`on` 表示走直传，Vision 连接的字节要到连接结束才一次计入；`null` 表示读不到 3x-ui 所运行的 Xray 进程。按 Xray 启动时的环境变量判断，与 Xray 的读法一致：`xray.buf.splice` 或 `XRAY_BUF_SPLICE` 设为 `auto`、`enable` 以外的值（包括空值）即关闭。只读出这一项，其他环境变量不读出也不上报。关闭方法见 [INSTALLATION.md](INSTALLATION.md)。
+- `connections`：`error_code` 与 `clients`。`clients` 每项为 `email` 与 `connections`（下文连接账本当前绑定到它的 TCP 连接数，不含 UDP），只列有连接的受管客户端；`error_code` 为 null 时，没列出的即没有连接。`xui_log_unavailable` 表示读不到访问日志，新连接认不出、已认出的照常计；`xui_connections_unavailable` 表示读不到内核连接信息。非 null 时连接数可能偏少。
 
 秘密集中的部分按白名单复制，3x-ui 以后新增的字段也不会带出：settings 只保留 VLESS 的 `encryption`，Shadowsocks 的 `method`、`password`、`network`，Hysteria 的 `version`；stream_settings 的 `tlsSettings` 只保留 `serverName`、`alpn` 和 `settings` 中的 `fingerprint`、`allowInsecure`、`echConfigList`，`realitySettings` 只保留 `serverNames`、`shortIds` 和 `settings` 中的 `publicKey`、`fingerprint`、`serverName`、`spiderX`、`mldsa65Verify`；其余传输字段只保留 `externalProxy`、`finalmask`（客户端也须使用的混淆设置）和 `tcpSettings.header.type`，其他（例如服务端的 `hysteriaSettings.auth`）都不上报。其他协议的 settings 为空对象，stream_settings 只有 `network` 与 `security`。其他用户的凭据、服务端私钥与密码、ECH 服务端密钥、Reality 种子与证书不离开节点。
-
-`xui.usage` 是 Agent 自己按 TCP 连接计的每客户流量，与面板计数无关。Xray 的 Vision 走内核直传时要到连接结束才把字节记入用户统计，这份计数不受影响。每分钟发送一次，连接 ready 后立即发送；只保留最新一份，未确认的旧计数被新的取代。
-
-- **怎么计**：按上文的连接账本，每 2 秒读一次已绑定连接的 `tcp_info`：`bytes_acked` 记为下行（发往客户），`bytes_received` 记为上行，都含协议开销；连接关闭时按内核的关闭通知补上最后一段。不计 UDP。连接出现后 30 秒内认出主人的，从它的第一个字节计；启动时已在的连接从启动时计；更晚才认出的从认出时计，不补记之前的字节，以免一次性记入一大笔。没认出主人的连接不计。关闭通知在连接大量同时关闭、内核来不及排队时可能丢失：丢失的连接少计最后不到 2 秒，两次读取之间开始又结束的连接不计。
-- `epoch`：本进程启动时生成的 UUID。计数从此刻开始，启动时已有的连接只计此后的字节；epoch 变化即从 0 重新计。
-- `clients`：当前有连接或 10 分钟内有过流量的受管客户端，email 不重复；每项必须且只能包含 `email`、`up`、`down`（累计 bytes，不减少）与 `connections`（当前绑定的 TCP 连接数）。客户端从报告中消失后再出现，从 0 重新累计；同一 epoch 内某客户端没有列出，即自它上次列出以来没有计数。超过 4096 个客户端时，`error_code` 为 `xui_usage_unavailable`、`clients` 为空。
-- `error_code`：空表示计数完整；`xui_log_unavailable` 表示读不到访问日志，新连接认不出、已认出的继续计；`xui_usage_unavailable` 表示读不到内核连接信息（计数停止），或同时活跃的客户端超过上限。非空时计数可能偏少。
 
 `connection_records.batch` 把访问日志里受管客户端的每一行（一次请求）作为一条记录上报，供 Cloud 留作审计。`records` 最多 1000 条，`dropped` 为上一批以来因积压丢弃的条数。
 
 - **开始记录**：每条新读到、带可读时间和可读目标的受管客户端日志行立即产生一条，必须且只能包含：`at`（行上写的时间，按本机时区解析，以 UTC、RFC 3339、6 位小数表示）、`email`、`source`（来源 `IP:端口`，IPv6 带方括号；经中转时是中转机）、`network`（目标的 `tcp`/`udp`；行上没写时为空串，Shadowsocks 2022 的行从不写）、`host`（目标域名或 IP，只含字母、数字与 `.-_:`，最长 255）、`port`、`outbound`（出站标签，最长 128）、`blocked`（该出站在 Xray 正在运行的配置里协议为 `blackhole`，与名字无关）。
-- **结束记录**：某行绑定的 TCP 连接按上文账本确认关闭并再保留 30 秒后，同一行再发一条，另带 `ended_at`、`up`、`down`（从绑定起计入该用户的字节，计法与 `xui.usage` 相同）与 `requests`（日志在这条连接上记下的请求数，含绑定的那一行；多路复用时大于 1，流量属于整条连接而不是第一个目标）。这四个字段同时出现或同时缺失；结束记录的 `network` 总是 `tcp`。没有绑定 TCP 连接的行（UDP 流、未认出的连接）只有开始记录。
+- **结束记录**：某行绑定的 TCP 连接按上文账本确认关闭并再保留 30 秒后，同一行再发一条，另带 `ended_at`、`up`、`down`（这条连接从绑定起计入该用户的字节：账本每 2 秒读一次它的 `tcp_info`，`bytes_acked` 为下行、`bytes_received` 为上行，都含协议开销，关闭时按内核的关闭通知补上最后一段，通知丢失时少计最后不到 2 秒；出现后 30 秒内认出主人的从第一个字节计，启动时已在的从启动时计，更晚认出的从认出时计）与 `requests`（日志在这条连接上记下的请求数，含绑定的那一行；多路复用时大于 1，流量属于整条连接而不是第一个目标）。这四个字段同时出现或同时缺失；结束记录的 `network` 总是 `tcp`。没有绑定 TCP 连接的行（UDP 流、未认出的连接）只有开始记录。
 - Cloud 以节点、`at` 与 `source` 识别一条记录：开始记录重复到达不改变任何东西，结束记录补上结束字段，先到也可以。所以重发和 Agent 重启后补发都没有副作用。
 - 打开日志时读到的旧行（Agent 启动或日志重新打开）不产生开始记录，上一个进程已经发过；它们照常用来认出仍开着的连接，这些连接关闭时照常发结束记录。Agent 停止期间写下的行因此没有记录；停止前 30 秒内关闭的连接（账本还为晚到的行留着它）没有结束记录。
 - 每 10 秒或攒满 1000 条时发一批；同一时间只有一批等待回执，未确认的批次在下一次定时或连接 ready 时以同一 `report_id` 重发。内存里最多积压 20000 条，超出时丢最旧的。记录不写盘，更新或重启时未发出的会丢失。
@@ -212,7 +209,7 @@ key 是 Cloud 的限速单位（一份订阅在一个策略组下的账号）。
 
 ## 安全边界
 
-- 协议固定为 `2026-10-10.v10`，不自动降级，也不接受协议之外的字段。
+- 协议固定为 `2026-10-27.v11`，不自动降级，也不接受协议之外的字段。
 - bootstrap/enrollment 使用机器 token，WSS 与更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
 - 上报和普通日志不得含密码、原始链接或脚本输出。受管客户端凭据只出现在 Cloud 下发的 `state.put` 中，Agent 不写入磁盘或日志。
