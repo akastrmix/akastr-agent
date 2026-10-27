@@ -104,7 +104,7 @@ func (h *harness) totals() map[string][2]uint64 {
 	}
 	for _, s := range h.l.sockets {
 		if s.email != "" {
-			add(s.email, s.down)
+			add(s.email, s.acked)
 		}
 	}
 	for email, n := range h.l.Connections().Users {
@@ -191,9 +191,9 @@ func TestBindsWhicheverComesFirst(t *testing.T) {
 	}
 }
 
-// Traffic from before the Agent started, or before a late line, never comes
-// as one lump: it would look like a heavy user.
-func TestNoLumpOfEarlierTraffic(t *testing.T) {
+// An ended connection tells all it carried: bytes from before the Agent
+// started, or before its line came, are its own as much as the rest.
+func TestConnectionsCountAllTheyCarried(t *testing.T) {
 	h := newHarness(t)
 	h.open(1, nodeA, 443, "203.0.113.9:1001", 900<<20)
 	h.tick(0)
@@ -201,7 +201,7 @@ func TestNoLumpOfEarlierTraffic(t *testing.T) {
 	// The line, read from the log on start, was written an hour ago.
 	h.line(h.now.Add(-time.Hour), 443, "203.0.113.9:1001", "ak-a", false)
 	h.tick(2 * time.Second)
-	// A connection whose line comes long after it opened counts from then.
+	// A connection whose line comes long after it opened.
 	h.open(2, nodeA, 443, "203.0.113.9:1002", 0)
 	for range 20 {
 		h.send(2, 1<<20, 0)
@@ -210,13 +210,54 @@ func TestNoLumpOfEarlierTraffic(t *testing.T) {
 	h.line(h.now, 443, "203.0.113.9:1002", "ak-b", false)
 	h.send(2, 1<<20, 0)
 	h.tick(2 * time.Second)
-	h.expect(map[string][2]uint64{"ak-a": {5 << 20, 1}, "ak-b": {1 << 20, 1}})
-	// A notice for a connection closed before the first dump is history too.
+	h.expect(map[string][2]uint64{"ak-a": {905 << 20, 1}, "ak-b": {21 << 20, 1}})
+	// A notice for a connection closed before the first dump is history.
 	h2 := newHarness(t)
 	h2.l.close(sockdiag.Conn{Cookie: 9, Local: netip.AddrPortFrom(nodeA, 443), Remote: netip.MustParseAddrPort("203.0.113.9:1009"), BytesAcked: 50 << 20})
 	h2.tick(0)
 	h2.line(h2.now, 443, "203.0.113.9:1009", "ak-c", false)
 	h2.expect(map[string][2]uint64{})
+}
+
+// A connection open when the Agent started takes the newest line of its
+// address written before then: the log's tail also holds the lines of
+// connections that closed earlier, another user's on a port a relay reused or
+// the same user's. Lines come oldest first, and some a little late.
+func TestOpenAtStartTakesItsNewestLine(t *testing.T) {
+	h := newHarness(t)
+	h.open(1, nodeA, 443, "203.0.113.9:1001", 100)
+	h.open(2, nodeA, 443, "203.0.113.9:1002", 200)
+	h.open(3, nodeA, 443, "203.0.113.9:1003", 300)
+	h.tick(0)
+	start := h.now
+	h.l.claim([]accesslog.Line{
+		lineAt(start.Add(-10*time.Minute), 443, "203.0.113.9:1001", "ak-a", false),
+		lineAt(start.Add(-9*time.Minute), 443, "203.0.113.9:1002", "ak-c", false),
+		lineAt(start.Add(-5*time.Minute), 443, "203.0.113.9:1003", "ak-d", false),
+		lineAt(start.Add(-time.Minute), 443, "203.0.113.9:1001", "ak-b", false),
+		lineAt(start.Add(-30*time.Second), 443, "203.0.113.9:1002", "ak-c", false),
+	})
+	h.tick(2 * time.Second)
+	// Written just before the start, read after the tail.
+	h.line(start.Add(-time.Second), 443, "203.0.113.9:1003", "ak-e", false)
+	// A line written since is a request on the open connection, as before.
+	h.line(h.now, 443, "203.0.113.9:1002", "ak-c", false)
+	h.expect(map[string][2]uint64{"ak-b": {100, 1}, "ak-c": {200, 1}, "ak-e": {300, 1}})
+	// Once the tail is in, an old line takes nothing over.
+	h.tick(claimWait)
+	h.line(start.Add(-time.Millisecond), 443, "203.0.113.9:1003", "ak-f", false)
+	for cookie := range uint64(3) {
+		h.shut(cookie+1, 0, true)
+	}
+	h.tick(keepClosed + 2*time.Second)
+	got := map[string][2]any{}
+	for _, e := range h.ended {
+		got[e.Line.Email] = [2]any{start.Sub(e.Line.At), e.Requests}
+	}
+	want := map[string][2]any{"ak-b": {time.Minute, 1}, "ak-c": {30 * time.Second, 2}, "ak-e": {time.Second, 1}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ended %v, want %v", got, want)
+	}
 }
 
 // Two open connections that a line cannot tell apart count for nobody, and

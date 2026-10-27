@@ -7,6 +7,11 @@
 // are left unbound: neither counts nor is limited, rather than one being
 // counted for the wrong user.
 //
+// An address holds one TCP connection at a time, so a connection open when
+// the Agent started belongs to the newest line of its address written before
+// then; the older lines that the log's tail replays are connections already
+// closed, often another user's on a port a relay reused.
+//
 // The ledger tells the xui module how many connections each user holds,
 // gives the rate limiter each user's connections and tells whoever keeps
 // connection records what a bound connection carried once it ended. A user's
@@ -41,12 +46,11 @@ const (
 	// A closed connection is kept this long, so a line read after the close
 	// still finds it and counts its bytes.
 	keepClosed = 30 * time.Second
-	// A line of a TCP-only inbound waits this long for its connection.
+	// A line of a TCP-only inbound waits this long for its connection, and a
+	// line written before the start this long to take over a connection open
+	// then, as lines reach the log a little after they are written.
 	claimWait = 10 * time.Second
-	// A connection found more than lateBind after it was first seen counts
-	// from then on: a late line must not add a lump of earlier traffic.
-	lateBind = 30 * time.Second
-	udpKeep  = 2 * time.Hour
+	udpKeep   = 2 * time.Hour
 	// Beyond this many waiting lines, the oldest are dropped.
 	maxClaims = 65536
 )
@@ -88,8 +92,9 @@ type Ledger struct {
 	ended func(Ended)
 
 	mu sync.Mutex
-	// dumped is when the last successful dump started, zero before the first.
-	dumped  time.Time
+	// dumped is when the last successful dump started, zero before the first;
+	// started is when the first one did.
+	dumped, started time.Time
 	dumpErr error
 	sockets map[uint64]*socket
 	byConn  map[accesslog.Conn][]*socket
@@ -112,16 +117,11 @@ type socket struct {
 	email    string
 	line     accesslog.Line
 	requests int
-	// up and down are what the user was given.
-	up, down uint64
-	// The counters when first seen, the latest, and what the user was given.
-	firstAcked, firstReceived     uint64
-	acked, received               uint64
-	countedAcked, countedReceived uint64
+	// The kernel's counters: all the connection carried, down and up.
+	acked, received uint64
 	// after is a time the connection opened after: the start of the dump
 	// before it was first seen. Zero for one open at the first dump.
-	after     time.Time
-	firstSeen time.Time
+	after time.Time
 	// closedAt is when the connection was found closed: by the kernel's
 	// notice, which is final, or by missing from dumps, which a later dump
 	// that shows it again undoes.
@@ -234,7 +234,7 @@ func (l *Ledger) take(start time.Time, conns []sockdiag.Conn, err error) {
 		s := l.sockets[c.Cookie]
 		switch {
 		case s == nil:
-			added = append(added, l.add(c, now))
+			added = append(added, l.add(c))
 		case !s.noticed:
 			// A dump taken before a close notice and read after it shows a
 			// connection that is gone; any other dump that shows it is right.
@@ -245,12 +245,15 @@ func (l *Ledger) take(start time.Time, conns []sockdiag.Conn, err error) {
 	// Only with the whole dump in can a line tell whether it names one
 	// connection or two.
 	for _, s := range added {
-		l.bindSocket(s, now)
+		l.bindSocket(s)
 	}
 	for _, s := range l.sockets {
 		if s.closedAt.IsZero() && s.missing >= missingDumps {
 			s.closedAt = now
 		}
+	}
+	if l.dumped.IsZero() {
+		l.started = start
 	}
 	l.dumped = start
 	l.expire(now)
@@ -267,9 +270,9 @@ func (l *Ledger) close(c sockdiag.Conn) {
 	s := l.sockets[c.Cookie]
 	if s == nil {
 		// Opened and closed between two dumps.
-		s = l.add(c, now)
+		s = l.add(c)
 		s.closedAt, s.noticed = now, true
-		l.bindSocket(s, now)
+		l.bindSocket(s)
 		return
 	}
 	l.update(s, c)
@@ -286,6 +289,11 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 	now := l.now()
 	for _, line := range batch {
 		c := &claim{line: line, arrived: now, requests: 1}
+		if s := l.replayed(line, now); s != nil {
+			s.email, s.line, s.requests = line.Email, line, 1
+			delete(l.claims, line.Conn)
+			continue
+		}
 		// A line a TCP connection takes ends what waited at its address.
 		if s := l.carrier(line.Conn, c); s != nil {
 			// Another line of a connection already bound, as a multiplexed
@@ -295,7 +303,7 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 			continue
 		}
 		if s := l.candidate(line.Conn, c); s != nil {
-			l.bind(s, c, now)
+			l.bind(s, c)
 			delete(l.claims, line.Conn)
 			continue
 		}
@@ -311,10 +319,9 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 	}
 }
 
-func (l *Ledger) add(c sockdiag.Conn, now time.Time) *socket {
+func (l *Ledger) add(c sockdiag.Conn) *socket {
 	s := &socket{cookie: c.Cookie, conn: accesslog.Conn{Port: c.Local.Port(), Remote: c.Remote}, local: c.Local,
-		firstAcked: c.BytesAcked, firstReceived: c.BytesReceived, acked: c.BytesAcked, received: c.BytesReceived,
-		after: l.dumped, firstSeen: now}
+		acked: c.BytesAcked, received: c.BytesReceived, after: l.dumped}
 	l.sockets[c.Cookie] = s
 	l.byConn[s.conn] = append(l.byConn[s.conn], s)
 	return s
@@ -322,7 +329,7 @@ func (l *Ledger) add(c sockdiag.Conn, now time.Time) *socket {
 
 func (l *Ledger) remove(s *socket) {
 	if s.email != "" && l.ended != nil {
-		l.finished = append(l.finished, Ended{Line: s.line, At: s.closedAt, Up: s.up, Down: s.down, Requests: s.requests})
+		l.finished = append(l.finished, Ended{Line: s.line, At: s.closedAt, Up: s.received, Down: s.acked, Requests: s.requests})
 	}
 	delete(l.sockets, s.cookie)
 	rest := slices.DeleteFunc(l.byConn[s.conn], func(o *socket) bool { return o == s })
@@ -340,16 +347,13 @@ func (l *Ledger) update(s *socket, c sockdiag.Conn) {
 		return
 	}
 	s.acked, s.received = c.BytesAcked, c.BytesReceived
-	if s.email != "" {
-		credit(s)
-	}
 }
 
 // bindSocket binds a connection the kernel just showed when the waiting line
 // of its address is its own.
-func (l *Ledger) bindSocket(s *socket, now time.Time) {
+func (l *Ledger) bindSocket(s *socket) {
 	if c := l.claims[s.conn]; c != nil && l.candidate(s.conn, c) == s {
-		l.bind(s, c, now)
+		l.bind(s, c)
 		delete(l.claims, s.conn)
 	}
 }
@@ -383,26 +387,25 @@ func (l *Ledger) candidate(conn accesslog.Conn, c *claim) *socket {
 	return found
 }
 
-// bind gives a connection its user. It counts from its first byte when found
-// soon after it was first seen; a connection open before the first dump
-// counts from that dump, and one found late from now.
-func (l *Ledger) bind(s *socket, c *claim, now time.Time) {
+// bind gives a connection its user.
+func (l *Ledger) bind(s *socket, c *claim) {
 	s.email, s.line, s.requests = c.line.Email, c.line, c.requests
-	switch {
-	case now.Sub(s.firstSeen) > lateBind:
-		s.countedAcked, s.countedReceived = s.acked, s.received
-	case s.after.IsZero():
-		s.countedAcked, s.countedReceived = s.firstAcked, s.firstReceived
-	}
-	credit(s)
 }
 
-// credit gives a bound connection's user what it carried since it was last
-// counted.
-func credit(s *socket) {
-	s.down += s.acked - s.countedAcked
-	s.up += s.received - s.countedReceived
-	s.countedAcked, s.countedReceived = s.acked, s.received
+// replayed is a connection open at the start, bound to an older line written
+// before then, that this newer such line takes over while the log's tail is
+// still coming in. Older lines are dropped, not counted as its requests: they
+// may be closed connections of the same user.
+func (l *Ledger) replayed(line accesslog.Line, now time.Time) *socket {
+	if line.UDP || l.started.IsZero() || line.At.After(l.started) || now.Sub(l.started) > claimWait {
+		return nil
+	}
+	for _, s := range l.byConn[line.Conn] {
+		if s.after.IsZero() && s.email != "" && line.At.After(s.line.At) {
+			return s
+		}
+	}
+	return nil
 }
 
 // expire forgets closed connections and lines whose time is over.
