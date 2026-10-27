@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -109,15 +110,16 @@ func cleanup(ctx context.Context, tc runner, devs []string) error {
 	return nil
 }
 
-// links lists every network interface of the host.
+// links lists every network interface of the host. It asks the kernel rather
+// than reading /sys/class/net, which also holds files such as bonding_masters.
 func links() ([]string, error) {
-	entries, err := os.ReadDir("/sys/class/net")
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(entries))
-	for _, e := range entries {
-		names = append(names, e.Name())
+	names := make([]string, 0, len(ifaces))
+	for _, i := range ifaces {
+		names = append(names, i.Name)
 	}
 	return names, nil
 }
