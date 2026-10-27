@@ -260,6 +260,21 @@ func TestOpenAtStartTakesItsNewestLine(t *testing.T) {
 	}
 }
 
+// A log that begins late, its panel unread at first, still gives a connection
+// open at the start its newest line.
+func TestLateTailTakesItsNewestLine(t *testing.T) {
+	h := newHarness(t)
+	h.open(1, nodeA, 443, "203.0.113.9:1001", 100)
+	h.tick(0)
+	start := h.now
+	h.tick(claimWait + 2*time.Second)
+	h.l.claim([]accesslog.Line{
+		lineAt(start.Add(-10*time.Minute), 443, "203.0.113.9:1001", "ak-a", false),
+		lineAt(start.Add(-time.Minute), 443, "203.0.113.9:1001", "ak-b", false),
+	})
+	h.expect(map[string][2]uint64{"ak-b": {100, 1}})
+}
+
 // Two open connections that a line cannot tell apart count for nobody, and
 // neither is limited.
 func TestAmbiguousConnectionsCountForNobody(t *testing.T) {

@@ -93,11 +93,12 @@ type Ledger struct {
 
 	mu sync.Mutex
 	// dumped is when the last successful dump started, zero before the first;
-	// started is when the first one did.
-	dumped, started time.Time
-	dumpErr error
-	sockets map[uint64]*socket
-	byConn  map[accesslog.Conn][]*socket
+	// started is when the first one did; tail is when the first lines read
+	// after it came in, the log's tail, however late the log began.
+	dumped, started, tail time.Time
+	dumpErr               error
+	sockets               map[uint64]*socket
+	byConn                map[accesslog.Conn][]*socket
 	// claims are the newest line of each connection the log named that is
 	// still waiting for its TCP connection or counts as a UDP flow.
 	claims map[accesslog.Conn]*claim
@@ -287,6 +288,9 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
+	if l.tail.IsZero() && !l.started.IsZero() {
+		l.tail = now
+	}
 	for _, line := range batch {
 		c := &claim{line: line, arrived: now, requests: 1}
 		if s := l.replayed(line, now); s != nil {
@@ -397,7 +401,7 @@ func (l *Ledger) bind(s *socket, c *claim) {
 // still coming in. Older lines are dropped, not counted as its requests: they
 // may be closed connections of the same user.
 func (l *Ledger) replayed(line accesslog.Line, now time.Time) *socket {
-	if line.UDP || l.started.IsZero() || line.At.After(l.started) || now.Sub(l.started) > claimWait {
+	if line.UDP || l.started.IsZero() || line.At.After(l.started) || now.Sub(l.tail) > claimWait {
 		return nil
 	}
 	for _, s := range l.byConn[line.Conn] {
