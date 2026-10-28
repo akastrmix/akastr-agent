@@ -275,6 +275,19 @@ func TestLateTailTakesItsNewestLine(t *testing.T) {
 	h.expect(map[string][2]uint64{"ak-b": {100, 1}})
 }
 
+// A connection opened just before the start, whose line was written just
+// after it, is that line's, not an older user's of the same address.
+func TestOpenJustBeforeStartTakesItsLateLine(t *testing.T) {
+	h := newHarness(t)
+	h.open(1, nodeA, 443, "203.0.113.9:1001", 100)
+	h.tick(0)
+	start := h.now
+	h.l.claim([]accesslog.Line{lineAt(start.Add(-10*time.Minute), 443, "203.0.113.9:1001", "ak-a", false)})
+	h.tick(time.Second)
+	h.line(start.Add(500*time.Millisecond), 443, "203.0.113.9:1001", "ak-b", false)
+	h.expect(map[string][2]uint64{"ak-b": {100, 1}})
+}
+
 // Two open connections that a line cannot tell apart count for nobody, and
 // neither is limited.
 func TestAmbiguousConnectionsCountForNobody(t *testing.T) {

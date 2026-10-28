@@ -8,9 +8,10 @@
 // counted for the wrong user.
 //
 // An address holds one TCP connection at a time, so a connection open when
-// the Agent started belongs to the newest line of its address written before
-// then; the older lines that the log's tail replays are connections already
-// closed, often another user's on a port a relay reused.
+// the Agent started belongs to the newest line of its address: written before
+// then, or just after for a connection opened just before; the older lines
+// that the log's tail replays are connections already closed, often another
+// user's on a port a relay reused.
 //
 // The ledger tells the xui module how many connections each user holds,
 // gives the rate limiter each user's connections and tells whoever keeps
@@ -396,18 +397,29 @@ func (l *Ledger) bind(s *socket, c *claim) {
 	s.email, s.line, s.requests = c.line.Email, c.line, c.requests
 }
 
-// replayed is a connection open at the start, bound to an older line written
-// before then, that this newer such line takes over while the log's tail is
-// still coming in. Older lines are dropped, not counted as its requests: they
-// may be closed connections of the same user.
+// replayed is a connection open at the start, bound to an older line, that a
+// newer line takes over while the log's tail is still coming in. An address
+// holds one TCP connection at a time, so the newest line of an open
+// connection's address is its own: one written before the start, or one written
+// just after it for a connection opened just before, whose line came late.
+// Older lines are dropped, not counted as its requests: they may be closed
+// connections of the same user. A line written since the start takes over only
+// for another user, as the same user's is a request on the connection, and only
+// when the connection is the one at its address and was open then.
 func (l *Ledger) replayed(line accesslog.Line, now time.Time) *socket {
-	if line.UDP || l.started.IsZero() || line.At.After(l.started) || now.Sub(l.tail) > claimWait {
+	if line.UDP || l.started.IsZero() || now.Sub(l.tail) > claimWait {
 		return nil
 	}
-	for _, s := range l.byConn[line.Conn] {
-		if s.after.IsZero() && s.email != "" && line.At.After(s.line.At) {
-			return s
+	late := line.At.After(l.started)
+	sockets := l.byConn[line.Conn]
+	for _, s := range sockets {
+		if !s.after.IsZero() || s.email == "" || !line.At.After(s.line.At) {
+			continue
 		}
+		if late && (len(sockets) > 1 || line.Email == s.email || (!s.closedAt.IsZero() && line.At.After(s.closedAt))) {
+			return nil
+		}
+		return s
 	}
 	return nil
 }
