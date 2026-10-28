@@ -276,16 +276,30 @@ func TestLateTailTakesItsNewestLine(t *testing.T) {
 }
 
 // A connection opened just before the start, whose line was written just
-// after it, is that line's, not an older user's of the same address.
+// after it, is that line's, not an older user's of the same address, once a
+// dump shows it still the one there. A new connection that took the address
+// of one closed unnoticed keeps its own line; a line that may be a UDP flow
+// leaves the connection nobody's.
 func TestOpenJustBeforeStartTakesItsLateLine(t *testing.T) {
 	h := newHarness(t)
 	h.open(1, nodeA, 443, "203.0.113.9:1001", 100)
+	h.open(2, nodeA, 443, "203.0.113.9:1002", 200)
+	h.open(3, nodeA, 8388, "203.0.113.9:1003", 300)
 	h.tick(0)
 	start := h.now
-	h.l.claim([]accesslog.Line{lineAt(start.Add(-10*time.Minute), 443, "203.0.113.9:1001", "ak-a", false)})
+	h.l.claim([]accesslog.Line{
+		lineAt(start.Add(-10*time.Minute), 443, "203.0.113.9:1001", "ak-a", false),
+		lineAt(start.Add(-10*time.Minute), 443, "203.0.113.9:1002", "ak-a", false),
+		lineAt(start.Add(-10*time.Minute), 8388, "203.0.113.9:1003", "ak-a", false),
+	})
 	h.tick(time.Second)
-	h.line(start.Add(500*time.Millisecond), 443, "203.0.113.9:1001", "ak-b", false)
-	h.expect(map[string][2]uint64{"ak-b": {100, 1}})
+	h.shut(2, 0, false)
+	h.open(4, nodeA, 443, "203.0.113.9:1002", 50)
+	h.line(start.Add(1500*time.Millisecond), 443, "203.0.113.9:1001", "ak-b", false)
+	h.line(start.Add(1500*time.Millisecond), 443, "203.0.113.9:1002", "ak-c", false)
+	h.line(start.Add(1500*time.Millisecond), 8388, "203.0.113.9:1003", "ak-d", true)
+	h.tick(time.Second)
+	h.expect(map[string][2]uint64{"ak-a": {200, 1}, "ak-b": {100, 1}, "ak-c": {50, 1}})
 }
 
 // Two open connections that a line cannot tell apart count for nobody, and

@@ -8,10 +8,11 @@
 // counted for the wrong user.
 //
 // An address holds one TCP connection at a time, so a connection open when
-// the Agent started belongs to the newest line of its address: written before
-// then, or just after for a connection opened just before; the older lines
-// that the log's tail replays are connections already closed, often another
-// user's on a port a relay reused.
+// the Agent started belongs to the newest line of its address written before
+// then; the older lines that the log's tail replays are connections already
+// closed, often another user's on a port a relay reused. A line of another
+// user written just after the start may be its own, come late: the next dump
+// tells whether the connection is still the one at that address.
 //
 // The ledger tells the xui module how many connections each user holds,
 // gives the rate limiter each user's connections and tells whoever keeps
@@ -138,6 +139,10 @@ type claim struct {
 	// lines of its user it replaced while waiting, one connection's requests.
 	arrived  time.Time
 	requests int
+	// over is the connection open at the start, bound by the log's tail to
+	// another user, that the line names; the first dump begun after the line
+	// was written decides (see settle).
+	over *socket
 }
 
 // Connections are each user's open bound TCP connections, and why there may
@@ -249,6 +254,7 @@ func (l *Ledger) take(start time.Time, conns []sockdiag.Conn, err error) {
 	for _, s := range added {
 		l.bindSocket(s)
 	}
+	l.settle(start)
 	for _, s := range l.sockets {
 		if s.closedAt.IsZero() && s.missing >= missingDumps {
 			s.closedAt = now
@@ -317,6 +323,7 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 		if waiting := l.claims[line.Conn]; waiting != nil && waiting.line.Email == line.Email {
 			c.requests += waiting.requests
 		}
+		c.over = l.contested(line, now)
 		l.claims[line.Conn] = c
 	}
 	if len(l.claims) > maxClaims {
@@ -397,31 +404,66 @@ func (l *Ledger) bind(s *socket, c *claim) {
 	s.email, s.line, s.requests = c.line.Email, c.line, c.requests
 }
 
-// replayed is a connection open at the start, bound to an older line, that a
-// newer line takes over while the log's tail is still coming in. An address
-// holds one TCP connection at a time, so the newest line of an open
-// connection's address is its own: one written before the start, or one written
-// just after it for a connection opened just before, whose line came late.
-// Older lines are dropped, not counted as its requests: they may be closed
-// connections of the same user. A line written since the start takes over only
-// for another user, as the same user's is a request on the connection, and only
-// when the connection is the one at its address and was open then.
+// replayed is a connection open at the start, bound to an older line written
+// before then, that this newer such line takes over while the log's tail is
+// still coming in. Older lines are dropped, not counted as its requests: they
+// may be closed connections of the same user.
 func (l *Ledger) replayed(line accesslog.Line, now time.Time) *socket {
-	if line.UDP || l.started.IsZero() || now.Sub(l.tail) > claimWait {
+	if line.UDP || l.started.IsZero() || line.At.After(l.started) || now.Sub(l.tail) > claimWait {
 		return nil
 	}
-	late := line.At.After(l.started)
-	sockets := l.byConn[line.Conn]
-	for _, s := range sockets {
-		if !s.after.IsZero() || s.email == "" || !line.At.After(s.line.At) {
-			continue
+	for _, s := range l.byConn[line.Conn] {
+		if s.after.IsZero() && s.email != "" && line.At.After(s.line.At) {
+			return s
 		}
-		if late && (len(sockets) > 1 || line.Email == s.email || (!s.closedAt.IsZero() && line.At.After(s.closedAt))) {
-			return nil
-		}
-		return s
 	}
 	return nil
+}
+
+// contested is the connection open at the start, the one at the line's
+// address and bound by the log's tail to another user, that a line written
+// since the start names while that tail comes in. The line is its own when the
+// connection opened just before the start and its line came late; it is not
+// when the connection closed unnoticed and a new one took its address, or when
+// the line is a UDP flow. So the line waits, and settle decides.
+func (l *Ledger) contested(line accesslog.Line, now time.Time) *socket {
+	if l.started.IsZero() || !line.At.After(l.started) || now.Sub(l.tail) > claimWait {
+		return nil
+	}
+	sockets := l.byConn[line.Conn]
+	if len(sockets) != 1 {
+		return nil
+	}
+	s := sockets[0]
+	if !s.after.IsZero() || s.email == "" || s.email == line.Email || s.line.At.After(l.started) ||
+		(!s.closedAt.IsZero() && line.At.After(s.closedAt)) {
+		return nil
+	}
+	return s
+}
+
+// settle decides the lines that contest a connection open at the start, on a
+// dump begun at start: one begun after a line was written shows any new
+// connection at its address, which took the line already. A connection still
+// the one there is the line's; for a line that may be a UDP flow it is nobody's
+// instead, rather than either user's.
+func (l *Ledger) settle(start time.Time) {
+	for conn, c := range l.claims {
+		s := c.over
+		if s == nil || !c.line.At.Before(start) {
+			continue
+		}
+		c.over = nil
+		if l.sockets[s.cookie] != s || s.missing > 0 || !s.closedAt.IsZero() || len(l.byConn[conn]) != 1 {
+			continue
+		}
+		if c.line.UDP {
+			s.email, s.line, s.requests = "", accesslog.Line{}, 0
+			continue
+		}
+		l.bind(s, c)
+		delete(l.claims, conn)
+	}
 }
 
 // expire forgets closed connections and lines whose time is over.
