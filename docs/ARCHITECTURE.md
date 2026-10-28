@@ -54,9 +54,8 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
 - `internal/modules/ratelimit`：按目标把指定用户的下载限速。按连接账本中的连接与 UDP 流，在默认路由网卡的 clsact egress 上加 flower 过滤，同一组共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
 - `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
-- `internal/identity`、`internal/protocol`、`internal/transport/ws`：本地 Ed25519 身份和可重连的受控 WSS 通道。
-- `internal/bootstrap`：安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。
-- `internal/install`：一次安装命令的全部收敛步骤（第 8 节）。
+- `internal/identity`、`internal/protocol`、`internal/transport`：本地 Ed25519 身份和可重连的受控 WSS 通道。
+- `internal/install`：一次安装命令的全部收敛步骤（第 8 节）；安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。
 - `internal/update`：进程内更新检查与候选版本启动（第 8 节）。
 - `internal/app`：解析启用的模块并组成运行时；连接层只收发消息，命令、上报与确认都交给对应模块。
 - `internal/daemon`：组织 WSS、更新循环、候选版本激活与退出；CLI 只负责参数和进程信号。

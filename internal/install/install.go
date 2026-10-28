@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/akastrmix/akastr-agent/internal/app"
-	"github.com/akastrmix/akastr-agent/internal/bootstrap"
 	"github.com/akastrmix/akastr-agent/internal/config"
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/layout"
@@ -50,7 +49,7 @@ func Install(ctx context.Context, o Options) error {
 	if err := checkOwnership(o.Layout, o.AgentID); err != nil {
 		return err
 	}
-	raw, err := bootstrap.Fetch(ctx, o.HTTPClient, o.BootstrapEndpoint, o.AgentID, o.MachineToken)
+	raw, err := fetchBootstrap(ctx, o.HTTPClient, o.BootstrapEndpoint, o.AgentID, o.MachineToken)
 	if err != nil {
 		return err
 	}

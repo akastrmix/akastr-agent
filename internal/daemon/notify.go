@@ -1,4 +1,4 @@
-package systemdnotify
+package daemon
 
 import (
 	"errors"
@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// Ready tells systemd the service started; status is what `systemctl status` shows.
-func Ready(status string) error {
+// notifyReady tells systemd the service started; status is what `systemctl status` shows.
+func notifyReady(status string) error {
 	socket := os.Getenv("NOTIFY_SOCKET")
 	if socket == "" {
 		return nil

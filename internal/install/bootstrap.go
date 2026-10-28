@@ -1,6 +1,4 @@
-// Package bootstrap fetches the sealed node configuration at install time. The
-// machine token authenticates the request and, with the node UUID, decrypts it.
-package bootstrap
+package install
 
 import (
 	"bytes"
@@ -32,8 +30,8 @@ type fetchResponse struct {
 	Ciphertext string `json:"ciphertext"`
 }
 
-// DecodeToken validates the canonical base64url machine token.
-func DecodeToken(token string) ([]byte, error) {
+// decodeToken validates the canonical base64url machine token.
+func decodeToken(token string) ([]byte, error) {
 	decoded, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil || len(decoded) != 32 || base64.RawURLEncoding.EncodeToString(decoded) != token {
 		return nil, errors.New("machine token must be canonical base64url for 32 bytes")
@@ -41,9 +39,11 @@ func DecodeToken(token string) ([]byte, error) {
 	return decoded, nil
 }
 
-// Fetch returns the decrypted configuration document. Callers validate it.
-func Fetch(ctx context.Context, client *http.Client, endpoint, agentID, token string) ([]byte, error) {
-	tokenBytes, err := DecodeToken(token)
+// fetchBootstrap fetches the sealed node configuration at install time. The
+// machine token authenticates the request and, with the node UUID, decrypts it.
+// It returns the decrypted configuration document. Callers validate it.
+func fetchBootstrap(ctx context.Context, client *http.Client, endpoint, agentID, token string) ([]byte, error) {
+	tokenBytes, err := decodeToken(token)
 	if err != nil {
 		return nil, err
 	}

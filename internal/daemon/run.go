@@ -11,8 +11,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/identity"
 	"github.com/akastrmix/akastr-agent/internal/layout"
 	"github.com/akastrmix/akastr-agent/internal/lifecycle"
-	"github.com/akastrmix/akastr-agent/internal/systemdnotify"
-	transportws "github.com/akastrmix/akastr-agent/internal/transport/ws"
+	"github.com/akastrmix/akastr-agent/internal/transport"
 	"github.com/akastrmix/akastr-agent/internal/update"
 )
 
@@ -82,7 +81,7 @@ func Run(ctx context.Context, options Options) error {
 		// Keep updating so a release or configuration change can repair the node;
 		// with no module running there is no work to protect.
 		logger.Error("local runtime unavailable; updates remain active", "code", "runtime_initialization_failed", "error", err.Error())
-		if err := systemdnotify.Ready("Modules unavailable; waiting for an update"); err != nil {
+		if err := notifyReady("Modules unavailable; waiting for an update"); err != nil {
 			return err
 		}
 		return updater.Loop(ctx, nudges)
@@ -116,7 +115,7 @@ func Run(ctx context.Context, options Options) error {
 		nudge()
 		return nil
 	}
-	client, err := transportws.New(transportws.Options{
+	client, err := transport.New(transport.Options{
 		Endpoint: cfg.ControlEndpoint, Identity: credentials,
 		Version: options.Version, ConfigurationRevision: cfg.ConfigurationRevision,
 		Runtime:   runtime,
@@ -125,7 +124,7 @@ func Run(ctx context.Context, options Options) error {
 	if err != nil {
 		return err
 	}
-	if err := systemdnotify.Ready("Running"); err != nil {
+	if err := notifyReady("Running"); err != nil {
 		return err
 	}
 	deadline := time.Duration(0)

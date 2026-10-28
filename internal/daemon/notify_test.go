@@ -1,4 +1,4 @@
-package systemdnotify
+package daemon
 
 import (
 	"net"
@@ -16,7 +16,7 @@ func TestReadySendsSystemdNotification(t *testing.T) {
 	}
 	defer listener.Close()
 	t.Setenv("NOTIFY_SOCKET", socketPath)
-	if err := Ready("Running"); err != nil {
+	if err := notifyReady("Running"); err != nil {
 		t.Fatal(err)
 	}
 	if err := listener.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -34,7 +34,7 @@ func TestReadySendsSystemdNotification(t *testing.T) {
 
 func TestReadyIsNoopOutsideSystemd(t *testing.T) {
 	_ = os.Unsetenv("NOTIFY_SOCKET")
-	if err := Ready("Running"); err != nil {
+	if err := notifyReady("Running"); err != nil {
 		t.Fatal(err)
 	}
 }

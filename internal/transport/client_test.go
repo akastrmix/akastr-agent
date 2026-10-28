@@ -1,4 +1,4 @@
-package ws
+package transport
 
 import (
 	"context"
