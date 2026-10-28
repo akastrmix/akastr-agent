@@ -86,7 +86,7 @@ func (h *harness) line(at time.Time, port uint16, remote, email string, udp bool
 }
 
 func lineAt(at time.Time, port uint16, remote, email string, udp bool) accesslog.Line {
-	return accesslog.Line{Conn: accesslog.Conn{Port: port, Remote: netip.MustParseAddrPort(remote)}, Email: email, At: at, Written: at, UDP: udp}
+	return accesslog.Line{Conn: accesslog.Conn{Port: port, Remote: netip.MustParseAddrPort(remote)}, Email: email, At: at, Written: at, TCP: true, UDP: udp}
 }
 
 // totals are each user's down bytes over its bound connections, open or
@@ -191,26 +191,21 @@ func TestBindsWhicheverComesFirst(t *testing.T) {
 	}
 }
 
-// An ended connection tells all it carried: bytes from before the Agent
-// started, or before its line came, are its own as much as the rest.
+// An ended connection tells all it carried: bytes from before its line came
+// are its own as much as the rest.
 func TestConnectionsCountAllTheyCarried(t *testing.T) {
 	h := newHarness(t)
-	h.open(1, nodeA, 443, "203.0.113.9:1001", 900<<20)
 	h.tick(0)
-	h.send(1, 5<<20, 0)
-	// The line, read from the log on start, was written an hour ago.
-	h.line(h.now.Add(-time.Hour), 443, "203.0.113.9:1001", "ak-a", false)
-	h.tick(2 * time.Second)
 	// A connection whose line comes long after it opened.
-	h.open(2, nodeA, 443, "203.0.113.9:1002", 0)
+	h.open(1, nodeA, 443, "203.0.113.9:1001", 0)
 	for range 20 {
-		h.send(2, 1<<20, 0)
+		h.send(1, 1<<20, 0)
 		h.tick(2 * time.Second)
 	}
-	h.line(h.now, 443, "203.0.113.9:1002", "ak-b", false)
-	h.send(2, 1<<20, 0)
+	h.line(h.now, 443, "203.0.113.9:1001", "ak-a", false)
+	h.send(1, 1<<20, 0)
 	h.tick(2 * time.Second)
-	h.expect(map[string][2]uint64{"ak-a": {905 << 20, 1}, "ak-b": {21 << 20, 1}})
+	h.expect(map[string][2]uint64{"ak-a": {21 << 20, 1}})
 	// A notice for a connection closed before the first dump is history.
 	h2 := newHarness(t)
 	h2.l.close(sockdiag.Conn{Cookie: 9, Local: netip.AddrPortFrom(nodeA, 443), Remote: netip.MustParseAddrPort("203.0.113.9:1009"), BytesAcked: 50 << 20})
@@ -246,17 +241,15 @@ func TestOpenAtStartTakesItsNewestLine(t *testing.T) {
 	// Once the tail is in, an old line takes nothing over.
 	h.tick(claimWait)
 	h.line(start.Add(-time.Millisecond), 443, "203.0.113.9:1003", "ak-f", false)
+	h.expect(map[string][2]uint64{"ak-b": {100, 1}, "ak-c": {200, 1}, "ak-e": {300, 1}})
+	// They end with no record: the requests on them before the start, and so
+	// the sites their bytes went to, are unknown.
 	for cookie := range uint64(3) {
 		h.shut(cookie+1, 0, true)
 	}
 	h.tick(keepClosed + 2*time.Second)
-	got := map[string][2]any{}
-	for _, e := range h.ended {
-		got[e.Line.Email] = [2]any{start.Sub(e.Line.At), e.Requests}
-	}
-	want := map[string][2]any{"ak-b": {time.Minute, 1}, "ak-c": {30 * time.Second, 2}, "ak-e": {time.Second, 1}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("ended %v, want %v", got, want)
+	if len(h.ended) != 0 {
+		t.Fatalf("connections open at the start ended %+v", h.ended)
 	}
 }
 
@@ -276,31 +269,27 @@ func TestLateTailTakesItsNewestLine(t *testing.T) {
 }
 
 // Another user's line written just after the start, at the address of a
-// connection the log's tail bound, may be the connection's own come late, a
-// new connection's whose old one closed unnoticed, or a UDP flow: the old
-// connection counts for nobody until it closes, no line takes it again, and
+// connection the log's tail bound, may be the connection's own come late or
+// a new connection's whose old one closed unnoticed: the old connection
+// counts for nobody until it closes, no line takes it again, and
 // the contesting line takes no other connection, a new one at the address
 // included, which its own later line binds.
 func TestContestedOpenConnectionCountsForNobody(t *testing.T) {
 	h := newHarness(t)
 	h.open(1, nodeA, 443, "203.0.113.9:1001", 100)
 	h.open(2, nodeA, 443, "203.0.113.9:1002", 200)
-	h.open(3, nodeA, 8388, "203.0.113.9:1003", 300)
 	h.tick(0)
 	start := h.now
 	h.l.claim([]accesslog.Line{
 		lineAt(start.Add(-10*time.Minute), 443, "203.0.113.9:1001", "ak-a", false),
 		lineAt(start.Add(-10*time.Minute), 443, "203.0.113.9:1002", "ak-a", false),
-		lineAt(start.Add(-10*time.Minute), 8388, "203.0.113.9:1003", "ak-a", false),
 	})
 	h.tick(time.Second)
 	h.shut(2, 0, false)
 	h.open(4, nodeA, 443, "203.0.113.9:1002", 50)
 	h.line(start.Add(1500*time.Millisecond), 443, "203.0.113.9:1001", "ak-b", false)
 	h.line(start.Add(1500*time.Millisecond), 443, "203.0.113.9:1002", "ak-c", false)
-	h.line(start.Add(1500*time.Millisecond), 8388, "203.0.113.9:1003", "ak-d", true)
 	h.tick(time.Second)
-	h.line(start.Add(2500*time.Millisecond), 8388, "203.0.113.9:1003", "ak-d", true)
 	h.line(start.Add(2500*time.Millisecond), 443, "203.0.113.9:1001", "ak-b", false)
 	h.tick(time.Second)
 	h.expect(map[string][2]uint64{})
@@ -310,12 +299,48 @@ func TestContestedOpenConnectionCountsForNobody(t *testing.T) {
 	h.line(h.now, 443, "203.0.113.9:1001", "ak-e", false)
 	h.expect(map[string][2]uint64{"ak-e": {70, 1}})
 	// Closed, the contested ones end with no record.
-	h.shut(3, 0, true)
 	h.tick(keepClosed + 2*time.Second)
 	for _, e := range h.ended {
 		if e.Line.Email != "ak-e" {
 			t.Fatalf("a contested connection ended for %s", e.Line.Email)
 		}
+	}
+}
+
+// A connection open at the start on an inbound that takes both TCP and UDP
+// counts for nobody until it closes: its own line and the tail's other lines
+// are not passed on, and another user's line at its address may be a UDP
+// flow from the same relay port, which stays that user's flow.
+func TestOpenAtStartOnTCPAndUDPInboundCountsForNobody(t *testing.T) {
+	h := newHarness(t)
+	h.open(1, nodeA, 8388, "203.0.113.9:1001", 100)
+	h.tick(0)
+	h.tick(time.Minute)
+	h.line(h.now, 8388, "203.0.113.9:1001", "ak-b", true)
+	h.tick(2 * time.Second)
+	h.expect(map[string][2]uint64{})
+	if got := h.flows("ak-b"); !reflect.DeepEqual(got, []string{"udp :8388 203.0.113.9:1001"}) {
+		t.Fatalf("flows %v", got)
+	}
+}
+
+// A line of an inbound that takes no TCP, such as Hysteria beside a TCP
+// inbound on the same port number, is only ever a UDP flow: logged from the
+// relay port of another user's new connection before that connection's own
+// line, it binds nothing, and the connection's line still binds it.
+func TestUDPOnlyLinesBindNoConnection(t *testing.T) {
+	h := newHarness(t)
+	h.tick(0)
+	h.open(1, nodeA, 443, "203.0.113.9:1001", 100)
+	h.tick(2 * time.Second)
+	flow := lineAt(h.now, 443, "203.0.113.9:1001", "ak-b", true)
+	flow.TCP = false
+	h.l.claim([]accesslog.Line{flow})
+	h.line(h.now, 443, "203.0.113.9:1001", "ak-a", false)
+	h.tick(2 * time.Second)
+	h.expect(map[string][2]uint64{"ak-a": {100, 1}})
+	if got := h.flows("ak-b"); !reflect.DeepEqual(got, []string{"udp :443 203.0.113.9:1001"}) {
+		t.Fatalf("flows %v", got)
 	}
 }
 

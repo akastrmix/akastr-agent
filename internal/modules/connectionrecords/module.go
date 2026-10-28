@@ -8,7 +8,8 @@
 // dropped and the next batch says how many. An update or restart loses what
 // was not sent yet, usually less than one batch interval. Lines read on
 // opening the log were sent by an earlier process: they only help the ledger
-// find the connections already open, whose end records still come.
+// find the connections already open, though those open when the Agent
+// started end with no record (see ledger).
 package connectionrecords
 
 import (

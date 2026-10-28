@@ -12,17 +12,23 @@
 // then; the older lines that the log's tail replays are connections already
 // closed, often another user's on a port a relay reused. A line of another
 // user written just after the start leaves such a connection nobody's (see
-// dispute).
+// dispute). On an inbound that also takes UDP the log cannot tell a TCP
+// connection's line from a UDP flow's at the same relay address, so there a
+// connection open at the start is nobody's until it closes (see
+// accesslog.Line.UDP).
 //
 // The ledger tells the xui module how many connections each user holds,
 // gives the rate limiter each user's connections and tells whoever keeps
-// connection records what a bound connection carried once it ended. A user's
-// traffic is Xray's own count, which 3x-ui reports; these per-connection
-// bytes say only where it went.
+// connection records what a bound connection carried once it ended, unless it
+// was open at the start: the requests on it before then, and so the sites its
+// bytes went to, are unknown. A user's traffic is Xray's own count, which
+// 3x-ui reports; these per-connection bytes say only where it went.
 //
 // UDP flows have no connection in the kernel's TCP table. A line of an
 // inbound that takes UDP, and that no TCP connection took, counts as a UDP
-// flow of its user until udpKeep after it was written.
+// flow of its user until udpKeep after it was written. A line of an inbound
+// that takes no TCP is only ever one, even at the address of another
+// inbound's TCP connection on the same port number.
 package ledger
 
 import (
@@ -63,9 +69,10 @@ type Log interface {
 	Err() error
 }
 
-// Ended is a bound connection that closed: the line that bound it, when it
-// was found closed, what it carried for its user, and how many lines named a
-// request on it, that one included. A multiplexed connection carries many.
+// Ended is a bound connection opened since the start that closed: the line
+// that bound it, when it was found closed, what it carried for its user, and
+// how many lines named a request on it, that one included. A multiplexed
+// connection carries many.
 type Ended struct {
 	Line     accesslog.Line
 	At       time.Time
@@ -103,7 +110,7 @@ type Ledger struct {
 	byConn                map[accesslog.Conn][]*socket
 	// claims are the newest line of each connection the log named that is
 	// still waiting for its TCP connection or counts as a UDP flow.
-	claims map[accesslog.Conn]*claim
+	claims map[claimKey]*claim
 	// finished are bound connections removed since ended was last told.
 	finished []Ended
 }
@@ -137,6 +144,13 @@ type socket struct {
 	disputed bool
 }
 
+// claimKey is where a line waits: those of inbounds that take no TCP wait
+// apart, so that they neither take nor end what waits for a TCP connection.
+type claimKey struct {
+	conn accesslog.Conn
+	tcp  bool
+}
+
 type claim struct {
 	line accesslog.Line
 	// arrived is when the ledger got the line; requests counts it and the
@@ -164,7 +178,7 @@ func New(log Log, ended func(Ended)) *Ledger {
 
 func newLedger(log Log, dump func() ([]sockdiag.Conn, error), closed func(context.Context, func(sockdiag.Conn)) error) *Ledger {
 	return &Ledger{log: log, dump: dump, closed: closed, now: time.Now,
-		sockets: map[uint64]*socket{}, byConn: map[accesslog.Conn][]*socket{}, claims: map[accesslog.Conn]*claim{}}
+		sockets: map[uint64]*socket{}, byConn: map[accesslog.Conn][]*socket{}, claims: map[claimKey]*claim{}}
 }
 
 // Run keeps the account until ctx ends.
@@ -299,9 +313,15 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 	}
 	for _, line := range batch {
 		c := &claim{line: line, arrived: now, requests: 1}
+		at := claimKey{line.Conn, line.TCP}
+		if !line.TCP {
+			// Only ever a UDP flow.
+			l.claims[at] = c
+			continue
+		}
 		if s := l.replayed(line, now); s != nil {
 			s.email, s.line, s.requests = line.Email, line, 1
-			delete(l.claims, line.Conn)
+			delete(l.claims, at)
 			continue
 		}
 		// A line a TCP connection takes ends what waited at its address.
@@ -309,17 +329,17 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 			// Another line of a connection already bound, as a multiplexed
 			// connection writes for each request: not a UDP flow.
 			s.requests++
-			delete(l.claims, line.Conn)
+			delete(l.claims, at)
 			continue
 		}
 		if s := l.candidate(line.Conn, c); s != nil {
 			l.bind(s, c)
-			delete(l.claims, line.Conn)
+			delete(l.claims, at)
 			continue
 		}
 		// The newest line of a connection is the one that waits; the user's
 		// earlier ones are requests on the same connection.
-		if waiting := l.claims[line.Conn]; waiting != nil && waiting.line.Email == line.Email {
+		if waiting := l.claims[at]; waiting != nil && waiting.line.Email == line.Email {
 			c.requests += waiting.requests
 		}
 		// A line that leaves a connection nobody's may still be its own, so it
@@ -327,7 +347,7 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 		if l.dispute(line, now) && !line.UDP {
 			continue
 		}
-		l.claims[line.Conn] = c
+		l.claims[at] = c
 	}
 	if len(l.claims) > maxClaims {
 		l.dropOldClaims()
@@ -343,7 +363,7 @@ func (l *Ledger) add(c sockdiag.Conn) *socket {
 }
 
 func (l *Ledger) remove(s *socket) {
-	if s.email != "" && l.ended != nil {
+	if s.email != "" && !s.after.IsZero() && l.ended != nil {
 		l.finished = append(l.finished, Ended{Line: s.line, At: s.closedAt, Up: s.received, Down: s.acked, Requests: s.requests})
 	}
 	delete(l.sockets, s.cookie)
@@ -367,9 +387,10 @@ func (l *Ledger) update(s *socket, c sockdiag.Conn) {
 // bindSocket binds a connection the kernel just showed when the waiting line
 // of its address is its own.
 func (l *Ledger) bindSocket(s *socket) {
-	if c := l.claims[s.conn]; c != nil && l.candidate(s.conn, c) == s {
+	at := claimKey{s.conn, true}
+	if c := l.claims[at]; c != nil && l.candidate(s.conn, c) == s {
 		l.bind(s, c)
-		delete(l.claims, s.conn)
+		delete(l.claims, at)
 	}
 }
 
@@ -386,12 +407,16 @@ func (l *Ledger) carrier(conn accesslog.Conn, c *claim) *socket {
 }
 
 // candidate is the one unbound connection a line can belong to: one that
-// opened before the line was written and had not closed by then. With none
-// or several, the line binds nothing.
+// opened before the line was written and had not closed by then. A line that
+// may be a UDP flow takes no connection open at the start: on an inbound that
+// takes TCP too, the connection's own line came before then and was not
+// passed on, and this one may be another user's flow from the same relay
+// address. With none or several, the line binds nothing.
 func (l *Ledger) candidate(conn accesslog.Conn, c *claim) *socket {
 	var found *socket
 	for _, s := range l.byConn[conn] {
-		if s.email != "" || s.disputed || c.line.At.Before(s.after) || (!s.closedAt.IsZero() && c.line.At.After(s.closedAt)) {
+		if s.email != "" || s.disputed || c.line.At.Before(s.after) || (c.line.UDP && s.after.IsZero()) ||
+			(!s.closedAt.IsZero() && c.line.At.After(s.closedAt)) {
 			continue
 		}
 		if found != nil {
@@ -451,18 +476,18 @@ func (l *Ledger) expire(now time.Time) {
 			l.remove(s)
 		}
 	}
-	for conn, c := range l.claims {
+	for at, c := range l.claims {
 		if (c.line.UDP && now.Sub(c.line.At) > udpKeep) || (!c.line.UDP && now.Sub(c.arrived) > claimWait) {
-			delete(l.claims, conn)
+			delete(l.claims, at)
 		}
 	}
 }
 
 func (l *Ledger) dropOldClaims() {
-	conns := slices.Collect(maps.Keys(l.claims))
-	slices.SortFunc(conns, func(a, b accesslog.Conn) int { return l.claims[a].arrived.Compare(l.claims[b].arrived) })
-	for _, conn := range conns[:len(conns)-maxClaims*9/10] {
-		delete(l.claims, conn)
+	keys := slices.Collect(maps.Keys(l.claims))
+	slices.SortFunc(keys, func(a, b claimKey) int { return l.claims[a].arrived.Compare(l.claims[b].arrived) })
+	for _, at := range keys[:len(keys)-maxClaims*9/10] {
+		delete(l.claims, at)
 	}
 }
 
@@ -477,9 +502,9 @@ func (l *Ledger) Flows(emails map[string]bool) map[string][]Flow {
 			out[s.email] = append(out[s.email], Flow{Proto: "tcp", Local: s.local, Remote: s.conn.Remote})
 		}
 	}
-	for conn, c := range l.claims {
+	for at, c := range l.claims {
 		if c.line.UDP && emails[c.line.Email] && now.Sub(c.line.At) <= udpKeep {
-			out[c.line.Email] = append(out[c.line.Email], Flow{Proto: "udp", Local: netip.AddrPortFrom(netip.Addr{}, conn.Port), Remote: conn.Remote})
+			out[c.line.Email] = append(out[c.line.Email], Flow{Proto: "udp", Local: netip.AddrPortFrom(netip.Addr{}, at.conn.Port), Remote: at.conn.Remote})
 		}
 	}
 	return out
