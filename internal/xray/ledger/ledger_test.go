@@ -278,8 +278,9 @@ func TestLateTailTakesItsNewestLine(t *testing.T) {
 // Another user's line written just after the start, at the address of a
 // connection the log's tail bound, may be the connection's own come late, a
 // new connection's whose old one closed unnoticed, or a UDP flow: the old
-// connection counts for nobody until it closes and no line takes it again,
-// and a new connection at the address keeps its line.
+// connection counts for nobody until it closes, no line takes it again, and
+// the contesting line takes no other connection, a new one at the address
+// included, which its own later line binds.
 func TestContestedOpenConnectionCountsForNobody(t *testing.T) {
 	h := newHarness(t)
 	h.open(1, nodeA, 443, "203.0.113.9:1001", 100)
@@ -302,13 +303,19 @@ func TestContestedOpenConnectionCountsForNobody(t *testing.T) {
 	h.line(start.Add(2500*time.Millisecond), 8388, "203.0.113.9:1003", "ak-d", true)
 	h.line(start.Add(2500*time.Millisecond), 443, "203.0.113.9:1001", "ak-b", false)
 	h.tick(time.Second)
-	h.expect(map[string][2]uint64{"ak-c": {50, 1}})
-	// Closed, they end with no record.
+	h.expect(map[string][2]uint64{})
 	h.shut(1, 0, true)
+	h.open(5, nodeA, 443, "203.0.113.9:1001", 70)
+	h.tick(time.Second)
+	h.line(h.now, 443, "203.0.113.9:1001", "ak-e", false)
+	h.expect(map[string][2]uint64{"ak-e": {70, 1}})
+	// Closed, the contested ones end with no record.
 	h.shut(3, 0, true)
 	h.tick(keepClosed + 2*time.Second)
 	for _, e := range h.ended {
-		t.Fatalf("a contested connection ended for %s", e.Line.Email)
+		if e.Line.Email != "ak-e" {
+			t.Fatalf("a contested connection ended for %s", e.Line.Email)
+		}
 	}
 }
 

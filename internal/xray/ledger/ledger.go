@@ -322,7 +322,11 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 		if waiting := l.claims[line.Conn]; waiting != nil && waiting.line.Email == line.Email {
 			c.requests += waiting.requests
 		}
-		l.dispute(line, now)
+		// A line that leaves a connection nobody's may still be its own, so it
+		// binds no other; a line that may be UDP stays a flow.
+		if l.dispute(line, now) && !line.UDP {
+			continue
+		}
 		l.claims[line.Conn] = c
 	}
 	if len(l.claims) > maxClaims {
@@ -426,16 +430,18 @@ func (l *Ledger) replayed(line accesslog.Line, now time.Time) *socket {
 // before the start; a new connection's whose old one closed unnoticed; or a
 // UDP flow. Which cannot be told, so the connection is counted for nobody and
 // limited for nobody until it closes, rather than for the wrong user.
-func (l *Ledger) dispute(line accesslog.Line, now time.Time) {
+func (l *Ledger) dispute(line accesslog.Line, now time.Time) (disputed bool) {
 	if l.started.IsZero() || !line.At.After(l.started) || now.Sub(l.tail) > claimWait {
-		return
+		return false
 	}
 	for _, s := range l.byConn[line.Conn] {
 		if s.after.IsZero() && s.email != "" && s.email != line.Email && !s.line.At.After(l.started) &&
 			(s.closedAt.IsZero() || !line.At.After(s.closedAt)) {
 			s.email, s.line, s.requests, s.disputed = "", accesslog.Line{}, 0, true
+			disputed = true
 		}
 	}
+	return disputed
 }
 
 // expire forgets closed connections and lines whose time is over.
