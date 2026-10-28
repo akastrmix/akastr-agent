@@ -103,8 +103,13 @@ func (r *Records) Lines(lines []accesslog.Line) {
 func (r *Records) Ended(e ledger.Ended) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// network is the destination's, as in the start record; a line that does
+	// not say, as Shadowsocks 2022 writes none, was a TCP request on its TCP
+	// connection.
 	line := e.Line
-	line.Dest.Network = "tcp"
+	if line.Dest.Network == "" {
+		line.Dest.Network = "tcp"
+	}
 	r.add(line, &ending{EndedAt: e.At.UTC().Format(timeLayout), Up: e.Up, Down: e.Down, Requests: e.Requests})
 }
 
