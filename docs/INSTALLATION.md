@@ -186,6 +186,8 @@ curl -fsSL https://<AkastrCloud 主控>/agent/install.sh | sh -s -- --uninstall 
 
 卸载会停止唯一 service，并永久删除该 unit、`/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行记录；中途失败直接重跑同一卸载命令。执行记录删除后，若主控仍有该节点未完成的任务，重装会被主控拒绝，直到管理员处理这些任务。操作者自行管理的固定 ChangeIP 程序不受影响。它不会自动删除后台节点。
 
+3x-ui 节点上，这份执行记录里也有每个受管客户端已执行过的流量重置。面板里还留着受管客户端时（没重装 3x-ui，或重装系统后恢复了 3x-ui 备份），新装的 Agent 不知道哪些重置做过，会把开通满一个计量周期的客户端流量再清零一次，这台节点上客户本周期的已用流量因此变少。只是重装 Agent 时直接重跑后台一键命令（会保留执行记录），不要先卸载。
+
 ## 8. 常见故障
 
 | 现象 | 处理 |
