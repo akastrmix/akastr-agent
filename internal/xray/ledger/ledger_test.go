@@ -395,25 +395,48 @@ func TestNewConnectionOnTCPAndUDPInboundKeepsItsOnlyUser(t *testing.T) {
 	}
 }
 
-// A relay port reused by another user just after a short connection on it
-// closed: the new connection opened after the kernel's close notice, so the
-// line of the closed one, written before then, is no rival of its own line.
-func TestReusedPortOnTCPAndUDPInboundAfterACloseNotice(t *testing.T) {
+// A relay port reused by another user just after a connection on it closed
+// is never counted for the wrong user, however late the close notice is
+// taken in. When the closed connection's line cannot be told from the new
+// one's rival, the new connection counts for nobody.
+func TestReusedPortOnTCPAndUDPInboundIsNeverAnotherUsers(t *testing.T) {
 	const addr = "203.0.113.9:1001"
-	h := newHarness(t)
-	h.tick(0)
-	h.tick(time.Minute)
-	base := h.now
-	h.open(1, nodeA, 8388, addr, 10)
-	h.now = base.Add(1300 * time.Millisecond)
-	h.shut(1, 0, true)
-	h.open(2, nodeA, 8388, addr, 100)
-	h.tick(700 * time.Millisecond)
-	h.l.claim([]accesslog.Line{
-		lineAt(base.Add(1100*time.Millisecond), 8388, addr, "ak-a", true),
-		lineAt(base.Add(1500*time.Millisecond), 8388, addr, "ak-b", true),
+	t.Run("short connection between dumps", func(t *testing.T) {
+		h := newHarness(t)
+		h.tick(0)
+		h.tick(time.Minute)
+		base := h.now
+		h.open(1, nodeA, 8388, addr, 10)
+		h.now = base.Add(1300 * time.Millisecond)
+		h.shut(1, 0, true)
+		h.open(2, nodeA, 8388, addr, 100)
+		h.tick(700 * time.Millisecond)
+		h.l.claim([]accesslog.Line{
+			lineAt(base.Add(1100*time.Millisecond), 8388, addr, "ak-a", true),
+			lineAt(base.Add(1500*time.Millisecond), 8388, addr, "ak-b", true),
+		})
+		h.expect(map[string][2]uint64{})
 	})
-	h.expect(map[string][2]uint64{"ak-a": {10, 0}, "ak-b": {100, 1}})
+	t.Run("close notice taken in after the next connection's line", func(t *testing.T) {
+		h := newHarness(t)
+		h.tick(0)
+		h.tick(time.Minute)
+		h.open(1, nodeA, 8388, addr, 10)
+		h.tick(2 * time.Second)
+		h.line(h.now, 8388, addr, "ak-a", true)
+		base := h.now
+		// Closed at 1.3 s, ak-b's connection opened at 1.35 s and wrote its
+		// line at 1.36 s; the notice is taken in at 1.4 s.
+		h.now = base.Add(1400 * time.Millisecond)
+		h.shut(1, 0, true)
+		h.open(2, nodeA, 8388, addr, 100)
+		h.tick(600 * time.Millisecond)
+		h.l.claim([]accesslog.Line{
+			lineAt(base.Add(1360*time.Millisecond), 8388, addr, "ak-b", true),
+			lineAt(base.Add(1500*time.Millisecond), 8388, addr, "ak-a", true),
+		})
+		h.expect(map[string][2]uint64{"ak-a": {10, 0}})
+	})
 }
 
 // A line of an inbound that takes no TCP, such as Hysteria beside a TCP

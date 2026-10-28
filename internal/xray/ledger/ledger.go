@@ -368,18 +368,11 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 }
 
 func (l *Ledger) add(c sockdiag.Conn) *socket {
-	conn := accesslog.Conn{Port: c.Local.Port(), Remote: c.Remote}
-	after := l.dumped
-	// An address holds one TCP connection at a time, so a connection opened only
-	// after the one before it at the same node address closed, which the
-	// kernel's notice told as it did.
-	for _, o := range l.byConn[conn] {
-		if o.local == c.Local && o.noticed && o.closedAt.After(after) {
-			after = o.closedAt
-		}
-	}
-	s := &socket{cookie: c.Cookie, conn: conn, local: c.Local,
-		acked: c.BytesAcked, received: c.BytesReceived, after: after}
+	// after stays the dump's start even when a close notice at the address came
+	// later: the notice is taken in when the ledger gets to it, which may be
+	// after this connection opened and wrote its line.
+	s := &socket{cookie: c.Cookie, conn: accesslog.Conn{Port: c.Local.Port(), Remote: c.Remote}, local: c.Local,
+		acked: c.BytesAcked, received: c.BytesReceived, after: l.dumped}
 	l.sockets[c.Cookie] = s
 	l.byConn[s.conn] = append(l.byConn[s.conn], s)
 	return s
