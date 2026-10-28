@@ -275,12 +275,12 @@ func TestLateTailTakesItsNewestLine(t *testing.T) {
 	h.expect(map[string][2]uint64{"ak-b": {100, 1}})
 }
 
-// A connection opened just before the start, whose line was written just
-// after it, is that line's, not an older user's of the same address, once a
-// dump shows it still the one there. A new connection that took the address
-// of one closed unnoticed keeps its own line; a line that may be a UDP flow
-// leaves the connection nobody's.
-func TestOpenJustBeforeStartTakesItsLateLine(t *testing.T) {
+// Another user's line written just after the start, at the address of a
+// connection the log's tail bound, may be the connection's own come late, a
+// new connection's whose old one closed unnoticed, or a UDP flow: the old
+// connection counts for nobody until it closes and no line takes it again,
+// and a new connection at the address keeps its line.
+func TestContestedOpenConnectionCountsForNobody(t *testing.T) {
 	h := newHarness(t)
 	h.open(1, nodeA, 443, "203.0.113.9:1001", 100)
 	h.open(2, nodeA, 443, "203.0.113.9:1002", 200)
@@ -299,7 +299,17 @@ func TestOpenJustBeforeStartTakesItsLateLine(t *testing.T) {
 	h.line(start.Add(1500*time.Millisecond), 443, "203.0.113.9:1002", "ak-c", false)
 	h.line(start.Add(1500*time.Millisecond), 8388, "203.0.113.9:1003", "ak-d", true)
 	h.tick(time.Second)
-	h.expect(map[string][2]uint64{"ak-a": {200, 1}, "ak-b": {100, 1}, "ak-c": {50, 1}})
+	h.line(start.Add(2500*time.Millisecond), 8388, "203.0.113.9:1003", "ak-d", true)
+	h.line(start.Add(2500*time.Millisecond), 443, "203.0.113.9:1001", "ak-b", false)
+	h.tick(time.Second)
+	h.expect(map[string][2]uint64{"ak-c": {50, 1}})
+	// Closed, they end with no record.
+	h.shut(1, 0, true)
+	h.shut(3, 0, true)
+	h.tick(keepClosed + 2*time.Second)
+	for _, e := range h.ended {
+		t.Fatalf("a contested connection ended for %s", e.Line.Email)
+	}
 }
 
 // Two open connections that a line cannot tell apart count for nobody, and

@@ -11,8 +11,8 @@
 // the Agent started belongs to the newest line of its address written before
 // then; the older lines that the log's tail replays are connections already
 // closed, often another user's on a port a relay reused. A line of another
-// user written just after the start may be its own, come late: the next dump
-// tells whether the connection is still the one at that address.
+// user written just after the start leaves such a connection nobody's (see
+// dispute).
 //
 // The ledger tells the xui module how many connections each user holds,
 // gives the rate limiter each user's connections and tells whoever keeps
@@ -131,6 +131,10 @@ type socket struct {
 	closedAt time.Time
 	noticed  bool
 	missing  int
+	// disputed is a connection open at the start that the log's tail bound
+	// to one user and a later line of another user named: nobody's, and
+	// taken by no line, until it closes.
+	disputed bool
 }
 
 type claim struct {
@@ -139,10 +143,6 @@ type claim struct {
 	// lines of its user it replaced while waiting, one connection's requests.
 	arrived  time.Time
 	requests int
-	// over is the connection open at the start, bound by the log's tail to
-	// another user, that the line names; the first dump begun after the line
-	// was written decides (see settle).
-	over *socket
 }
 
 // Connections are each user's open bound TCP connections, and why there may
@@ -254,7 +254,6 @@ func (l *Ledger) take(start time.Time, conns []sockdiag.Conn, err error) {
 	for _, s := range added {
 		l.bindSocket(s)
 	}
-	l.settle(start)
 	for _, s := range l.sockets {
 		if s.closedAt.IsZero() && s.missing >= missingDumps {
 			s.closedAt = now
@@ -323,7 +322,7 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 		if waiting := l.claims[line.Conn]; waiting != nil && waiting.line.Email == line.Email {
 			c.requests += waiting.requests
 		}
-		c.over = l.contested(line, now)
+		l.dispute(line, now)
 		l.claims[line.Conn] = c
 	}
 	if len(l.claims) > maxClaims {
@@ -388,7 +387,7 @@ func (l *Ledger) carrier(conn accesslog.Conn, c *claim) *socket {
 func (l *Ledger) candidate(conn accesslog.Conn, c *claim) *socket {
 	var found *socket
 	for _, s := range l.byConn[conn] {
-		if s.email != "" || c.line.At.Before(s.after) || (!s.closedAt.IsZero() && c.line.At.After(s.closedAt)) {
+		if s.email != "" || s.disputed || c.line.At.Before(s.after) || (!s.closedAt.IsZero() && c.line.At.After(s.closedAt)) {
 			continue
 		}
 		if found != nil {
@@ -420,49 +419,22 @@ func (l *Ledger) replayed(line accesslog.Line, now time.Time) *socket {
 	return nil
 }
 
-// contested is the connection open at the start, the one at the line's
-// address and bound by the log's tail to another user, that a line written
-// since the start names while that tail comes in. The line is its own when the
-// connection opened just before the start and its line came late; it is not
-// when the connection closed unnoticed and a new one took its address, or when
-// the line is a UDP flow. So the line waits, and settle decides.
-func (l *Ledger) contested(line accesslog.Line, now time.Time) *socket {
+// dispute leaves nobody's each connection open at the start that the log's
+// tail bound to one user when, while that tail comes in, another user's line
+// written since the start names its address and no other connection took the
+// line. The line may be the connection's own, come late as it opened just
+// before the start; a new connection's whose old one closed unnoticed; or a
+// UDP flow. Which cannot be told, so the connection is counted for nobody and
+// limited for nobody until it closes, rather than for the wrong user.
+func (l *Ledger) dispute(line accesslog.Line, now time.Time) {
 	if l.started.IsZero() || !line.At.After(l.started) || now.Sub(l.tail) > claimWait {
-		return nil
+		return
 	}
-	sockets := l.byConn[line.Conn]
-	if len(sockets) != 1 {
-		return nil
-	}
-	s := sockets[0]
-	if !s.after.IsZero() || s.email == "" || s.email == line.Email || s.line.At.After(l.started) ||
-		(!s.closedAt.IsZero() && line.At.After(s.closedAt)) {
-		return nil
-	}
-	return s
-}
-
-// settle decides the lines that contest a connection open at the start, on a
-// dump begun at start: one begun after a line was written shows any new
-// connection at its address, which took the line already. A connection still
-// the one there is the line's; for a line that may be a UDP flow it is nobody's
-// instead, rather than either user's.
-func (l *Ledger) settle(start time.Time) {
-	for conn, c := range l.claims {
-		s := c.over
-		if s == nil || !c.line.At.Before(start) {
-			continue
+	for _, s := range l.byConn[line.Conn] {
+		if s.after.IsZero() && s.email != "" && s.email != line.Email && !s.line.At.After(l.started) &&
+			(s.closedAt.IsZero() || !line.At.After(s.closedAt)) {
+			s.email, s.line, s.requests, s.disputed = "", accesslog.Line{}, 0, true
 		}
-		c.over = nil
-		if l.sockets[s.cookie] != s || s.missing > 0 || !s.closedAt.IsZero() || len(l.byConn[conn]) != 1 {
-			continue
-		}
-		if c.line.UDP {
-			s.email, s.line, s.requests = "", accesslog.Line{}, 0
-			continue
-		}
-		l.bind(s, c)
-		delete(l.claims, conn)
 	}
 }
 
