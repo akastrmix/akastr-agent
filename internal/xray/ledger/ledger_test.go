@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -321,6 +322,63 @@ func TestOpenAtStartOnTCPAndUDPInboundCountsForNobody(t *testing.T) {
 	h.expect(map[string][2]uint64{})
 	if got := h.flows("ak-b"); !reflect.DeepEqual(got, []string{"udp :8388 203.0.113.9:1001"}) {
 		t.Fatalf("flows %v", got)
+	}
+}
+
+// On an inbound that takes both TCP and UDP, a connection opened since the
+// start that lines of two users written while it is open name counts for
+// nobody, in whatever order the lines and the kernel come: either line may
+// be its own and the other a UDP flow from the same relay port. Neither line
+// is a flow, and the connection ends with no record.
+func TestTwoUsersAtANewConnectionOnTCPAndUDPInboundCountForNobody(t *testing.T) {
+	const addr = "203.0.113.9:1001"
+	for _, order := range []string{"kernel a b", "kernel b a", "a kernel b", "b kernel a", "a b kernel", "b a kernel"} {
+		t.Run(order, func(t *testing.T) {
+			h := newHarness(t)
+			h.tick(0)
+			h.tick(time.Minute)
+			h.open(1, nodeA, 8388, addr, 100)
+			written := h.now.Add(500 * time.Millisecond)
+			for _, step := range strings.Fields(order) {
+				if step == "kernel" {
+					h.tick(2 * time.Second)
+				} else {
+					h.line(written, 8388, addr, "ak-"+step, true)
+				}
+			}
+			h.tick(2 * time.Second)
+			h.expect(map[string][2]uint64{})
+			if a, b := h.flows("ak-a"), h.flows("ak-b"); len(a)+len(b) != 0 {
+				t.Fatalf("flows %v %v", a, b)
+			}
+			h.shut(1, 0, true)
+			h.tick(keepClosed + 2*time.Second)
+			if len(h.ended) != 0 {
+				t.Fatalf("a contested connection ended for %s", h.ended[0].Line.Email)
+			}
+		})
+	}
+}
+
+// Such a connection keeps its one user through that user's later lines,
+// another user's flow written before it opened and another user's line
+// written after it closed.
+func TestNewConnectionOnTCPAndUDPInboundKeepsItsOnlyUser(t *testing.T) {
+	const addr = "203.0.113.9:1001"
+	h := newHarness(t)
+	h.tick(0)
+	h.line(h.now.Add(time.Second), 8388, addr, "ak-b", true)
+	h.tick(time.Minute)
+	h.open(1, nodeA, 8388, addr, 100)
+	h.line(h.now.Add(500*time.Millisecond), 8388, addr, "ak-a", true)
+	h.tick(2 * time.Second)
+	h.line(h.now, 8388, addr, "ak-a", true)
+	h.expect(map[string][2]uint64{"ak-a": {100, 1}})
+	h.shut(1, 0, true)
+	h.line(h.now.Add(time.Second), 8388, addr, "ak-c", true)
+	h.tick(keepClosed + 2*time.Second)
+	if len(h.ended) != 1 || h.ended[0].Line.Email != "ak-a" || h.ended[0].Requests != 2 {
+		t.Fatalf("ended %+v", h.ended)
 	}
 }
 

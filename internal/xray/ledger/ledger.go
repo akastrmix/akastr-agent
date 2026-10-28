@@ -15,7 +15,8 @@
 // dispute). On an inbound that also takes UDP the log cannot tell a TCP
 // connection's line from a UDP flow's at the same relay address, so there a
 // connection open at the start is nobody's until it closes (see
-// accesslog.Line.UDP).
+// accesslog.Line.UDP), and one opened since is nobody's once lines of two
+// users written while it was open name its address: either may be its own.
 //
 // The ledger tells the xui module how many connections each user holds,
 // gives the rate limiter each user's connections and tells whoever keeps
@@ -138,9 +139,8 @@ type socket struct {
 	closedAt time.Time
 	noticed  bool
 	missing  int
-	// disputed is a connection open at the start that the log's tail bound
-	// to one user and a later line of another user named: nobody's, and
-	// taken by no line, until it closes.
+	// disputed is a connection that lines of two users may each be the own
+	// line of (see dispute): nobody's, and taken by no line, until it closes.
 	disputed bool
 }
 
@@ -157,6 +157,10 @@ type claim struct {
 	// lines of its user it replaced while waiting, one connection's requests.
 	arrived  time.Time
 	requests int
+	// rival, for a line that may be UDP, is when the newest line of another
+	// user that waited at its address before it was written: a connection
+	// opened before then may be either line's.
+	rival time.Time
 }
 
 // Connections are each user's open bound TCP connections, and why there may
@@ -319,6 +323,13 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 			l.claims[at] = c
 			continue
 		}
+		waiting := l.claims[at]
+		if line.UDP && waiting != nil {
+			c.rival = waiting.rival
+			if waiting.line.Email != line.Email {
+				c.rival = waiting.line.At
+			}
+		}
 		if s := l.replayed(line, now); s != nil {
 			s.email, s.line, s.requests = line.Email, line, 1
 			delete(l.claims, at)
@@ -339,12 +350,12 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 		}
 		// The newest line of a connection is the one that waits; the user's
 		// earlier ones are requests on the same connection.
-		if waiting := l.claims[at]; waiting != nil && waiting.line.Email == line.Email {
+		if waiting != nil && waiting.line.Email == line.Email {
 			c.requests += waiting.requests
 		}
 		// A line that leaves a connection nobody's may still be its own, so it
-		// binds no other; a line that may be UDP stays a flow.
-		if l.dispute(line, now) && !line.UDP {
+		// binds no other and is no flow.
+		if l.dispute(line, now) {
 			continue
 		}
 		l.claims[at] = c
@@ -427,8 +438,13 @@ func (l *Ledger) candidate(conn accesslog.Conn, c *claim) *socket {
 	return found
 }
 
-// bind gives a connection its user.
+// bind gives a connection its user, or leaves it nobody's when another
+// user's line written since it opened waited at its address (see dispute).
 func (l *Ledger) bind(s *socket, c *claim) {
+	if c.rival.After(s.after) {
+		s.disputed = true
+		return
+	}
 	s.email, s.line, s.requests = c.line.Email, c.line, c.requests
 }
 
@@ -448,20 +464,25 @@ func (l *Ledger) replayed(line accesslog.Line, now time.Time) *socket {
 	return nil
 }
 
-// dispute leaves nobody's each connection open at the start that the log's
-// tail bound to one user when, while that tail comes in, another user's line
-// written since the start names its address and no other connection took the
-// line. The line may be the connection's own, come late as it opened just
-// before the start; a new connection's whose old one closed unnoticed; or a
-// UDP flow. Which cannot be told, so the connection is counted for nobody and
-// limited for nobody until it closes, rather than for the wrong user.
+// dispute leaves nobody's each connection bound to another user that the
+// line, which no connection took, names while it was open, when either:
+//   - the connection was open at the start and the log's tail bound it, and
+//     the line was written since the start while that tail comes in. The line
+//     may be the connection's own, come late as it opened just before the
+//     start; a new connection's whose old one closed unnoticed; or a UDP flow.
+//   - the line may be UDP and was written since the connection opened. Either
+//     line may be the connection's own, the other a UDP flow from the same
+//     relay port.
+//
+// Which cannot be told, so the connection is counted for nobody and limited
+// for nobody until it closes, rather than for the wrong user.
 func (l *Ledger) dispute(line accesslog.Line, now time.Time) (disputed bool) {
-	if l.started.IsZero() || !line.At.After(l.started) || now.Sub(l.tail) > claimWait {
-		return false
-	}
+	tail := !l.started.IsZero() && line.At.After(l.started) && now.Sub(l.tail) <= claimWait
 	for _, s := range l.byConn[line.Conn] {
-		if s.after.IsZero() && s.email != "" && s.email != line.Email && !s.line.At.After(l.started) &&
-			(s.closedAt.IsZero() || !line.At.After(s.closedAt)) {
+		if s.email == "" || s.email == line.Email || (!s.closedAt.IsZero() && line.At.After(s.closedAt)) {
+			continue
+		}
+		if (s.after.IsZero() && tail && !s.line.At.After(l.started)) || (line.UDP && !s.after.IsZero() && line.At.After(s.after)) {
 			s.email, s.line, s.requests, s.disputed = "", accesslog.Line{}, 0, true
 			disputed = true
 		}
