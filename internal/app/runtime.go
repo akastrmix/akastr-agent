@@ -18,7 +18,6 @@ const recentOperationLimit = 64
 // moves messages; every command, target, report and acknowledgement goes to a
 // module.
 type Runtime struct {
-	journal    *operation.Engine
 	operations *operation.Executor
 	commands   map[string]module.Commands
 	desired    *desired.Engine
@@ -34,8 +33,8 @@ func BuildRuntime(model *Model, paths layout.Layout) (*Runtime, error) {
 		return nil, err
 	}
 	runtime := &Runtime{
-		journal: journal, operations: operation.NewExecutor(journal),
-		commands: map[string]module.Commands{}, desired: desired.New(),
+		operations: operation.NewExecutor(journal),
+		commands:   map[string]module.Commands{}, desired: desired.New(),
 	}
 	if err := model.modules.build(paths, runtime); err != nil {
 		return nil, err
@@ -132,12 +131,10 @@ func (r *Runtime) Acknowledge(reportID string) error {
 	return nil
 }
 
-// UpdateSafe refuses to replace the process while an operation or module work
-// must finish in this process first.
+// UpdateSafe refuses to replace the process while module work must finish in
+// this process first. A running command holds the lifecycle gate instead; one
+// an earlier process left in the journal any version recovers alike.
 func (r *Runtime) UpdateSafe() error {
-	if len(r.journal.Snapshot().Active) != 0 {
-		return errors.New("an Agent operation is active")
-	}
 	for _, reporter := range r.reporters {
 		if err := reporter.UpdateSafe(); err != nil {
 			return err

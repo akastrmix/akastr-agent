@@ -78,11 +78,15 @@ func (e *Executor) execute(ctx context.Context, offer protocol.OperationOffer, g
 		return e.replay(offer.CommandID)
 	}
 	var result protocol.ExecutionResult
-	if _, err := e.engine.Begin(offer.CommandID, offer.CommandType, group); err != nil {
+	_, err := e.engine.Begin(offer.CommandID, offer.CommandType, group)
+	if errors.Is(err, ErrConflict) && e.finishLeftover(offer, group, handler) {
+		_, err = e.engine.Begin(offer.CommandID, offer.CommandType, group)
+	}
+	if err != nil {
 		active, found := e.engine.Active(offer.CommandID)
-		// Another command holds the group, which happens only after Cloud gave up on an
-		// accepted one. This one does not run; nothing is journaled, so Cloud's next
-		// offer of it, if any, is decided afresh.
+		// Another command of this process holds the group, which happens only after Cloud
+		// gave up on an accepted one. This one does not run; nothing is journaled, so
+		// Cloud's next offer of it, if any, is decided afresh.
 		if !found && errors.Is(err, ErrConflict) {
 			return handler.Failed(offer, "operation_busy"), nil
 		}
@@ -93,9 +97,30 @@ func (e *Executor) execute(ctx context.Context, offer protocol.OperationOffer, g
 	} else {
 		result = handler.Run(ctx, offer)
 	}
+	if err := e.finish(offer.CommandID, result); err != nil {
+		return protocol.ExecutionResult{}, err
+	}
+	return result, nil
+}
+
+// finishLeftover finishes the command holding the group when an earlier process left
+// it running. Cloud offers another command of the group only after giving up on that
+// one, and never offers it again, so nothing else would finish it: it ends as its
+// module recovers one, never run again. It reports whether the group is free.
+func (e *Executor) finishLeftover(offer protocol.OperationOffer, group string, handler Handler) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	left, found := e.engine.Snapshot().Active[group]
+	if _, live := e.running[left.OperationID]; !found || live || left.Kind != offer.CommandType {
+		return false
+	}
+	return e.finish(left.OperationID, handler.Recover(protocol.OperationOffer{CommandID: left.OperationID, CommandType: left.Kind})) == nil
+}
+
+func (e *Executor) finish(id string, result protocol.ExecutionResult) error {
 	persisted, err := json.Marshal(result)
 	if err != nil {
-		return protocol.ExecutionResult{}, fmt.Errorf("encode operation result: %w", err)
+		return fmt.Errorf("encode operation result: %w", err)
 	}
 	status := StatusFailed
 	if result.Outcome == "succeeded" {
@@ -103,8 +128,8 @@ func (e *Executor) execute(ctx context.Context, offer protocol.OperationOffer, g
 	} else if result.Outcome == "cancelled" {
 		status = StatusCancelled
 	}
-	if _, err := e.engine.FinishWithResult(offer.CommandID, status, result.Code, persisted); err != nil {
-		return protocol.ExecutionResult{}, fmt.Errorf("persist operation result: %w", err)
+	if _, err := e.engine.FinishWithResult(id, status, result.Code, persisted); err != nil {
+		return fmt.Errorf("persist operation result: %w", err)
 	}
-	return result, nil
+	return nil
 }

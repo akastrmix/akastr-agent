@@ -102,3 +102,31 @@ func TestExecutorJoinsLiveDuplicateAndReplaysAfterRestart(t *testing.T) {
 		t.Fatalf("result=%+v err=%v runs=%d recoveries=%d", result, err, handler.runs.Load(), handler.recoveries.Load())
 	}
 }
+
+// A command an earlier process left running, which Cloud gave up on, ends as recovered,
+// never run again, when Cloud offers another command of its group; that one runs.
+func TestExecutorFinishesACommandAnEarlierProcessLeft(t *testing.T) {
+	options := Options{StateFile: filepath.Join(t.TempDir(), "operations.json"), RecentLimit: 16}
+	engine, err := Open(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	left := protocol.OperationOffer{CommandID: protocol.NewUUID(), CommandType: "changeip.execute"}
+	if _, err := engine.Begin(left.CommandID, left.CommandType, "target-network"); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := Open(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := &blockingHandler{started: make(chan struct{}), release: make(chan struct{})}
+	close(handler.release)
+	next := protocol.OperationOffer{CommandID: protocol.NewUUID(), CommandType: "changeip.execute"}
+	result, err := NewExecutor(restarted).Execute(t.Context(), next, "target-network", handler)
+	if err != nil || result.Code != "completed" || handler.runs.Load() != 1 || handler.recoveries.Load() != 1 {
+		t.Fatalf("result=%+v err=%v runs=%d recoveries=%d", result, err, handler.runs.Load(), handler.recoveries.Load())
+	}
+	if record, found := restarted.Recent(left.CommandID); !found || record.TerminalCode != "interrupted_unknown" {
+		t.Fatalf("left command %+v found=%v", record, found)
+	}
+}
