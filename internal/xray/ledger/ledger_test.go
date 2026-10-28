@@ -329,12 +329,22 @@ func TestOpenAtStartOnTCPAndUDPInboundCountsForNobody(t *testing.T) {
 // start that lines of two users written while it is open name counts for
 // nobody, in whatever order the lines and the kernel come: either line may
 // be its own and the other a UDP flow from the same relay port. Neither line
-// is a flow, and the connection ends with no record.
+// is ever a UDP flow, nor are the later lines of either user at its address
+// while it is open, which may be requests on it, and the connection ends
+// with no record.
 func TestTwoUsersAtANewConnectionOnTCPAndUDPInboundCountForNobody(t *testing.T) {
 	const addr = "203.0.113.9:1001"
 	for _, order := range []string{"kernel a b", "kernel b a", "a kernel b", "b kernel a", "a b kernel", "b a kernel"} {
 		t.Run(order, func(t *testing.T) {
 			h := newHarness(t)
+			noUDP := func() {
+				t.Helper()
+				for _, f := range append(h.flows("ak-a"), h.flows("ak-b")...) {
+					if strings.HasPrefix(f, "udp") {
+						t.Fatalf("flow %s", f)
+					}
+				}
+			}
 			h.tick(0)
 			h.tick(time.Minute)
 			h.open(1, nodeA, 8388, addr, 100)
@@ -345,12 +355,15 @@ func TestTwoUsersAtANewConnectionOnTCPAndUDPInboundCountForNobody(t *testing.T) 
 				} else {
 					h.line(written, 8388, addr, "ak-"+step, true)
 				}
+				noUDP()
 			}
 			h.tick(2 * time.Second)
 			h.expect(map[string][2]uint64{})
-			if a, b := h.flows("ak-a"), h.flows("ak-b"); len(a)+len(b) != 0 {
-				t.Fatalf("flows %v %v", a, b)
-			}
+			h.line(h.now, 8388, addr, "ak-a", true)
+			h.line(h.now, 8388, addr, "ak-b", true)
+			h.tick(2 * time.Second)
+			h.expect(map[string][2]uint64{})
+			noUDP()
 			h.shut(1, 0, true)
 			h.tick(keepClosed + 2*time.Second)
 			if len(h.ended) != 0 {
@@ -380,6 +393,27 @@ func TestNewConnectionOnTCPAndUDPInboundKeepsItsOnlyUser(t *testing.T) {
 	if len(h.ended) != 1 || h.ended[0].Line.Email != "ak-a" || h.ended[0].Requests != 2 {
 		t.Fatalf("ended %+v", h.ended)
 	}
+}
+
+// A relay port reused by another user just after a short connection on it
+// closed: the new connection opened after the kernel's close notice, so the
+// line of the closed one, written before then, is no rival of its own line.
+func TestReusedPortOnTCPAndUDPInboundAfterACloseNotice(t *testing.T) {
+	const addr = "203.0.113.9:1001"
+	h := newHarness(t)
+	h.tick(0)
+	h.tick(time.Minute)
+	base := h.now
+	h.open(1, nodeA, 8388, addr, 10)
+	h.now = base.Add(1300 * time.Millisecond)
+	h.shut(1, 0, true)
+	h.open(2, nodeA, 8388, addr, 100)
+	h.tick(700 * time.Millisecond)
+	h.l.claim([]accesslog.Line{
+		lineAt(base.Add(1100*time.Millisecond), 8388, addr, "ak-a", true),
+		lineAt(base.Add(1500*time.Millisecond), 8388, addr, "ak-b", true),
+	})
+	h.expect(map[string][2]uint64{"ak-a": {10, 0}, "ak-b": {100, 1}})
 }
 
 // A line of an inbound that takes no TCP, such as Hysteria beside a TCP
@@ -514,7 +548,8 @@ func TestLinesWaitThenExpire(t *testing.T) {
 		t.Fatalf("flows after two hours %v", got)
 	}
 	// A line written while the connection was open but read after it closed
-	// is still its own; one written after the close may be a UDP flow.
+	// is still its own; one written after the close may be a UDP flow, once a
+	// dump has shown no other connection.
 	written := h.now.Add(200 * time.Millisecond)
 	h.now = h.now.Add(400 * time.Millisecond)
 	h.shut(5, 1000, true)
@@ -524,6 +559,10 @@ func TestLinesWaitThenExpire(t *testing.T) {
 		t.Fatalf("a late line of a closed connection left %v", got)
 	}
 	h.line(h.now, 8443, "203.0.113.9:2002", "ak-u", true)
+	if got := h.flows("ak-u"); len(got) != 0 {
+		t.Fatalf("a line after the close before a dump %v", got)
+	}
+	h.tick(2 * time.Second)
 	if got := h.flows("ak-u"); !reflect.DeepEqual(got, []string{"udp :8443 203.0.113.9:2002"}) {
 		t.Fatalf("a line after the close %v", got)
 	}

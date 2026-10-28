@@ -27,7 +27,9 @@
 //
 // UDP flows have no connection in the kernel's TCP table. A line of an
 // inbound that takes UDP, and that no TCP connection took, counts as a UDP
-// flow of its user until udpKeep after it was written. A line of an inbound
+// flow of its user until udpKeep after it was written; if the inbound also
+// takes TCP, only once a dump taken after the line came in has had the
+// chance to show its connection. A line of an inbound
 // that takes no TCP is only ever one, even at the address of another
 // inbound's TCP connection on the same port number.
 package ledger
@@ -353,8 +355,8 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 		if waiting != nil && waiting.line.Email == line.Email {
 			c.requests += waiting.requests
 		}
-		// A line that leaves a connection nobody's may still be its own, so it
-		// binds no other and is no flow.
+		// A line that leaves a connection nobody's, or may be a request on one
+		// that is, may still be its own, so it binds no other and is no flow.
 		if l.dispute(line, now) {
 			continue
 		}
@@ -366,8 +368,18 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 }
 
 func (l *Ledger) add(c sockdiag.Conn) *socket {
-	s := &socket{cookie: c.Cookie, conn: accesslog.Conn{Port: c.Local.Port(), Remote: c.Remote}, local: c.Local,
-		acked: c.BytesAcked, received: c.BytesReceived, after: l.dumped}
+	conn := accesslog.Conn{Port: c.Local.Port(), Remote: c.Remote}
+	after := l.dumped
+	// An address holds one TCP connection at a time, so a connection opened only
+	// after the one before it at the same node address closed, which the
+	// kernel's notice told as it did.
+	for _, o := range l.byConn[conn] {
+		if o.local == c.Local && o.noticed && o.closedAt.After(after) {
+			after = o.closedAt
+		}
+	}
+	s := &socket{cookie: c.Cookie, conn: conn, local: c.Local,
+		acked: c.BytesAcked, received: c.BytesReceived, after: after}
 	l.sockets[c.Cookie] = s
 	l.byConn[s.conn] = append(l.byConn[s.conn], s)
 	return s
@@ -475,14 +487,19 @@ func (l *Ledger) replayed(line accesslog.Line, now time.Time) *socket {
 //     relay port.
 //
 // Which cannot be told, so the connection is counted for nobody and limited
-// for nobody until it closes, rather than for the wrong user.
+// for nobody until it closes, rather than for the wrong user. A line that may
+// be UDP, written while a connection already nobody's was open at its
+// address, is reported as disputing too: it may be a request on that
+// connection as well as a flow.
 func (l *Ledger) dispute(line accesslog.Line, now time.Time) (disputed bool) {
 	tail := !l.started.IsZero() && line.At.After(l.started) && now.Sub(l.tail) <= claimWait
 	for _, s := range l.byConn[line.Conn] {
-		if s.email == "" || s.email == line.Email || (!s.closedAt.IsZero() && line.At.After(s.closedAt)) {
-			continue
-		}
-		if (s.after.IsZero() && tail && !s.line.At.After(l.started)) || (line.UDP && !s.after.IsZero() && line.At.After(s.after)) {
+		switch {
+		case !s.closedAt.IsZero() && line.At.After(s.closedAt):
+		case s.disputed:
+			disputed = disputed || line.UDP
+		case s.email == "" || s.email == line.Email:
+		case (s.after.IsZero() && tail && !s.line.At.After(l.started)) || (line.UDP && !s.after.IsZero() && line.At.After(s.after)):
 			s.email, s.line, s.requests, s.disputed = "", accesslog.Line{}, 0, true
 			disputed = true
 		}
@@ -524,7 +541,7 @@ func (l *Ledger) Flows(emails map[string]bool) map[string][]Flow {
 		}
 	}
 	for at, c := range l.claims {
-		if c.line.UDP && emails[c.line.Email] && now.Sub(c.line.At) <= udpKeep {
+		if c.line.UDP && emails[c.line.Email] && now.Sub(c.line.At) <= udpKeep && (!c.line.TCP || c.arrived.Before(l.dumped)) {
 			out[c.line.Email] = append(out[c.line.Email], Flow{Proto: "udp", Local: netip.AddrPortFrom(netip.Addr{}, at.conn.Port), Remote: at.conn.Remote})
 		}
 	}
