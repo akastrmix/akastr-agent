@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"strings"
 )
 
 // The module owns three parts of the template: outbounds, the routing rules
@@ -173,6 +174,24 @@ func hasService(config map[string]json.RawMessage, service string) bool {
 		Services []string `json:"services"`
 	}
 	return json.Unmarshal(config["api"], &api) == nil && slices.Contains(api.Services, service)
+}
+
+// builtinOutbounds are a configuration's outbounds that are not Cloud's own,
+// in one spelling: in the template only direct and blocked.
+func builtinOutbounds(config map[string]json.RawMessage) []byte {
+	var outbounds []json.RawMessage
+	_ = json.Unmarshal(config["outbounds"], &outbounds)
+	builtin := []json.RawMessage{}
+	for _, o := range outbounds {
+		var tagged struct {
+			Tag string `json:"tag"`
+		}
+		if json.Unmarshal(o, &tagged) != nil || !strings.HasPrefix(tagged.Tag, ownedPrefix) {
+			builtin = append(builtin, o)
+		}
+	}
+	raw, _ := json.Marshal(builtin)
+	return canonical(raw)
 }
 
 func firstOutbound(config map[string]json.RawMessage) string {

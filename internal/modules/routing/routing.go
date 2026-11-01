@@ -8,6 +8,7 @@
 package routing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -242,9 +243,11 @@ func (m *Module) apply(ctx context.Context, t Target) string {
 			return codePanelFailed
 		}
 	}
-	// Only a restart adds the api service, and Xray's default outbound is the
-	// first one it started with.
-	if !hasService(running.config, routingService) || firstOutbound(running.config) != t.DefaultOutbound {
+	// Only a restart adds the api service, Xray's default outbound is the
+	// first one it started with, and the built-in outbounds change only with a
+	// restart: someone may have edited them in the panel and restarted Xray.
+	if !hasService(running.config, routingService) || firstOutbound(running.config) != t.DefaultOutbound ||
+		!bytes.Equal(builtinOutbounds(running.config), builtinOutbounds(next)) {
 		if running, err = m.restart(ctx, running); err != nil || firstOutbound(running.config) != t.DefaultOutbound {
 			return codeRestartFailed
 		}
