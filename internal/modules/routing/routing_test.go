@@ -260,7 +260,7 @@ func TestTakeoverRewritesOnlyTheManagedParts(t *testing.T) {
 	code := apply(t, m, target(t, "direct", []string{"ak-o-11111111-aaaaaaaa"},
 		Rule{IPs: []string{"geoip:private"}, Outbound: "blocked"},
 		Rule{Users: []string{"ak-zhang"}, Domains: []string{"geosite:openai"}, Outbound: "ak-o-11111111-aaaaaaaa"},
-		Rule{Inbounds: []int{9}, Networks: "tcp,udp", Outbound: "direct"}))
+		Rule{Inbounds: []int{9}, Sources: []string{"geoip:cn"}, Networks: "tcp,udp", Outbound: "direct"}))
 	if code != "" {
 		t.Fatalf("takeover failed: %s", code)
 	}
@@ -306,7 +306,8 @@ func TestTakeoverRewritesOnlyTheManagedParts(t *testing.T) {
 	}
 	var rules []map[string]any
 	_ = json.Unmarshal(routing["rules"], &rules)
-	if rules[3]["inboundTag"].([]any)[0] != "inbound-9" || rules[3]["network"] != "tcp,udp" || rules[2]["user"].([]any)[0] != "ak-zhang" ||
+	if rules[3]["inboundTag"].([]any)[0] != "inbound-9" || rules[3]["source"].([]any)[0] != "geoip:cn" ||
+		rules[3]["network"] != "tcp,udp" || rules[2]["user"].([]any)[0] != "ak-zhang" ||
 		rules[1]["ruleTag"] != "ak-r-1" {
 		t.Errorf("template rules: %s", routing["rules"])
 	}
@@ -315,7 +316,7 @@ func TestTakeoverRewritesOnlyTheManagedParts(t *testing.T) {
 	if code := apply(t, m, target(t, "direct", []string{"ak-o-11111111-aaaaaaaa"},
 		Rule{IPs: []string{"geoip:private"}, Outbound: "blocked"},
 		Rule{Users: []string{"ak-zhang"}, Domains: []string{"geosite:openai"}, Outbound: "ak-o-11111111-aaaaaaaa"},
-		Rule{Inbounds: []int{9}, Networks: "tcp,udp", Outbound: "direct"})); code != "" {
+		Rule{Inbounds: []int{9}, Sources: []string{"geoip:cn"}, Networks: "tcp,udp", Outbound: "direct"})); code != "" {
 		t.Fatal(code)
 	}
 	if events := n.takeEvents(); !slices.Equal(events, []string{"rules"}) {
@@ -426,6 +427,7 @@ func TestInvalidTargetsAreRefused(t *testing.T) {
 		"rule to nowhere":      `{"fallback":"direct","outbounds":[],"rules":[{"users":["ak-a"],"outbound":"ak-o-x"}]}`,
 		"rule without a match": `{"fallback":"direct","outbounds":[],"rules":[{"outbound":"direct"}]}`,
 		"foreign user":         `{"fallback":"direct","outbounds":[],"rules":[{"users":["admin"],"outbound":"direct"}]}`,
+		"empty source":         `{"fallback":"direct","outbounds":[],"rules":[{"sources":[""],"outbound":"blocked"}]}`,
 		"tagged config":        `{"fallback":"direct","outbounds":[{"tag":"ak-o-x","config":{"tag":"y","protocol":"freedom"}}],"rules":[]}`,
 		"no protocol":          `{"fallback":"direct","outbounds":[{"tag":"ak-o-x","config":{}}],"rules":[]}`,
 		"foreign tag":          `{"fallback":"direct","outbounds":[{"tag":"us","config":{"protocol":"freedom"}}],"rules":[]}`,

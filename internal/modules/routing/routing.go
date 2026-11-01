@@ -73,10 +73,12 @@ type Outbound struct {
 }
 
 // Rule sends what matches every non-empty condition to Outbound. Inbounds are
-// panel inbound IDs.
+// panel inbound IDs; Sources are where the client connects from, IPs where it
+// connects to.
 type Rule struct {
 	Inbounds  []int    `json:"inbounds,omitempty"`
 	Users     []string `json:"users,omitempty"`
+	Sources   []string `json:"sources,omitempty"`
 	Domains   []string `json:"domains,omitempty"`
 	IPs       []string `json:"ips,omitempty"`
 	Ports     string   `json:"ports,omitempty"`
@@ -130,7 +132,7 @@ func decodeTarget(raw json.RawMessage) (Target, error) {
 // validRule wants at least one condition and only owned users. What a
 // condition says is Xray's to judge, before anything is written.
 func validRule(r Rule) bool {
-	if len(r.Inbounds)+len(r.Users)+len(r.Domains)+len(r.IPs)+len(r.Protocols) == 0 && r.Ports == "" && r.Networks == "" {
+	if len(r.Inbounds)+len(r.Users)+len(r.Sources)+len(r.Domains)+len(r.IPs)+len(r.Protocols) == 0 && r.Ports == "" && r.Networks == "" {
 		return false
 	}
 	for _, id := range r.Inbounds {
@@ -143,7 +145,7 @@ func validRule(r Rule) bool {
 			return false
 		}
 	}
-	for _, list := range [][]string{r.Domains, r.IPs, r.Protocols} {
+	for _, list := range [][]string{r.Sources, r.Domains, r.IPs, r.Protocols} {
 		if slices.Contains(list, "") {
 			return false
 		}
@@ -341,13 +343,14 @@ func xrayRules(rules []Rule, inbounds []panel.Inbound) ([]json.RawMessage, error
 			RuleTag     string   `json:"ruleTag"`
 			InboundTag  []string `json:"inboundTag,omitempty"`
 			User        []string `json:"user,omitempty"`
+			Source      []string `json:"source,omitempty"`
 			Domain      []string `json:"domain,omitempty"`
 			IP          []string `json:"ip,omitempty"`
 			Port        string   `json:"port,omitempty"`
 			Network     string   `json:"network,omitempty"`
 			Protocol    []string `json:"protocol,omitempty"`
 			OutboundTag string   `json:"outboundTag"`
-		}{rulePrefix + strconv.Itoa(i+1), inboundTags, r.Users, r.Domains, r.IPs, r.Ports, r.Networks, r.Protocols, r.Outbound})
+		}{rulePrefix + strconv.Itoa(i+1), inboundTags, r.Users, r.Sources, r.Domains, r.IPs, r.Ports, r.Networks, r.Protocols, r.Outbound})
 		out = append(out, raw)
 	}
 	return out, nil
