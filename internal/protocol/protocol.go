@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	Version     = "2026-10-27.v11"
+	Version     = "2026-11-01.v12"
 	AuthContext = "akastr-agent-auth-v1"
 	MaxMessage  = 1 << 20
 )

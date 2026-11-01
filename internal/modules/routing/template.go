@@ -27,16 +27,16 @@ func managedTemplate(template map[string]json.RawMessage, t Target, rules []json
 		next[key] = value
 	}
 
-	// The fallback goes first: Xray sends what no rule matches to its first outbound.
+	// The default outbound goes first: Xray sends what no rule matches to its first outbound.
 	outbounds := []json.RawMessage{}
 	for _, o := range t.Outbounds {
-		if o.Tag == t.Fallback {
+		if o.Tag == t.DefaultOutbound {
 			outbounds = append(outbounds, outboundJSON(o))
 		}
 	}
 	outbounds = append(outbounds, directOutbound, blockedOutbound)
 	for _, o := range t.Outbounds {
-		if o.Tag != t.Fallback {
+		if o.Tag != t.DefaultOutbound {
 			outbounds = append(outbounds, outboundJSON(o))
 		}
 	}

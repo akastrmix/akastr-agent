@@ -227,7 +227,7 @@ const panelTemplate = `{
    {"type": "field", "domain": ["geosite:openai"], "outboundTag": "manual-us"}]}
 }`
 
-func target(t *testing.T, fallback string, outbounds []string, rules ...Rule) json.RawMessage {
+func target(t *testing.T, defaultOutbound string, outbounds []string, rules ...Rule) json.RawMessage {
 	t.Helper()
 	list := []Outbound{}
 	for _, tag := range outbounds {
@@ -236,7 +236,7 @@ func target(t *testing.T, fallback string, outbounds []string, rules ...Rule) js
 	if rules == nil {
 		rules = []Rule{}
 	}
-	raw, err := json.Marshal(Target{Fallback: fallback, Outbounds: list, Rules: rules})
+	raw, err := json.Marshal(Target{DefaultOutbound: defaultOutbound, Outbounds: list, Rules: rules})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -368,7 +368,7 @@ func TestRefusedConfigurationWritesNothing(t *testing.T) {
 	}
 }
 
-func TestFallbackChangeRestartsXray(t *testing.T) {
+func TestDefaultOutboundChangeRestartsXray(t *testing.T) {
 	n, m := newFakeNode(t, panelTemplate)
 	exit := "ak-o-22222222-cccccccc"
 	if code := apply(t, m, target(t, "direct", []string{exit})); code != "" {
@@ -379,7 +379,7 @@ func TestFallbackChangeRestartsXray(t *testing.T) {
 		t.Fatal(code)
 	}
 	if events := n.takeEvents(); !slices.Equal(events, []string{"test", "save", "restart", "rules"}) {
-		t.Fatalf("fallback change: %v", events)
+		t.Fatalf("default outbound change: %v", events)
 	}
 	n.mu.Lock()
 	first := n.live[0]
@@ -422,27 +422,27 @@ func TestMissingInboundWritesNothing(t *testing.T) {
 func TestInvalidTargetsAreRefused(t *testing.T) {
 	m := New(nil)
 	cases := map[string]string{
-		"blocked fallback":     `{"fallback":"blocked","outbounds":[],"rules":[]}`,
-		"unknown fallback":     `{"fallback":"ak-o-x","outbounds":[],"rules":[]}`,
-		"rule to nowhere":      `{"fallback":"direct","outbounds":[],"rules":[{"users":["ak-a"],"outbound":"ak-o-x"}]}`,
-		"rule without a match": `{"fallback":"direct","outbounds":[],"rules":[{"outbound":"direct"}]}`,
-		"foreign user":         `{"fallback":"direct","outbounds":[],"rules":[{"users":["admin"],"outbound":"direct"}]}`,
-		"empty source":         `{"fallback":"direct","outbounds":[],"rules":[{"sources":[""],"outbound":"blocked"}]}`,
-		"tagged config":        `{"fallback":"direct","outbounds":[{"tag":"ak-o-x","config":{"tag":"y","protocol":"freedom"}}],"rules":[]}`,
-		"no protocol":          `{"fallback":"direct","outbounds":[{"tag":"ak-o-x","config":{}}],"rules":[]}`,
-		"foreign tag":          `{"fallback":"direct","outbounds":[{"tag":"us","config":{"protocol":"freedom"}}],"rules":[]}`,
-		"unknown field":        `{"fallback":"direct","outbounds":[],"rules":[{"user":["ak-a"],"outbound":"direct"}]}`,
-		"missing rules":        `{"fallback":"direct","outbounds":[]}`,
+		"blocked default":      `{"default_outbound":"blocked","outbounds":[],"rules":[]}`,
+		"unknown default":      `{"default_outbound":"ak-o-x","outbounds":[],"rules":[]}`,
+		"rule to nowhere":      `{"default_outbound":"direct","outbounds":[],"rules":[{"users":["ak-a"],"outbound":"ak-o-x"}]}`,
+		"rule without a match": `{"default_outbound":"direct","outbounds":[],"rules":[{"outbound":"direct"}]}`,
+		"foreign user":         `{"default_outbound":"direct","outbounds":[],"rules":[{"users":["admin"],"outbound":"direct"}]}`,
+		"empty source":         `{"default_outbound":"direct","outbounds":[],"rules":[{"sources":[""],"outbound":"blocked"}]}`,
+		"tagged config":        `{"default_outbound":"direct","outbounds":[{"tag":"ak-o-x","config":{"tag":"y","protocol":"freedom"}}],"rules":[]}`,
+		"no protocol":          `{"default_outbound":"direct","outbounds":[{"tag":"ak-o-x","config":{}}],"rules":[]}`,
+		"foreign tag":          `{"default_outbound":"direct","outbounds":[{"tag":"us","config":{"protocol":"freedom"}}],"rules":[]}`,
+		"unknown field":        `{"default_outbound":"direct","outbounds":[],"rules":[{"user":["ak-a"],"outbound":"direct"}]}`,
+		"missing rules":        `{"default_outbound":"direct","outbounds":[]}`,
 	}
 	for name, raw := range cases {
 		if m.Validate(Key, json.RawMessage(raw)) == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
-	if m.Validate("other", json.RawMessage(`{"fallback":"direct","outbounds":[],"rules":[]}`)) == nil {
+	if m.Validate("other", json.RawMessage(`{"default_outbound":"direct","outbounds":[],"rules":[]}`)) == nil {
 		t.Error("a key other than node accepted")
 	}
-	if err := m.Validate(Key, json.RawMessage(`{"fallback":"direct","outbounds":[],"rules":[]}`)); err != nil {
+	if err := m.Validate(Key, json.RawMessage(`{"default_outbound":"direct","outbounds":[],"rules":[]}`)); err != nil {
 		t.Errorf("the empty target refused: %v", err)
 	}
 }

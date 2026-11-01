@@ -60,9 +60,9 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 // Target is the node's whole routing: the default outbound, the outbounds
 // Cloud owns and the rules in the order Xray tries them.
 type Target struct {
-	Fallback  string     `json:"fallback"`
-	Outbounds []Outbound `json:"outbounds"`
-	Rules     []Rule     `json:"rules"`
+	DefaultOutbound string     `json:"default_outbound"`
+	Outbounds       []Outbound `json:"outbounds"`
+	Rules           []Rule     `json:"rules"`
 }
 
 // Outbound is one Xray outbound object without its tag; a new tag stands for
@@ -88,19 +88,19 @@ type Rule struct {
 }
 
 type targetDocument struct {
-	Fallback  string            `json:"fallback"`
-	Outbounds []json.RawMessage `json:"outbounds"`
-	Rules     []json.RawMessage `json:"rules"`
+	DefaultOutbound string            `json:"default_outbound"`
+	Outbounds       []json.RawMessage `json:"outbounds"`
+	Rules           []json.RawMessage `json:"rules"`
 }
 
 var errTarget = errors.New("routing target is invalid")
 
 func decodeTarget(raw json.RawMessage) (Target, error) {
-	doc, err := protocol.DecodeStrict[targetDocument](raw, "routing target", "fallback", "outbounds", "rules")
+	doc, err := protocol.DecodeStrict[targetDocument](raw, "routing target", "default_outbound", "outbounds", "rules")
 	if err != nil {
 		return Target{}, errTarget
 	}
-	t := Target{Fallback: doc.Fallback}
+	t := Target{DefaultOutbound: doc.DefaultOutbound}
 	tags := map[string]bool{direct: true, blocked: true}
 	for _, item := range doc.Outbounds {
 		o, err := protocol.DecodeStrict[Outbound](item, "routing outbound", "tag", "config")
@@ -116,7 +116,7 @@ func decodeTarget(raw json.RawMessage) (Target, error) {
 		tags[o.Tag] = true
 		t.Outbounds = append(t.Outbounds, o)
 	}
-	if t.Fallback == blocked || !tags[t.Fallback] {
+	if t.DefaultOutbound == blocked || !tags[t.DefaultOutbound] {
 		return Target{}, errTarget
 	}
 	for _, item := range doc.Rules {
@@ -244,8 +244,8 @@ func (m *Module) apply(ctx context.Context, t Target) string {
 	}
 	// Only a restart adds the api service, and Xray's default outbound is the
 	// first one it started with.
-	if !hasService(running.config, routingService) || firstOutbound(running.config) != t.Fallback {
-		if running, err = m.restart(ctx, running); err != nil || firstOutbound(running.config) != t.Fallback {
+	if !hasService(running.config, routingService) || firstOutbound(running.config) != t.DefaultOutbound {
+		if running, err = m.restart(ctx, running); err != nil || firstOutbound(running.config) != t.DefaultOutbound {
 			return codeRestartFailed
 		}
 	}
