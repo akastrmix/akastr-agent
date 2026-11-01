@@ -124,9 +124,11 @@ func outboundJSON(o Outbound) json.RawMessage {
 }
 
 // testConfig is the running configuration with the managed parts of template,
-// for Xray to check. Its log settings stay out: building them opens the log
-// files for writing, which the Agent's read-only view of the system refuses,
-// and the module never changes them.
+// for Xray to check what the module writes. Inbounds and log settings stay
+// out: the module never changes them and Xray already runs them, but building
+// them reads certificate files that may live under /root and opens the log
+// files for writing, which the Agent's sandbox (ProtectHome, ProtectSystem)
+// hides or refuses.
 func testConfig(config, template map[string]json.RawMessage) []byte {
 	next := make(map[string]json.RawMessage, len(config))
 	for key, value := range config {
@@ -135,6 +137,7 @@ func testConfig(config, template map[string]json.RawMessage) []byte {
 	for _, key := range managedKeys {
 		next[key] = template[key]
 	}
+	delete(next, "inbounds")
 	delete(next, "log")
 	raw, _ := json.Marshal(next)
 	return raw
