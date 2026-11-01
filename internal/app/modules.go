@@ -21,8 +21,10 @@ import (
 	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/modules/ratelimit"
+	"github.com/akastrmix/akastr-agent/internal/modules/routing"
 	"github.com/akastrmix/akastr-agent/internal/modules/socks5"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
+	"github.com/akastrmix/akastr-agent/internal/panel"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 	"github.com/akastrmix/akastr-agent/internal/xray/process"
@@ -47,6 +49,7 @@ type modules struct {
 	xui       *xui.Config
 	rateLimit *ratelimit.Config
 	records   *connectionrecords.Config
+	routing   *routing.Config
 }
 
 func parseModules(sections map[string]json.RawMessage) (modules, error) {
@@ -68,6 +71,8 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 			m.rateLimit, err = parseSection(ratelimit.ParseConfig, raw)
 		case connectionrecords.Name:
 			m.records, err = parseSection(connectionrecords.ParseConfig, raw)
+		case routing.Name:
+			m.routing, err = parseSection(routing.ParseConfig, raw)
 		default:
 			return modules{}, fmt.Errorf("configuration module %q is unknown to this Agent", name)
 		}
@@ -85,6 +90,10 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 	}
 	if m.records != nil && m.xui == nil {
 		return modules{}, errors.New("module connection_records requires xui")
+	}
+	// Routing is written into the 3x-ui panel's Xray template.
+	if m.routing != nil && m.xui == nil {
+		return modules{}, errors.New("module routing requires xui")
 	}
 	return m, nil
 }
@@ -132,11 +141,15 @@ func (m modules) prepare(ctx context.Context, paths layout.Layout, client *http.
 
 func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	if m.xui != nil {
-		panel, err := xui.NewPanel(*m.xui, filepath.Join(paths.StateDir, xui.Name))
+		client := panel.New(m.xui.PanelURL, m.xui.Username, m.xui.Password)
+		panel, err := xui.NewPanel(client, filepath.Join(paths.StateDir, xui.Name))
 		if err != nil {
 			return err
 		}
 		runtime.desired.Add(xui.Name, panel)
+		if m.routing != nil {
+			runtime.desired.Add(routing.Name, routing.New(client))
+		}
 		// The log is read once, and one account of the connections serves the
 		// snapshot's connection counts, the limiter and the connection records.
 		log := accesslog.New(panel.Inbounds)

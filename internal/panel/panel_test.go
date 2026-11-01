@@ -1,7 +1,8 @@
-package xui
+package panel
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,7 +11,7 @@ import (
 )
 
 func reply(w http.ResponseWriter, obj any) {
-	_ = jsonEncode(w, map[string]any{"success": true, "obj": obj})
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "obj": obj})
 }
 
 func TestSessionExpiryHTMLAndBusinessFailure(t *testing.T) {
@@ -42,8 +43,8 @@ func TestSessionExpiryHTMLAndBusinessFailure(t *testing.T) {
 				reply(w, []any{})
 			}))
 			defer server.Close()
-			adapter := NewAdapter(Config{PanelURL: server.URL + "/panel-base/", Username: "synthetic", Password: "synthetic"})
-			_, err := adapter.list(context.Background())
+			client := New(server.URL+"/panel-base/", "synthetic", "synthetic")
+			_, err := client.Inbounds(context.Background())
 			if mode == "business" {
 				if err == nil || err.Error() != "xui_business_failed" || logins != 0 {
 					t.Fatalf("business failure: %v, logins %d", err, logins)

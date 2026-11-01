@@ -35,6 +35,12 @@ var ownedEmail = regexp.MustCompile(`^ak-[a-z0-9]{1,61}$`)
 // Owned reports whether email names a client Cloud owns.
 func Owned(email string) bool { return ownedEmail.MatchString(email) }
 
+// settings is the part of an inbound's settings the module reads.
+type settings struct {
+	Clients []map[string]any `json:"clients"`
+	Method  string           `json:"method"`
+}
+
 type Config struct {
 	PanelURL string `json:"panel_url"`
 	Username string `json:"username"`

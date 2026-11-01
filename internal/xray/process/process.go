@@ -1,5 +1,6 @@
 // Package process finds the one Xray process 3x-ui runs and reads what it
-// was started with: its configuration file and whether it splices.
+// was started with: its binary, configuration file, asset location and
+// whether it splices.
 package process
 
 import (
@@ -81,23 +82,51 @@ func (x Xray) Resolve(path string) string {
 	return filepath.Join(x.Cwd, path)
 }
 
+// PID identifies the process; a restart starts another.
+func (x Xray) PID() string { return filepath.Base(x.dir) }
+
+// Binary is the program the process runs, for running the same Xray again.
+func (x Xray) Binary() (string, error) {
+	return os.Readlink(filepath.Join(x.dir, "exe"))
+}
+
+// AssetEnv is where the process finds its geoip and geosite files, as an
+// environment entry for another run of the same binary; nil means the
+// binary's own directory, Xray's default.
+func (x Xray) AssetEnv() ([]string, error) {
+	key, value, found, err := x.flag("xray.location.asset", "XRAY_LOCATION_ASSET")
+	if err != nil || !found {
+		return nil, err
+	}
+	return []string{key + "=" + value}, nil
+}
+
 // Spliced says whether Xray hands the downlink of a Vision connection to the
 // kernel, as the environment it started with decides. It then adds that
 // connection's bytes to its user statistics only when the connection ends.
-// Xray reads the flag by its own name, then by its environment name; set to
-// anything but auto or enable, even empty, it is off. Only those two entries
-// are read out of the environment, which may hold secrets.
+// Set to anything but auto or enable, even empty, it is off.
 func (x Xray) Spliced() (bool, error) {
+	_, value, found, err := x.flag("xray.buf.splice", "XRAY_BUF_SPLICE")
+	if err != nil || !found {
+		return true, err
+	}
+	return value == "auto" || value == "enable", nil
+}
+
+// flag reads one Xray environment flag, which Xray looks up by its own name,
+// then by its environment name. Only these entries are read out of the
+// environment, which may hold secrets.
+func (x Xray) flag(keys ...string) (key, value string, found bool, err error) {
 	environ, err := os.ReadFile(filepath.Join(x.dir, "environ"))
 	if err != nil {
-		return false, err
+		return "", "", false, err
 	}
-	for _, key := range []string{"xray.buf.splice", "XRAY_BUF_SPLICE"} {
+	for _, key := range keys {
 		for _, entry := range bytes.Split(environ, []byte{0}) {
-			if value, ok := bytes.CutPrefix(entry, []byte(key+"=")); ok {
-				return string(value) == "auto" || string(value) == "enable", nil
+			if v, ok := bytes.CutPrefix(entry, []byte(key+"=")); ok {
+				return key, string(v), true, nil
 			}
 		}
 	}
-	return true, nil
+	return "", "", false, nil
 }

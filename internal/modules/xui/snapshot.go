@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
+	"github.com/akastrmix/akastr-agent/internal/panel"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
@@ -161,7 +162,7 @@ func ownedConnections(c ledger.Connections) connections {
 func (s *Snapshots) readPanel(ctx context.Context) (snapshot, error) {
 	s.panel.mu.Lock()
 	defer s.panel.mu.Unlock()
-	inbounds, err := s.panel.adapter.list(ctx)
+	inbounds, err := s.panel.client.Inbounds(ctx)
 	if err != nil {
 		return snapshot{}, err
 	}
@@ -186,7 +187,7 @@ func (s *Snapshots) readPanel(ctx context.Context) (snapshot, error) {
 // Inbounds lists the panel's inbounds for the access log. It reads no
 // traffic, so it does not wait for Apply.
 func (p *Panel) Inbounds(ctx context.Context) ([]accesslog.Inbound, error) {
-	all, err := p.adapter.list(ctx)
+	all, err := p.client.Inbounds(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +211,7 @@ func (p *Panel) Inbounds(ctx context.Context) ([]accesslog.Inbound, error) {
 // including fields 3x-ui adds later. finalmask holds obfuscation every client
 // must also use; tcpSettings is reduced to its header type, which tells Cloud
 // whether the TCP transport is plain.
-func publicConfig(ib inbound) (json.RawMessage, json.RawMessage) {
+func publicConfig(ib panel.Inbound) (json.RawMessage, json.RawMessage) {
 	var settings, stream map[string]any
 	_ = json.Unmarshal([]byte(ib.Settings), &settings)
 	_ = json.Unmarshal([]byte(ib.StreamSettings), &stream)

@@ -14,12 +14,17 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/akastrmix/akastr-agent/internal/panel"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/state"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
 
 func jsonEncode(w io.Writer, value any) error { return json.NewEncoder(w).Encode(value) }
+
+func reply(w http.ResponseWriter, obj any) {
+	_ = jsonEncode(w, map[string]any{"success": true, "obj": obj})
+}
 
 type fakeStat struct {
 	up, down int64
@@ -196,7 +201,7 @@ func startPanel(t *testing.T, fake *fakePanel) *Panel {
 
 func openPanel(t *testing.T, cfg Config, stateDir string) *Panel {
 	t.Helper()
-	panel, err := NewPanel(cfg, stateDir)
+	panel, err := NewPanel(panel.New(cfg.PanelURL, cfg.Username, cfg.Password), stateDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,8 +462,8 @@ func TestNamedInboundWithoutUsableTargetIsLeftAlone(t *testing.T) {
 func TestFailedCleanupIsReportedForRetry(t *testing.T) {
 	fake := newFakePanel(vlessInbound(1, map[string]any{"id": protocol.NewUUID(), "email": "ak-gone", "enable": true},
 		map[string]any{"id": protocol.NewUUID(), "email": "admin", "enable": true}))
-	panel := startPanel(t, fake)
-	panel.adapter.cfg.PanelURL = "http://127.0.0.1:1/"
+	startPanel(t, fake)
+	panel := openPanel(t, Config{PanelURL: "http://127.0.0.1:1/", Username: "synthetic", Password: "synthetic"}, t.TempDir())
 	if _, err := panel.Apply(context.Background(), map[string]json.RawMessage{}); err == nil {
 		t.Fatal("an unreachable panel with nothing targeted reported success")
 	}
@@ -564,11 +569,11 @@ func TestIncompleteStateFileStopsTheModule(t *testing.T) {
 		if err := os.WriteFile(dir+"/state.json", []byte(contents), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := NewPanel(Config{}, dir); err == nil {
+		if _, err := NewPanel(panel.New("", "", ""), dir); err == nil {
 			t.Errorf("state %s accepted", contents)
 		}
 	}
-	if _, err := NewPanel(Config{}, t.TempDir()); err != nil {
+	if _, err := NewPanel(panel.New("", "", ""), t.TempDir()); err != nil {
 		t.Fatalf("a node without state must start empty: %v", err)
 	}
 }

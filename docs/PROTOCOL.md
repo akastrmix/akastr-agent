@@ -23,10 +23,11 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | `xui` | `panel_url`、`username`、`password` | 按目标状态管理本机 3x-ui 的受管客户端，上报 `xui.snapshot` |
 | `rate_limit` | 无字段（`{}`） | 按目标状态限制受管用户的下载；需要 `xui` |
 | `connection_records` | 无字段（`{}`） | 上报 `connection_records.batch`；需要 `xui` |
+| `routing` | 无字段（`{}`） | 按目标状态写入本机 Xray 的路由规则与出站；需要 `xui` |
 
 `xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
 
-Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`，`rate_limit` 与 `connection_records` 需要 `xui`）；除此之外模块可任意组合；Runner 可以有多台，由 Cloud 分配检测，每台同时只派一条。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
+Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`，`rate_limit`、`connection_records` 与 `routing` 需要 `xui`）；除此之外模块可任意组合；Runner 可以有多台，由 Cloud 分配检测，每台同时只派一条。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -164,6 +165,25 @@ key 是 Cloud 的限速单位（一份订阅在一个策略组下的账号）。
   - 过滤总数有上限，超出的连接不限。
 - **状态**：已装好的目标回报空错误码。访问日志或内核连接信息不可用时，继续限制已知连接，并回报 `rate_limit_log_unavailable`。tc 失败时，撤掉本模块的全部规则，回报 `rate_limit_apply_failed`；连撤除也失败时，本次全部 key（包括解除用的零目标）都回报 `rate_limit_apply_failed` 并重试，不确认任何版本。
 - **清理**：启动时先清掉此前进程留下的规则（更新换进程与崩溃都不会先停模块），进程正常停止时清理，模块关闭后的进程启动时也清理，失败则每 30 秒重试。清理只删上述优先级的过滤和编号段内的动作；clsact 上已没有任何过滤时才删除它。
+
+### `routing`
+
+只有一个 key：`node`，即整台节点的路由。state 必须且只能包含三项：
+
+| 字段 | 含义 |
+|---|---|
+| `fallback` | 没有规则命中时的出站：`direct` 或 `outbounds` 里的某个标签 |
+| `outbounds` | Cloud 拥有的出站，每项必须且只能包含 `tag`（`ak-o-` 加 1–100 位小写字母、数字或 `-`，不重复）与 `config`（一个 Xray 出站对象，必须有 `protocol`，不得有 `tag`）。Cloud 让标签随内容变化，标签相同即内容相同 |
+| `rules` | 按生效顺序的规则。条件字段 `inbounds`（面板入站 ID）、`users`（`ak-` 受管客户端）、`domains`、`ips`、`protocols`（数组）与 `ports`、`networks`（Xray 的字符串写法），可省略但至少有一项；`outbound` 必填，只能是 `direct`、`blocked` 或 `outbounds` 里的标签 |
+
+空目标是 `{"fallback":"direct","outbounds":[],"rules":[]}`；模块开着时 key 不退役。条件的内容（geosite 类别、端口写法等）由 Xray 判断：写入前就会被拒绝。
+
+- **写到哪里**：3x-ui 每次启动 Xray 都按面板的“Xray 模板”重建配置，所以 Agent 先写模板，再热更新正在运行的 Xray。模板里只替换三处：`outbounds` 整体换成 `[fallback, direct, blocked, 其余受管出站]`（`direct` 为无设置的 freedom，`blocked` 为 blackhole，两者始终存在）；`routing.rules` 换成“面板自己的 api 规则 + 目标规则”，并删除 `routing.balancers`；`api.services` 补上 `RoutingService`。`routing.domainStrategy` 与模板其余字段原样保留，保存时原样回传面板的出站测试地址（缺省会被面板重置）。规则的 `ruleTag` 由 Agent 按序号写成 `ak-r-N`，`inbounds` 换成面板入站当前的标签。
+- **每一轮**：读面板入站与模板，模板受管部分与目标不同时，先把“运行配置 + 新的受管部分”交给同一个 Xray 程序的 `run -test`，不通过就什么都不写；通过后存模板并读回核对。随后：运行中的 Xray 还没有 `RoutingService`（首次接管）或第一个出站不是 `fallback` 时，经面板重启一次 Xray（同机所有连接短暂中断），等新进程的 api 应答；否则用 Xray 自带的 `api` 命令热更新：补上缺少的受管出站，不追加地替换整张规则表，再删掉不在目标里的 `ak-o-` 出站。热更新不断开已有连接，删掉正承载连接的出站也不会（在 Xray 26.7.28 上实测）。每轮都重新替换整张规则表，不因“看起来一样”跳过。
+- **只碰自己的**：只删除 `ak-o-` 开头的出站；面板 api 规则始终在第一条。接管前留在模板里的出站在接管时被替换，首次接管那次重启后消失。接管后在面板里改路由和出站不会长久生效，下一轮（最多 5 分钟）就改回来；改 DNS 等其余模板字段照常有效。
+- **失败**：Xray 替换规则表时先清空旧表再逐条构建，中途出错会留下空表，连 api 规则也没了。此时若 api 不再应答、且仍是同一个 Xray 进程，Agent 经面板重启一次 Xray（模板已是验证过的新配置）再回报失败。
+- **关闭与卸载**：保留最后一次写入的模板和运行配置，交还面板手动管理，不恢复接管前的样子（Cloud ADR 0099）。
+- **错误码**：`routing_inbound_missing`（规则引用的面板入站不存在）、`routing_config_invalid`（`run -test` 不通过）、`routing_panel_failed`（读或存模板失败）、`routing_xray_unavailable`（找不到 3x-ui 运行的唯一 Xray、它的程序或回环上的 api 入站）、`routing_apply_failed`（热更新没完成）、`routing_restart_failed`（经面板重启失败，或重启后没有恢复）。命令输出可能含出站密码，只在本机解析，不上报、不写日志。
 
 ## 上报与回执
 

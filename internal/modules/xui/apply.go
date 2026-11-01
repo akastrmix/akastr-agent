@@ -11,25 +11,26 @@ import (
 	"sync"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
+	"github.com/akastrmix/akastr-agent/internal/panel"
 )
 
 // Panel converges the owned clients of the local panel. Apply and snapshots
 // share one lock, so reported traffic always matches the recorded resets.
 type Panel struct {
-	adapter *Adapter
-	state   *localState
-	mu      sync.Mutex
+	client *panel.Client
+	state  *localState
+	mu     sync.Mutex
 }
 
 var _ module.Desired = (*Panel)(nil)
 
 // NewPanel keeps the module's durable state in stateDir.
-func NewPanel(cfg Config, stateDir string) (*Panel, error) {
+func NewPanel(client *panel.Client, stateDir string) (*Panel, error) {
 	local, err := openState(stateDir)
 	if err != nil {
 		return nil, err
 	}
-	return &Panel{adapter: NewAdapter(cfg), state: local}, nil
+	return &Panel{client: client, state: local}, nil
 }
 
 func (p *Panel) Validate(key string, raw json.RawMessage) error {
@@ -82,7 +83,7 @@ func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[
 	if err := p.state.flush(); err != nil {
 		return fail("xui_state_failed")
 	}
-	inbounds, err := p.adapter.list(ctx)
+	inbounds, err := p.client.Inbounds(ctx)
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -115,7 +116,7 @@ func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[
 	// reported as written yet refuse connections until Xray reloads. The
 	// pending mark survives a failed restart and a stop before it.
 	if p.state.restartPending {
-		if err := p.adapter.restart(ctx); err != nil {
+		if err := p.client.Restart(ctx); err != nil {
 			return fail("xui_restart_failed")
 		}
 		if err := p.state.setRestartPending(false); err != nil {
@@ -123,7 +124,7 @@ func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[
 		}
 	}
 	if wrote {
-		inbounds, err = p.adapter.list(ctx)
+		inbounds, err = p.client.Inbounds(ctx)
 		if err != nil {
 			return fail(err.Error())
 		}
@@ -155,7 +156,7 @@ func (p *Panel) Apply(ctx context.Context, raw map[string]json.RawMessage) (map[
 // converge brings one inbound to its target; an inbound no key names keeps no
 // owned client. It reports whether it wrote client settings. The target is
 // checked against the inbound before any reset clears traffic.
-func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named bool) (bool, error) {
+func (p *Panel) converge(ctx context.Context, ib panel.Inbound, target Target, named bool) (bool, error) {
 	if !named && !hasClients(ib) {
 		// Protocols without clients hold nothing of ours.
 		return false, nil
@@ -183,11 +184,11 @@ func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named b
 	for i, a := range actions {
 		switch a.kind {
 		case "add":
-			err = p.adapter.addClient(ctx, ib.ID, a.client)
+			err = p.client.AddClient(ctx, ib.ID, a.client)
 		case "update":
-			err = p.adapter.updateClient(ctx, ib.ID, a.identity, a.client)
+			err = p.client.UpdateClient(ctx, ib.ID, a.identity, a.client)
 		case "delete":
-			err = p.adapter.deleteClient(ctx, ib.ID, a.identity)
+			err = p.client.DeleteClient(ctx, ib.ID, a.identity)
 		}
 		if err != nil {
 			return i > 0, errors.New("xui_write_failed")
@@ -196,12 +197,12 @@ func (p *Panel) converge(ctx context.Context, ib inbound, target Target, named b
 	return len(actions) > 0, nil
 }
 
-func hasClients(ib inbound) bool {
+func hasClients(ib panel.Inbound) bool {
 	var s settings
 	return json.Unmarshal([]byte(ib.Settings), &s) == nil && len(s.Clients) > 0
 }
 
-func (p *Panel) resetsDue(ib inbound, target Target) bool {
+func (p *Panel) resetsDue(ib panel.Inbound, target Target) bool {
 	for _, c := range target.Clients {
 		if c.ResetSeq > p.state.reset(c.Email) {
 			return true
@@ -213,7 +214,7 @@ func (p *Panel) resetsDue(ib inbound, target Target) bool {
 // reset clears the traffic of each client whose reset Cloud asked for and
 // this node has not executed yet. The panel's reset re-enables only its
 // traffic record, never the client, so plan still decides enable afterwards.
-func (p *Panel) reset(ctx context.Context, ib *inbound, target Target) error {
+func (p *Panel) reset(ctx context.Context, ib *panel.Inbound, target Target) error {
 	existing := map[string]int{}
 	for i, stat := range ib.ClientStats {
 		existing[stat.Email] = i
@@ -226,7 +227,7 @@ func (p *Panel) reset(ctx context.Context, ib *inbound, target Target) error {
 		// Stopping between the reset and recording it repeats the reset once,
 		// losing at most the traffic of that moment.
 		if i, found := existing[c.Email]; found {
-			if err := p.adapter.resetTraffic(ctx, ib.ID, c.Email); err != nil {
+			if err := p.client.ResetTraffic(ctx, ib.ID, c.Email); err != nil {
 				return errors.New("xui_write_failed")
 			}
 			ib.ClientStats[i].Up, ib.ClientStats[i].Down = 0, 0
@@ -238,7 +239,7 @@ func (p *Panel) reset(ctx context.Context, ib *inbound, target Target) error {
 	return nil
 }
 
-func method(ib inbound) string {
+func method(ib panel.Inbound) string {
 	var s settings
 	_ = json.Unmarshal([]byte(ib.Settings), &s)
 	return s.Method
@@ -248,7 +249,7 @@ func method(ib inbound) string {
 // whose traffic limit is used up stays disabled, as the panel left it: writing
 // enable=true would only last until the panel disables it again. Raising the
 // limit or resetting the traffic re-enables it.
-func plan(ib inbound, target Target) ([]action, error) {
+func plan(ib panel.Inbound, target Target) ([]action, error) {
 	var s settings
 	if err := json.Unmarshal([]byte(ib.Settings), &s); err != nil || (s.Clients == nil && len(target.Clients) > 0) {
 		return nil, errors.New("xui_inbound_invalid")
