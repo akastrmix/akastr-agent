@@ -226,7 +226,7 @@ func (m *Module) apply(ctx context.Context, t Target) string {
 	if !sameManaged(current.Config, next) {
 		// The same build Xray would run at its next start, checked before
 		// anything is written.
-		if err := m.xray.test(ctx, running, withManaged(running.config, next)); err != nil {
+		if err := m.xray.test(ctx, running, testConfig(running.config, next)); err != nil {
 			if errors.Is(err, errInvalid) {
 				return codeConfigInvalid
 			}
