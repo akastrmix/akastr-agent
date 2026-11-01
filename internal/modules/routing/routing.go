@@ -346,7 +346,7 @@ func xrayRules(rules []Rule, inbounds []panel.Inbound) ([]json.RawMessage, error
 			RuleTag     string   `json:"ruleTag"`
 			InboundTag  []string `json:"inboundTag,omitempty"`
 			User        []string `json:"user,omitempty"`
-			Source      []string `json:"source,omitempty"`
+			SourceIP    []string `json:"sourceIP,omitempty"`
 			Domain      []string `json:"domain,omitempty"`
 			IP          []string `json:"ip,omitempty"`
 			Port        string   `json:"port,omitempty"`

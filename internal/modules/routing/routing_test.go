@@ -306,7 +306,7 @@ func TestTakeoverRewritesOnlyTheManagedParts(t *testing.T) {
 	}
 	var rules []map[string]any
 	_ = json.Unmarshal(routing["rules"], &rules)
-	if rules[3]["inboundTag"].([]any)[0] != "inbound-9" || rules[3]["source"].([]any)[0] != "geoip:cn" ||
+	if rules[3]["inboundTag"].([]any)[0] != "inbound-9" || rules[3]["sourceIP"].([]any)[0] != "geoip:cn" ||
 		rules[3]["network"] != "tcp,udp" || rules[2]["user"].([]any)[0] != "ak-zhang" ||
 		rules[1]["ruleTag"] != "ak-r-1" {
 		t.Errorf("template rules: %s", routing["rules"])

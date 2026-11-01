@@ -174,7 +174,7 @@ key 是 Cloud 的限速单位（一份订阅在一个策略组下的账号）。
 |---|---|
 | `default_outbound` | 没有规则命中时的出站：`direct` 或 `outbounds` 里的某个标签 |
 | `outbounds` | Cloud 拥有的出站，每项必须且只能包含 `tag`（`ak-o-` 加 1–100 位小写字母、数字或 `-`，不重复）与 `config`（一个 Xray 出站对象，必须有 `protocol`，不得有 `tag`）。Cloud 让标签随内容变化，标签相同即内容相同 |
-| `rules` | 按生效顺序的规则。条件字段 `inbounds`（面板入站 ID）、`users`（`ak-` 受管客户端）、`sources`（客户端的来源地址，写成 Xray 规则的 `source`）、`domains`、`ips`（目标地址）、`protocols`（数组）与 `ports`、`networks`（Xray 的字符串写法），可省略但至少有一项；不认识的字段让整份目标被拒；`outbound` 必填，只能是 `direct`、`blocked` 或 `outbounds` 里的标签 |
+| `rules` | 按生效顺序的规则。条件字段 `inbounds`（面板入站 ID）、`users`（`ak-` 受管客户端）、`sources`（客户端的来源地址，写成 Xray 规则的 `sourceIP`：3x-ui 2.9.4 的路由页只认这个名字，旧名 `source` 在面板里显示不出来）、`domains`、`ips`（目标地址）、`protocols`（数组）与 `ports`、`networks`（Xray 的字符串写法），可省略但至少有一项；不认识的字段让整份目标被拒；`outbound` 必填，只能是 `direct`、`blocked` 或 `outbounds` 里的标签 |
 
 空目标是 `{"default_outbound":"direct","outbounds":[],"rules":[]}`；模块开着时 key 不退役。条件的内容（geosite 类别、端口写法等）由 Xray 判断：写入前就会被拒绝。
 
