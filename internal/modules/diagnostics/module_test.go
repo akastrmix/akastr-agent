@@ -50,6 +50,9 @@ touch /var/lib/` + marker + ` 2>/dev/null || echo state-denied
 kill -0 1 2>/dev/null || echo signal-denied
 timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/` + strconv.Itoa(port) + `" 2>/dev/null || echo local-port-denied
 touch /tmp/` + marker + ` && echo private-tmp
+[ "$(stat -f -c %T /var/tmp)" = tmpfs ] && [ "$(stat -f -c %T /tmp)" = tmpfs ] && echo temp-in-memory
+logger -t ` + marker + ` leaked 2>/dev/null || echo journal-write-denied
+journalctl -n1 -q --no-pager >/dev/null && echo journal-read-ok
 (exec -a ` + marker + ` sleep 300) &
 head -c ` + strconv.Itoa(maxStream+1000) + ` /dev/zero | tr '\0' x
 echo to-stderr >&2
@@ -58,7 +61,8 @@ exit 3`
 	if result.Code != "completed" || result.ExitCode == nil || *result.ExitCode != 3 {
 		t.Fatalf("result=%+v", summary(result))
 	}
-	for _, want := range []string{"read-ok", "write-denied", "state-denied", "signal-denied", "local-port-denied", "private-tmp"} {
+	for _, want := range []string{"read-ok", "write-denied", "state-denied", "signal-denied", "local-port-denied",
+		"private-tmp", "temp-in-memory", "journal-write-denied", "journal-read-ok"} {
 		if !strings.Contains(result.Stdout, want) {
 			t.Errorf("stdout lacks %q", want)
 		}
@@ -72,6 +76,9 @@ exit 3`
 			t.Errorf("%s was left behind", path)
 		}
 	}
+	if out, _ := exec.Command("journalctl", "-q", "--no-pager", "-t", marker).Output(); len(out) != 0 {
+		t.Errorf("the script wrote to the journal: %s", out)
+	}
 	if out, _ := exec.Command("pgrep", "-f", marker).Output(); len(out) != 0 {
 		t.Errorf("a process outlived the script: %s", out)
 	}
@@ -82,9 +89,10 @@ func TestTimeLimitAndSessionEndStopTheUnit(t *testing.T) {
 	runner := sandboxRunner(t)
 	runner.timeLimit = 2 * time.Second
 	started := time.Now()
-	result := answer(t, runner, context.Background(), "echo started; sleep 60")
+	// A script ignoring SIGTERM must not hold the answer past Cloud's wait.
+	result := answer(t, runner, context.Background(), `trap "" TERM; echo started; sleep 60`)
 	if result.Code != "timed_out" || result.ExitCode != nil || result.Stdout != "started\n" ||
-		time.Since(started) > 30*time.Second {
+		time.Since(started) > 15*time.Second {
 		t.Fatalf("result=%+v", summary(result))
 	}
 	assertNoUnits(t)
@@ -102,6 +110,18 @@ func TestTimeLimitAndSessionEndStopTheUnit(t *testing.T) {
 	cancel()
 	if got := <-answered; got != nil {
 		t.Errorf("a script stopped with its session was answered: %+v", got)
+	}
+	assertNoUnits(t)
+}
+
+// Where systemd silently ignores the local-port block, a script could reach
+// the passwordless Xray API; it must not run at all.
+func TestScriptDoesNotRunWhereLocalPortsAreReachable(t *testing.T) {
+	runner := sandboxRunner(t)
+	runner.localBlock = nil
+	result := answer(t, runner, context.Background(), "echo ran")
+	if result.Code != "sandbox_unavailable" || result.Stdout != "" || result.ExitCode != nil {
+		t.Fatalf("result=%+v", summary(result))
 	}
 	assertNoUnits(t)
 }
@@ -144,7 +164,7 @@ func requireSandbox(t *testing.T) {
 	if strings.TrimSpace(string(comm)) != "systemd" {
 		t.Skip("the sandbox needs systemd")
 	}
-	for _, path := range []string{systemdRun, systemctl, unifiedCgroup} {
+	for _, path := range []string{systemdRun, systemctl, "/sys/fs/cgroup/cgroup.controllers"} {
 		if _, err := os.Stat(path); err != nil {
 			t.Skip(err)
 		}

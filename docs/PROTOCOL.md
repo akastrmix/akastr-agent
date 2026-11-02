@@ -192,14 +192,14 @@ key 是 Cloud 的限速单位（一份订阅在一个策略组下的账号）。
 
 `diagnostics.run`（Cloud → Agent）的 body 必须且只能包含 `request_id`（UUID）与 `script`（非空、最多 65536 字节、不含 NUL 的 bash 脚本，可以多行）。格式错误时 Agent 结束会话，与其他畸形消息相同；未开模块的节点收到它同样结束会话，Cloud 不会这样发送。
 
-Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量交给 `/bin/bash`，不拼进命令行；单元名为 `akastr-diagnostics-<request_id>.service`，`DynamicUser=yes`，只保留 `CAP_DAC_READ_SEARCH`（能读任何文件），`NoNewPrivileges`，`ProtectSystem=strict`、`ProtectHome=read-only`、`PrivateTmp`、`PrivateDevices`，`IPAddressDeny=localhost`（只放行 systemd-resolved 的 `127.0.0.53`），内存 256M、CPU 50%、64 个任务，标准输入为空。脚本最长运行 5 分钟；单元的 `RuntimeMaxSec` 再多 30 秒，Agent 不在时由它结束。会话结束时 Agent 停掉正在运行的单元且不回答；Agent 每次启动时停掉所有 `akastr-diagnostics-*` 单元。同一节点一次只运行一个脚本。
+Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量交给 `/bin/bash`，不拼进命令行；单元名为 `akastr-diagnostics-<request_id>.service`，`DynamicUser=yes`，只保留 `CAP_DAC_READ_SEARCH`（能读任何文件），`NoNewPrivileges`，`ProtectSystem=strict`、`ProtectHome=read-only`，`/tmp` 与 `/var/tmp` 是内存里的临时文件系统（不用落在磁盘上的 `PrivateTmp`），`PrivateDevices`，journal 的写入 socket 不可访问（日志仍可读），`IPAddressDeny=localhost`（只放行 systemd-resolved 的 `127.0.0.53`），内存 256M、CPU 50%、64 个任务，标准输入为空。不支持 cgroup BPF 的环境里 systemd 会静默忽略 `IPAddressDeny`，所以每次运行前，沙盒先用 1 秒去连 Agent 临时监听的一个本机端口：连上了就不运行脚本。脚本最长运行 5 分钟，停止时 5 秒内强制结束；单元的 `RuntimeMaxSec` 再多 30 秒，Agent 不在时由它结束。会话结束时 Agent 停掉正在运行的单元且不回答；Agent 每次启动时停掉所有 `akastr-diagnostics-*` 单元。同一节点一次只运行一个脚本。
 
 `diagnostics.result`（Agent → Cloud）的 body 必须且只能包含：
 
 | 字段 | 含义 |
 |---|---|
 | `request_id` | 与请求相同 |
-| `code` | `completed`（脚本已结束，见 `exit_code`）、`timed_out`（到 5 分钟被停掉）、`busy`（已有脚本在运行）、`sandbox_unavailable`（缺 `systemd-run`/`systemctl`、不是 cgroup v2，或上一进程的单元尚未停掉）、`start_failed`（`systemd-run` 无法启动） |
+| `code` | `completed`（脚本已结束，见 `exit_code`）、`timed_out`（到 5 分钟被停掉）、`busy`（已有脚本在运行）、`sandbox_unavailable`（沙盒连上了本机端口，或上一进程的单元尚未停掉；脚本没有运行）、`start_failed`（`systemd-run` 无法启动或探测端口无法监听） |
 | `exit_code` | `completed` 时为 bash 的退出码（被信号终止为 null），其他为 null |
 | `stdout`、`stderr` | UTF-8 文本，无效字节替换为 U+FFFD；各取前 256 KiB，整条消息超过 1 MiB 时继续截短较长的一个 |
 | `stdout_truncated`、`stderr_truncated` | 对应输出是否被截短 |

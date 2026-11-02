@@ -1,10 +1,11 @@
 // Package diagnostics runs a script that an operator sends through Cloud in a
 // throwaway systemd sandbox that can read the node but change nothing: the
-// file system is read-only apart from a private /tmp, the script runs as a
-// transient user whose only privilege is reading every file, it cannot reach
-// local ports (the 3x-ui Xray API needs no password), and the unit with every
-// process it started is gone when the script ends. The answer is sent once and
-// never stored; logs name the script, never its output (Cloud ADR 0102).
+// file system is read-only apart from /tmp and /var/tmp in memory, the script
+// runs as a transient user whose only privilege is reading every file, it can
+// write neither to the journal nor to local ports (the 3x-ui Xray API needs no
+// password), and the unit with every process it started is gone when the
+// script ends. The answer is sent once and never stored; logs name the
+// script, never its output (Cloud ADR 0102).
 //
 // Units outside this process: one per running script, named unitPrefix plus
 // the request ID. The session ending or the time limit stops it; a process
@@ -17,7 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"os"
+	"net"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -44,10 +45,21 @@ const (
 	systemdRun     = "/usr/bin/systemd-run"
 	systemctl      = "/usr/bin/systemctl"
 	scriptVariable = "AKASTR_DIAGNOSTICS_SCRIPT"
-	// IPAddressDeny needs the unified cgroup hierarchy; elsewhere systemd only
-	// warns and the script could reach the Xray API.
-	unifiedCgroup = "/sys/fs/cgroup/cgroup.controllers"
 )
+
+// localBlock keeps the script off every local port. Where cgroup BPF is not
+// available, as in some containers, systemd ignores it without failing, so
+// each run first proves it holds (see probeAndRun).
+var localBlock = []string{
+	"--property=IPAddressDeny=localhost",
+	// The systemd-resolved stub, where a node resolves names.
+	"--property=IPAddressAllow=127.0.0.53",
+}
+
+// probeAndRun connects to a port the Agent listens on before running the
+// script. A blocked connection is dropped, not refused, so it waits a second;
+// one that succeeds means the block does not hold and the script never runs.
+const probeAndRun = `if timeout 1 bash -c 'exec 3<>/dev/tcp/127.0.0.1/$0' "$1" 2>/dev/null; then exit 125; fi; set --; eval "$` + scriptVariable + `"`
 
 type Config struct{}
 
@@ -85,8 +97,9 @@ type Result struct {
 
 // Runner answers diagnostics.run, one script at a time.
 type Runner struct {
-	swept     <-chan struct{}
-	timeLimit time.Duration
+	swept      <-chan struct{}
+	timeLimit  time.Duration
+	localBlock []string
 
 	mu      sync.Mutex
 	running bool
@@ -97,7 +110,7 @@ var _ module.Queries = (*Runner)(nil)
 // New returns a runner that starts scripts once sweeper has stopped what an
 // earlier process left running.
 func New(sweeper *Sweeper) *Runner {
-	return &Runner{swept: sweeper.done, timeLimit: timeLimit}
+	return &Runner{swept: sweeper.done, timeLimit: timeLimit, localBlock: localBlock}
 }
 
 func (r *Runner) Types() (string, string) { return RequestType, ResultType }
@@ -136,18 +149,30 @@ func (r *Runner) run(ctx context.Context, request Request) (Result, bool) {
 		r.running = false
 		r.mu.Unlock()
 	}()
-	if err := r.ready(); err != nil {
-		slog.Warn("diagnostics sandbox unavailable", "request_id", request.RequestID, "error", err.Error())
+	select {
+	case <-r.swept:
+	default:
+		slog.Warn("diagnostics units of an earlier process are not stopped yet", "request_id", request.RequestID)
 		result.Code = "sandbox_unavailable"
 		return result, true
 	}
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		slog.Warn("diagnostics probe did not listen", "request_id", request.RequestID, "error", err.Error())
+		result.Code = "start_failed"
+		return result, true
+	}
+	defer probe.Close()
+	probePort := probe.Addr().(*net.TCPAddr).Port
 
 	started := time.Now()
 	unit := unitPrefix + request.RequestID + ".service"
 	slog.Info("diagnostics script started", "request_id", request.RequestID, "script", request.Script)
 	stdout, stderr := &capped{limit: maxStream}, &capped{limit: maxStream}
-	command := exec.Command(systemdRun, sandboxArguments(unit, request.Script, r.timeLimit)...)
+	command := exec.Command(systemdRun, sandboxArguments(unit, request.Script, r.timeLimit, r.localBlock, probePort)...)
 	command.Stdout, command.Stderr = stdout, stderr
+	// systemd-run returning ends the wait for output even if the unit is not gone.
+	command.WaitDelay = 10 * time.Second
 	if err := command.Start(); err != nil {
 		slog.Warn("diagnostics script did not start", "request_id", request.RequestID, "error", err.Error())
 		result.Code = "start_failed"
@@ -170,6 +195,10 @@ func (r *Runner) run(ctx context.Context, request Request) (Result, bool) {
 		return Result{}, false
 	}
 
+	if reached(probe) {
+		slog.Warn("diagnostics sandbox reached a local port; script not run", "request_id", request.RequestID)
+		return Result{RequestID: request.RequestID, Code: "sandbox_unavailable"}, true
+	}
 	result.DurationMS = time.Since(started).Milliseconds()
 	result.Stdout, result.StdoutTruncated = stdout.text(), stdout.truncated
 	result.Stderr, result.StderrTruncated = stderr.text(), stderr.truncated
@@ -190,26 +219,24 @@ func (r *Runner) run(ctx context.Context, request Request) (Result, bool) {
 	return result, true
 }
 
-func (r *Runner) ready() error {
-	select {
-	case <-r.swept:
-	default:
-		return errors.New("units of an earlier process are not stopped yet")
+// reached reports whether the sandbox connected to the probe; the connection
+// waits in the backlog, so a short deadline finds it.
+func reached(probe net.Listener) bool {
+	_ = probe.(*net.TCPListener).SetDeadline(time.Now().Add(100 * time.Millisecond))
+	connection, err := probe.Accept()
+	if err != nil {
+		return false
 	}
-	for _, path := range []string{systemdRun, systemctl, unifiedCgroup} {
-		if _, err := os.Stat(path); err != nil {
-			return err
-		}
-	}
-	return nil
+	connection.Close()
+	return true
 }
 
 // sandboxArguments is the whole sandbox. The script reaches bash through the
 // environment: systemd expands variables in command arguments, never in
 // environment values.
-func sandboxArguments(unit, script string, limit time.Duration) []string {
+func sandboxArguments(unit, script string, limit time.Duration, block []string, probePort int) []string {
 	runtimeMax := strconv.Itoa(int((limit + runtimeMargin) / time.Second))
-	return []string{
+	arguments := []string{
 		"--quiet", "--pipe", "--wait", "--collect", "--service-type=exec",
 		"--unit=" + unit, "--description=akastr-diagnostics",
 		"--property=DynamicUser=yes",
@@ -218,18 +245,22 @@ func sandboxArguments(unit, script string, limit time.Duration) []string {
 		"--property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH",
 		"--property=ProtectSystem=strict",
 		"--property=ProtectHome=read-only",
-		"--property=PrivateTmp=yes",
+		// In memory, not the private directories on disk that PrivateTmp gives.
+		"--property=PrivateTmp=no",
+		"--property=TemporaryFileSystem=/tmp /var/tmp",
 		"--property=PrivateDevices=yes",
-		"--property=IPAddressDeny=localhost",
-		// The systemd-resolved stub, where a node resolves names.
-		"--property=IPAddressAllow=127.0.0.53",
+		// Reading the journal stays possible; writing to it would outlive the unit.
+		"--property=InaccessiblePaths=-/run/systemd/journal",
 		"--property=RuntimeMaxSec=" + runtimeMax,
+		// Nothing a read-only script does needs a graceful stop.
+		"--property=TimeoutStopSec=5s",
 		"--property=MemoryMax=256M",
 		"--property=CPUQuota=50%",
 		"--property=TasksMax=64",
 		"--setenv=" + scriptVariable + "=" + script,
-		"/bin/bash", "-c", `eval "$` + scriptVariable + `"`,
 	}
+	arguments = append(arguments, block...)
+	return append(arguments, "/bin/bash", "-c", probeAndRun, "akastr-diagnostics", strconv.Itoa(probePort))
 }
 
 // stop ends the unit and every process in it; systemd-run then returns.
