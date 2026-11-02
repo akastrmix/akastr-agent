@@ -1,6 +1,6 @@
 // Package diagnostics runs a script that an operator sends through Cloud in a
 // throwaway systemd sandbox that can read the node but change nothing: the
-// file system is read-only apart from /tmp and /var/tmp in memory, the script
+// file system is read-only and temporary files go to memory, the script
 // runs as a transient user whose only privilege is reading every file, it can
 // write neither to the journal nor to local ports (the 3x-ui Xray API needs no
 // password), and the unit with every process it started is gone when the
@@ -245,9 +245,12 @@ func sandboxArguments(unit, script string, limit time.Duration, block []string, 
 		"--property=CapabilityBoundingSet=CAP_DAC_READ_SEARCH",
 		"--property=ProtectSystem=strict",
 		"--property=ProtectHome=read-only",
-		// In memory, not the private directories on disk that PrivateTmp gives.
-		"--property=PrivateTmp=no",
-		"--property=TemporaryFileSystem=/tmp /var/tmp",
+		// DynamicUser brings private /tmp and /var/tmp, and before systemd 257
+		// they are directories on disk that win over a tmpfs at the same path.
+		// Closing them wins on every version; temporary files go to /dev/shm,
+		// in memory and removed with the user's other IPC (RemoveIPC).
+		"--property=InaccessiblePaths=/tmp /var/tmp",
+		"--setenv=TMPDIR=/dev/shm",
 		"--property=PrivateDevices=yes",
 		// Reading the journal stays possible; writing to it would outlive the unit.
 		"--property=InaccessiblePaths=-/run/systemd/journal",
