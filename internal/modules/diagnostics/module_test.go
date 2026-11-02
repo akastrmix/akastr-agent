@@ -52,6 +52,7 @@ timeout 3 bash -c "echo > /dev/tcp/127.0.0.1/` + strconv.Itoa(port) + `" 2>/dev/
 touch /tmp/` + marker + ` /var/tmp/` + marker + ` 2>/dev/null || echo tmp-closed
 scratch=$(mktemp) && [ "$(stat -f -c %T "$scratch")" = tmpfs ] && echo temp-in-memory
 touch /dev/shm/` + marker + ` && echo shm-writable
+echo x > "$TMPDIR/` + marker + `-2" && [ "$(stat -c %a "$TMPDIR/` + marker + `-2")" = 600 ] && echo temp-private
 logger -t ` + marker + ` leaked 2>/dev/null || echo journal-write-denied
 journalctl -n1 -q --no-pager >/dev/null && echo journal-read-ok
 (exec -a ` + marker + ` sleep 300) &
@@ -63,7 +64,7 @@ exit 3`
 		t.Fatalf("result=%+v", summary(result))
 	}
 	for _, want := range []string{"read-ok", "write-denied", "state-denied", "signal-denied", "local-port-denied",
-		"tmp-closed", "temp-in-memory", "shm-writable", "journal-write-denied", "journal-read-ok"} {
+		"tmp-closed", "temp-in-memory", "shm-writable", "temp-private", "journal-write-denied", "journal-read-ok"} {
 		if !strings.Contains(result.Stdout, want) {
 			t.Errorf("stdout lacks %q", want)
 		}
@@ -71,7 +72,8 @@ exit 3`
 	if !result.StdoutTruncated || len(result.Stdout) != maxStream || result.Stderr != "to-stderr\n" {
 		t.Errorf("output limits not applied: %+v", summary(result))
 	}
-	for _, path := range []string{"/etc/" + marker, "/var/lib/" + marker, "/tmp/" + marker, "/dev/shm/" + marker} {
+	for _, path := range []string{"/etc/" + marker, "/var/lib/" + marker, "/tmp/" + marker, "/dev/shm/" + marker,
+		"/dev/shm/" + marker + "-2"} {
 		if _, err := os.Stat(path); err == nil {
 			os.Remove(path)
 			t.Errorf("%s was left behind", path)

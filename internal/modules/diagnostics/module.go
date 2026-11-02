@@ -251,6 +251,8 @@ func sandboxArguments(unit, script string, limit time.Duration, block []string, 
 		// in memory and removed with the user's other IPC (RemoveIPC).
 		"--property=InaccessiblePaths=/tmp /var/tmp",
 		"--setenv=TMPDIR=/dev/shm",
+		// /dev/shm is the host's: what the script writes there is its own alone.
+		"--property=UMask=0077",
 		"--property=PrivateDevices=yes",
 		// Reading the journal stays possible; writing to it would outlive the unit.
 		"--property=InaccessiblePaths=-/run/systemd/journal",
