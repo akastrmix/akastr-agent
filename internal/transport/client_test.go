@@ -37,6 +37,7 @@ func (baseRuntime) PutState(protocol.StatePut) error      { return nil }
 func (baseRuntime) SetStateKeys(protocol.StateKeys) error { return nil }
 func (baseRuntime) ControlReady()                         {}
 func (baseRuntime) Acknowledge(string) error              { return nil }
+func (baseRuntime) Query(string) (module.Queries, bool)   { return nil, false }
 
 type recordingExecutor struct {
 	baseRuntime

@@ -17,6 +17,7 @@ import (
 	changecommand "github.com/akastrmix/akastr-agent/internal/modules/changeip/command"
 	changehttp "github.com/akastrmix/akastr-agent/internal/modules/changeip/httpcurl"
 	"github.com/akastrmix/akastr-agent/internal/modules/connectionrecords"
+	"github.com/akastrmix/akastr-agent/internal/modules/diagnostics"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
 	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
@@ -42,14 +43,15 @@ const (
 // Adding a capability means one package under internal/modules plus one
 // field and its cases in this file.
 type modules struct {
-	ipWatch   *ipwatch.Config
-	changeIP  *changefeature.Config
-	socks5    *socks5.Config
-	runner    *ipqualityrunner.Config
-	xui       *xui.Config
-	rateLimit *ratelimit.Config
-	records   *connectionrecords.Config
-	routing   *routing.Config
+	ipWatch     *ipwatch.Config
+	changeIP    *changefeature.Config
+	socks5      *socks5.Config
+	runner      *ipqualityrunner.Config
+	xui         *xui.Config
+	rateLimit   *ratelimit.Config
+	records     *connectionrecords.Config
+	routing     *routing.Config
+	diagnostics *diagnostics.Config
 }
 
 func parseModules(sections map[string]json.RawMessage) (modules, error) {
@@ -73,6 +75,8 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 			m.records, err = parseSection(connectionrecords.ParseConfig, raw)
 		case routing.Name:
 			m.routing, err = parseSection(routing.ParseConfig, raw)
+		case diagnostics.Name:
+			m.diagnostics, err = parseSection(diagnostics.ParseConfig, raw)
 		default:
 			return modules{}, fmt.Errorf("configuration module %q is unknown to this Agent", name)
 		}
@@ -178,6 +182,11 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	}
 	if m.rateLimit == nil {
 		runtime.workers = append(runtime.workers, ratelimit.Leftovers{})
+	}
+	sweeper := diagnostics.NewSweeper()
+	runtime.workers = append(runtime.workers, sweeper)
+	if m.diagnostics != nil {
+		runtime.addQueries(diagnostics.New(sweeper))
 	}
 	if m.ipWatch != nil {
 		observer, err := ipwatch.New(observationTimeout, "Akastr-Agent")

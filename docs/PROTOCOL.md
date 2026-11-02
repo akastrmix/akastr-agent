@@ -24,10 +24,11 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | `rate_limit` | 无字段（`{}`） | 按目标状态限制受管用户的下载；需要 `xui` |
 | `connection_records` | 无字段（`{}`） | 上报 `connection_records.batch`；需要 `xui` |
 | `routing` | 无字段（`{}`） | 按目标状态写入本机 Xray 的路由规则与出站；需要 `xui` |
+| `diagnostics` | 无字段（`{}`） | 回答 `diagnostics.run`：在只读沙盒里运行诊断脚本（见[诊断](#诊断)） |
 
 `xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
 
-Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`，`rate_limit`、`connection_records` 与 `routing` 需要 `xui`）；除此之外模块可任意组合；Runner 可以有多台，由 Cloud 分配检测，每台同时只派一条。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态或上报 kind；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
+Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`，`rate_limit`、`connection_records` 与 `routing` 需要 `xui`）；除此之外模块可任意组合；Runner 可以有多台，由 Cloud 分配检测，每台同时只派一条。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态、上报 kind 或查询消息；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
 
 enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
 
@@ -185,6 +186,27 @@ key 是 Cloud 的限速单位（一份订阅在一个策略组下的账号）。
 - **关闭与卸载**：保留最后一次写入的模板和运行配置，交还面板手动管理，不恢复接管前的样子（Cloud ADR 0099）。
 - **错误码**：`routing_inbound_missing`（规则引用的面板入站不存在）、`routing_config_invalid`（`run -test` 不通过）、`routing_panel_failed`（读或存模板失败）、`routing_xray_unavailable`（找不到 3x-ui 运行的唯一 Xray、它的程序或回环上的 api 入站）、`routing_apply_failed`（热更新没完成）、`routing_restart_failed`（经面板重启失败，或重启后没有恢复）。命令输出可能含出站密码，只在本机解析，不上报、不写日志。
 
+## 诊断
+
+开了 `diagnostics` 模块的节点回答 Cloud 转来的诊断脚本。这是协议里唯一由 Cloud 提供脚本内容的能力，模块默认关闭，只在该节点的配置开启它时才存在（Cloud ADR 0102）。它不走 Operation：不握手、不写 journal、不重放；回答随会话丢失时由操作者重新请求，脚本只读，重跑没有副作用。
+
+`diagnostics.run`（Cloud → Agent）的 body 必须且只能包含 `request_id`（UUID）与 `script`（非空、最多 65536 字节、不含 NUL 的 bash 脚本，可以多行）。格式错误时 Agent 结束会话，与其他畸形消息相同；未开模块的节点收到它同样结束会话，Cloud 不会这样发送。
+
+Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量交给 `/bin/bash`，不拼进命令行；单元名为 `akastr-diagnostics-<request_id>.service`，`DynamicUser=yes`，只保留 `CAP_DAC_READ_SEARCH`（能读任何文件），`NoNewPrivileges`，`ProtectSystem=strict`、`ProtectHome=read-only`、`PrivateTmp`、`PrivateDevices`，`IPAddressDeny=localhost`（只放行 systemd-resolved 的 `127.0.0.53`），内存 256M、CPU 50%、64 个任务，标准输入为空。脚本最长运行 5 分钟；单元的 `RuntimeMaxSec` 再多 30 秒，Agent 不在时由它结束。会话结束时 Agent 停掉正在运行的单元且不回答；Agent 每次启动时停掉所有 `akastr-diagnostics-*` 单元。同一节点一次只运行一个脚本。
+
+`diagnostics.result`（Agent → Cloud）的 body 必须且只能包含：
+
+| 字段 | 含义 |
+|---|---|
+| `request_id` | 与请求相同 |
+| `code` | `completed`（脚本已结束，见 `exit_code`）、`timed_out`（到 5 分钟被停掉）、`busy`（已有脚本在运行）、`sandbox_unavailable`（缺 `systemd-run`/`systemctl`、不是 cgroup v2，或上一进程的单元尚未停掉）、`start_failed`（`systemd-run` 无法启动） |
+| `exit_code` | `completed` 时为 bash 的退出码（被信号终止为 null），其他为 null |
+| `stdout`、`stderr` | UTF-8 文本，无效字节替换为 U+FFFD；各取前 256 KiB，整条消息超过 1 MiB 时继续截短较长的一个 |
+| `stdout_truncated`、`stderr_truncated` | 对应输出是否被截短 |
+| `duration_ms` | 脚本运行时长，未运行为 0 |
+
+输出可能包含脚本读到的任何内容：Agent 只在内存中回答一次，不写盘、不写日志；Agent 日志只记请求编号、脚本原文、`code`、退出码、时长与输出字节数。
+
 ## 上报与回执
 
 节点主动告知的事实统一用 `report` 消息，body 必须且只能包含 `report_id`（UUID）、`kind` 与 `data`；Cloud 持久接纳后回 `report.ack`，body 只包含相同 `report_id`。Agent 在收到回执前重发同一上报；重复或过期回执是无副作用的确认。Cloud 对格式正确但无法使用的上报（节点已停用、IPv6 未开启、`changeip.unchanged` 指向主控没有的 command 等）记录日志并照常回执，不断开连接；只有数据库故障等暂时性失败才结束连接，由 Agent 重连重试。新增的上报能力只增加一种 `kind`。当前 kind：
@@ -234,5 +256,5 @@ key 是 Cloud 的限速单位（一份订阅在一个策略组下的账号）。
 - 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
 - 上报和普通日志不得含密码、原始链接或脚本输出。受管客户端凭据只出现在 Cloud 下发的 `state.put` 中，Agent 不写入磁盘或日志。
 - 公网 IPv4 字段拒绝 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
-- Agent 不实现任意命令、远程 shell 或 HTTP 控制端点。
+- Agent 不实现任意命令、远程 shell 或 HTTP 控制端点；唯一例外是默认关闭的 `diagnostics` 模块，它只在[诊断](#诊断)所述的只读沙盒里运行脚本。
 - 修改认证、消息字段、持久 payload 或发布边界时，仍须按 Cloud ADR 0024 在实施前批准；共享契约变化核对双方实现，仅修改实际受影响的一侧或双方。跨仓库验证范围见 Cloud `docs/AGENT_INTEGRATION.md`。

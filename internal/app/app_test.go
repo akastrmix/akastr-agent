@@ -10,6 +10,7 @@ import (
 
 	"github.com/akastrmix/akastr-agent/internal/config"
 	changefeature "github.com/akastrmix/akastr-agent/internal/modules/changeip"
+	"github.com/akastrmix/akastr-agent/internal/modules/diagnostics"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
@@ -153,6 +154,9 @@ func decodeCloudMessage(data []byte) error {
 			return errors.New("invalid accepted acknowledgement")
 		}
 		return nil
+	case diagnostics.RequestType:
+		_, err := diagnostics.DecodeRequest(envelope.Body)
+		return err
 	case "report.ack":
 		body, err := protocol.DecodeBody[protocol.ReportAckBody](envelope, "report_id")
 		if err != nil || !protocol.ValidUUID(body.ReportID) {

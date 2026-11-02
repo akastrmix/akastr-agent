@@ -250,7 +250,7 @@
                 "enable": true,
                 "total_bytes": 214748364800,
                 "reset_seq": 3,
-                "comment": "alice · 标准月付 #12"
+                "comment": "alice \u00b7 \u6807\u51c6\u6708\u4ed8 #12"
               }
             ]
           }
@@ -380,6 +380,60 @@
               ]
             }
           }
+        }
+      }
+    },
+    {
+      "name": "cloud-diagnostics-run",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-11-01.v12",
+        "message_id": "123e4567-e89b-42d3-a456-426614174213",
+        "type": "diagnostics.run",
+        "sent_at": "2026-08-18T00:00:20.000Z",
+        "body": {
+          "request_id": "123e4567-e89b-42d3-a456-426614174214",
+          "script": "ss -tn state established | wc -l\njournalctl -u x-ui.service -n 20 --no-pager"
+        }
+      }
+    },
+    {
+      "name": "agent-diagnostics-result",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-11-01.v12",
+        "message_id": "123e4567-e89b-42d3-a456-426614174215",
+        "type": "diagnostics.result",
+        "sent_at": "2026-08-18T00:00:21.000Z",
+        "body": {
+          "request_id": "123e4567-e89b-42d3-a456-426614174214",
+          "code": "completed",
+          "exit_code": 0,
+          "stdout": "42\n",
+          "stderr": "",
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "duration_ms": 180
+        }
+      }
+    },
+    {
+      "name": "agent-diagnostics-result-not-run",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-11-01.v12",
+        "message_id": "123e4567-e89b-42d3-a456-426614174216",
+        "type": "diagnostics.result",
+        "sent_at": "2026-08-18T00:00:22.000Z",
+        "body": {
+          "request_id": "123e4567-e89b-42d3-a456-426614174214",
+          "code": "busy",
+          "exit_code": null,
+          "stdout": "",
+          "stderr": "",
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "duration_ms": 0
         }
       }
     }
@@ -605,7 +659,7 @@
                 "enable": true,
                 "total_bytes": 214748364800,
                 "reset_seq": 3,
-                "comment": "alice · 标准月付 #12"
+                "comment": "alice \u00b7 \u6807\u51c6\u6708\u4ed8 #12"
               }
             ]
           }
@@ -649,7 +703,7 @@
                 "enable": true,
                 "total_bytes": 214748364800,
                 "reset_seq": 3,
-                "comment": "alice · 标准月付 #12"
+                "comment": "alice \u00b7 \u6807\u51c6\u6708\u4ed8 #12"
               }
             ]
           }
@@ -694,7 +748,7 @@
                 "enable": true,
                 "total_bytes": 214748364800,
                 "reset_seq": 3,
-                "comment": "alice · 标准月付 #12"
+                "comment": "alice \u00b7 \u6807\u51c6\u6708\u4ed8 #12"
               }
             ]
           }
@@ -715,6 +769,74 @@
           "version": 7,
           "error_code": "",
           "detail": "x"
+        }
+      }
+    },
+    {
+      "name": "cloud-diagnostics-run-empty-script",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-11-01.v12",
+        "message_id": "123e4567-e89b-42d3-a456-426614174217",
+        "type": "diagnostics.run",
+        "sent_at": "2026-08-18T00:00:23.000Z",
+        "body": {
+          "request_id": "123e4567-e89b-42d3-a456-426614174218",
+          "script": ""
+        }
+      }
+    },
+    {
+      "name": "cloud-diagnostics-run-extra-field",
+      "direction": "cloud_to_agent",
+      "message": {
+        "protocol": "2026-11-01.v12",
+        "message_id": "123e4567-e89b-42d3-a456-426614174219",
+        "type": "diagnostics.run",
+        "sent_at": "2026-08-18T00:00:24.000Z",
+        "body": {
+          "request_id": "123e4567-e89b-42d3-a456-426614174220",
+          "script": "uptime",
+          "timeout_seconds": 60
+        }
+      }
+    },
+    {
+      "name": "agent-diagnostics-result-unknown-code",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-11-01.v12",
+        "message_id": "123e4567-e89b-42d3-a456-426614174221",
+        "type": "diagnostics.result",
+        "sent_at": "2026-08-18T00:00:25.000Z",
+        "body": {
+          "request_id": "123e4567-e89b-42d3-a456-426614174214",
+          "code": "cancelled",
+          "exit_code": null,
+          "stdout": "",
+          "stderr": "",
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "duration_ms": 0
+        }
+      }
+    },
+    {
+      "name": "agent-diagnostics-result-missing-stderr",
+      "direction": "agent_to_cloud",
+      "message": {
+        "protocol": "2026-11-01.v12",
+        "message_id": "123e4567-e89b-42d3-a456-426614174222",
+        "type": "diagnostics.result",
+        "sent_at": "2026-08-18T00:00:26.000Z",
+        "body": {
+          "request_id": "123e4567-e89b-42d3-a456-426614174214",
+          "code": "completed",
+          "exit_code": 0,
+          "stdout": "",
+          "stdout_truncated": false,
+          "stderr_truncated": false,
+          "duration_ms": 5
         }
       }
     }

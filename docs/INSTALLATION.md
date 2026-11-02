@@ -144,6 +144,8 @@ journalctl -u akastr-agent.service -f
 systemctl restart akastr-agent.service
 ```
 
+开了诊断模块时，经 Cloud 运行过的诊断脚本（原文、结果和时长，不含输出）记在 Agent 日志里：`journalctl -u akastr-agent.service --since today | grep diagnostics`。
+
 不要启动第二个 `akastr-agent run`，不要手工重复注册，也不要修改 `identity.json`、operation state 或 IP observation state。
 
 ## 7. 更新、状态与卸载

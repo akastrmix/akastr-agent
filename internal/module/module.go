@@ -6,7 +6,9 @@
 //   - Commands: one-off work that must not run twice, such as ChangeIP;
 //   - Desired: Cloud-owned targets the module converges to and may reapply;
 //   - Reporter: facts the node observes and reports on its own;
-//   - Worker: local work that follows the node itself, such as its traffic.
+//   - Worker: local work that follows the node itself, such as its traffic;
+//   - Queries: a question Cloud asks and the module answers at once, keeping
+//     nothing, such as a diagnostics script.
 package module
 
 import (
@@ -67,4 +69,17 @@ type Reporter interface {
 // earlier stops the process, like a reporter.
 type Worker interface {
 	Run(ctx context.Context) error
+}
+
+// Queries answers one request message type on the session it arrived on.
+// Nothing is kept: an answer lost with the session is simply asked again, so
+// only work that is safe to repeat may be a query.
+type Queries interface {
+	// Types names the request message and the message that answers it.
+	Types() (request, answer string)
+	// Validate rejects a malformed request; the session then ends, as for any
+	// malformed message.
+	Validate(body json.RawMessage) error
+	// Answer runs a validated request. ctx ends with the session.
+	Answer(ctx context.Context, body json.RawMessage) any
 }

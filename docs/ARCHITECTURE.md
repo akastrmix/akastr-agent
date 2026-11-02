@@ -39,7 +39,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 ## 4. 包职责
 
 - `internal/config`：严格读取节点配置的外层；各模块的配置段由模块自己校验。
-- `internal/module`：模块接入的四种形态——不可重复的一次性任务（`Commands`）、Cloud 下发并可反复应用的目标状态（`Desired`）、节点主动上报的事实（`Reporter`）、跟随本机变化的常驻工作（`Worker`）。
+- `internal/module`：模块接入的五种形态——不可重复的一次性任务（`Commands`）、Cloud 下发并可反复应用的目标状态（`Desired`）、节点主动上报的事实（`Reporter`）、跟随本机变化的常驻工作（`Worker`）、一问一答且不保存任何东西的查询（`Queries`，只用于重做无副作用的工作；回答随会话丢失就重新问）。
 - `internal/modules/*`：每个模块一个目录，放齐它的全部代码：配置段、命令、目标、上报与回执、它在 Root/StateDir 下的文件，以及只供它使用的执行方式（子包）；`internal/app/modules.go` 是唯一列出全部模块并连接依赖的地方。
 - `internal/layout`：固定的磁盘布局——A/B 两个 slot、`current` 原子切换、安装/更新共用的锁，以及交给模块的 Root 与 StateDir；不认识任何模块的文件。
 - `internal/state`：带 schema 标记的原子 JSON 状态持久化。
@@ -52,6 +52,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/xray`：本机 Xray 的共用读取，不认识任何模块，同一份日志只读一次，由 `internal/app` 分给账本和连接记录。`process` 找到 3x-ui 所运行的唯一 Xray 进程，读出它的程序、配置文件路径、geo 文件位置和是否直传（环境变量只读这两项）；`accesslog` 跟读 3x-ui 所运行 Xray 的访问日志（截断时从 3x-ui 的副本补读），逐行交出“入站端口 + 来源地址:端口 → 用户”以及原始时间、目标、出站和是否进了 `blackhole` 出站（读 Xray 正在运行的配置得知），不保存连接；`ledger` 是唯一的连接账本：把这些行绑定到内核的 TCP 连接上，数出每个用户当前的连接，把每个用户的连接与 UDP 流交给限速，并在绑定的连接确认关闭后告诉连接记录它的那一行、按内核计数的流量和承载的请求数。它不汇总用户流量。
 - `internal/panel`：本机 3x-ui 面板的客户端，`xui` 与 `routing` 模块共用一个登录：列入站、增删改客户端、重置流量、读写 Xray 模板、经面板重启 Xray。路径和请求体都固定在这里，Cloud 不能指定。
 - `internal/modules/routing`：把 Cloud 算好的整台节点路由（默认出站、`ak-o-` 受管出站和规则表）先写进 3x-ui 的 Xray 模板，再用运行中那个 Xray 程序的 `api` 子命令热更新；什么时候经面板重启 Xray 见 [PROTOCOL.md](PROTOCOL.md#routing)。配置经标准输入交给 Xray，不落盘。它在进程外留下的状态是模板和运行配置，关闭或卸载时保留（Cloud ADR 0099）。
+- `internal/modules/diagnostics`：在一次性 systemd 沙盒里运行 Cloud 转来的诊断脚本（Cloud ADR 0102）：临时用户、只多给读取任何文件的权限、整个文件系统只读、连不上本机端口、有时间与资源上限，脚本结束时单元连同它启动的进程一起消失。一次只跑一个；输出只回答一次，不落盘、不进日志。进程外留下的是运行中的单元：会话结束或到时限时停掉，更新换进程或崩溃后由下一个进程启动时停掉（模块关闭时也停），没有 Agent 时由单元自己的时限结束；卸载先停服务，同样停掉。
 - `internal/modules/connectionrecords`：把受管客户端的日志行和连接结束事件变成记录，在内存里有界排队、分批上报；不写盘。
 - `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
 - `internal/modules/ratelimit`：按目标把指定用户的下载限速。按连接账本中的连接与 UDP 流，在默认路由网卡的 clsact egress 上加 flower 过滤，同一组共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
@@ -62,7 +63,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/app`：解析启用的模块并组成运行时；连接层只收发消息，命令、上报与确认都交给对应模块。
 - `internal/daemon`：组织 WSS、更新循环、候选版本激活与退出；CLI 只负责参数和进程信号。
 
-新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands`、`module.Desired`、`module.Reporter` 或 `module.Worker` 中合适的形态，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型、[目标格式](PROTOCOL.md#目标状态)或[上报 kind](PROTOCOL.md#上报与回执)。连接层、更新与安装都不需要改。模块若在进程之外留下状态（例如限速的 tc 规则、防火墙规则），设计时就要说清这些状态在正常停止、更新换进程（不经停止）、崩溃、模块关闭和卸载时怎样处理：清理，或在 Cloud ADR 写明接受的残留；清理只动自己做了标记的部分。
+新增能力：在 `internal/modules` 下新建模块目录，实现 `module.Commands`、`module.Desired`、`module.Reporter`、`module.Worker` 或 `module.Queries` 中合适的形态，在 `internal/app/modules.go` 加一个字段和它的解析、构建分支，并在 [PROTOCOL.md](PROTOCOL.md#节点配置与模块) 登记配置段以及它的命令类型、[目标格式](PROTOCOL.md#目标状态)、[上报 kind](PROTOCOL.md#上报与回执)或[查询消息](PROTOCOL.md#诊断)。连接层、更新与安装都不需要改。模块若在进程之外留下状态（例如限速的 tc 规则、防火墙规则），设计时就要说清这些状态在正常停止、更新换进程（不经停止）、崩溃、模块关闭和卸载时怎样处理：清理，或在 Cloud ADR 写明接受的残留；清理只动自己做了标记的部分。
 
 节点配置只放模块开关和很少变化的设置：配置一变，整个进程就经第 8 节的更新路径重启，新配置先校验，失败回到旧 slot。经常变化的业务数据（例如防火墙规则、xray 用户）不进节点配置，否则每次修改都会重启节点；Cloud 通过 WSS 以[目标状态](PROTOCOL.md#目标状态)下发，`Desired` 模块对比本机现状，只改有差别的部分。同一目标重复应用结果不变，所以断线后全量重发、定期纠正手工改动都是安全的；只有不可重复的动作才用 operation。
 

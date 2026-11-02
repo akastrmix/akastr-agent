@@ -20,6 +20,7 @@ const recentOperationLimit = 64
 type Runtime struct {
 	operations *operation.Executor
 	commands   map[string]module.Commands
+	queries    map[string]module.Queries
 	desired    *desired.Engine
 	reporters  []module.Reporter
 	workers    []module.Worker
@@ -34,7 +35,8 @@ func BuildRuntime(model *Model, paths layout.Layout) (*Runtime, error) {
 	}
 	runtime := &Runtime{
 		operations: operation.NewExecutor(journal),
-		commands:   map[string]module.Commands{}, desired: desired.New(),
+		commands:   map[string]module.Commands{}, queries: map[string]module.Queries{},
+		desired: desired.New(),
 	}
 	if err := model.modules.build(paths, runtime); err != nil {
 		return nil, err
@@ -44,6 +46,17 @@ func BuildRuntime(model *Model, paths layout.Layout) (*Runtime, error) {
 
 func (r *Runtime) addCommands(commands module.Commands) {
 	r.commands[commands.CommandType()] = commands
+}
+
+func (r *Runtime) addQueries(queries module.Queries) {
+	request, _ := queries.Types()
+	r.queries[request] = queries
+}
+
+// Query returns the enabled module that answers a request message type.
+func (r *Runtime) Query(messageType string) (module.Queries, bool) {
+	queries, found := r.queries[messageType]
+	return queries, found
 }
 
 // Accepting validates an offer and reports whether its module takes new work now.

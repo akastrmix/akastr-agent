@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,6 +37,8 @@ type Runtime interface {
 	ControlReady()
 	// Acknowledge settles the module report Cloud has stored.
 	Acknowledge(reportID string) error
+	// Query returns the enabled module answering a request message type.
+	Query(messageType string) (module.Queries, bool)
 }
 
 type Client struct {
@@ -215,7 +218,10 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 	c.setActive(session)
 	c.readyAt = time.Now()
 	c.runtime.ControlReady()
+	// Queries run no longer than the session that asked them.
+	sessionContext, endSession := context.WithCancel(ctx)
 	defer func() {
+		endSession()
 		c.clearActive(session)
 		c.releasePending()
 	}()
@@ -289,7 +295,14 @@ func (c *Client) runSessionWithTimeout(ctx context.Context, setupTimeout time.Du
 				return err
 			}
 		default:
-			return fmt.Errorf("unexpected control message %q", envelope.Type)
+			queries, found := c.runtime.Query(envelope.Type)
+			if !found {
+				return fmt.Errorf("unexpected control message %q", envelope.Type)
+			}
+			if err := queries.Validate(envelope.Body); err != nil {
+				return err
+			}
+			go c.answer(sessionContext, session, queries, envelope.Body)
 		}
 	}
 }
@@ -443,6 +456,19 @@ func (c *Client) execute(ctx context.Context, offer protocol.OperationOffer) {
 			c.logger.Warn("operation result awaits reconnect", "command_id", offer.CommandID, "code", result.Code)
 			active.connection.CloseNow()
 		}
+	}
+}
+
+func (c *Client) answer(ctx context.Context, session *session, queries module.Queries, body json.RawMessage) {
+	answer := queries.Answer(ctx, body)
+	if answer == nil {
+		return
+	}
+	_, answerType := queries.Types()
+	writeContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := session.write(writeContext, answerType, answer); err != nil {
+		c.logger.Warn("query answer was not sent", "type", answerType)
 	}
 }
 
