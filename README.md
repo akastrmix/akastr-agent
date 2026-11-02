@@ -17,7 +17,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 每台节点按需组合下列模块；ChangeIP 需要同时开启 IP 观察。Runner 可以有多台，由 Cloud 分配检测：
 
 - 公网 IPv4 与可选 IPv6 定时观察；
-- HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序与参数；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
+- HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序（不带参数运行）；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
 - 已有 SOCKS5 代理的端口与登录（只供主控派发 IPQuality，Agent 不运行代理）；代理地址始终使用 Agent 观测到的公网 IPv4；
 - 3x-ui：按 Cloud 下发的目标管理本机面板中的受管客户端，并每分钟上报入站、流量和 Xray 是否走内核直传；开了 Xray 访问日志时，还报每个受管客户端的 TCP 连接数；
 - 限速：按 Cloud 下发的目标限制指定用户的下载，靠 3x-ui 的 Xray 访问日志认出连接属于谁；

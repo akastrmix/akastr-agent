@@ -36,15 +36,16 @@ func TestModuleConfigurationFailsClosed(t *testing.T) {
 	for name, modules := range map[string]string{
 		"no module":                 `{}`,
 		"unknown module":            `{` + watch + `,"firewall":{}}`,
-		"changeip without ip_watch": `{"changeip":{"provider":"command","program":"/usr/local/bin/changeip","args":[]}}`,
-		"shell entry point":         `{` + watch + `,"changeip":{"provider":"command","program":"/bin/sh","args":[]}}`,
-		"hidden program":            `{` + watch + `,"changeip":{"provider":"command","program":"/root/changeip","args":[]}}`,
-		"unknown module field":      `{"ip_watch":{"interval_seconds":60,"ipv6":false,"extra":1}}`,
-		"missing module field":      `{"ip_watch":{"interval_seconds":60}}`,
-		"plain HTTP ChangeIP":       `{` + watch + `,"changeip":{"provider":"http_bearer","url":"http://x.test/","bearer_token":"t"}}`,
-		"SOCKS5 without login":      `{` + watch + `,"socks5":{"port":1080}}`,
-		"runner with profiles":      `{"ipquality_runner":{"profiles":[]}}`,
-		"records without xui":       `{` + watch + `,"connection_records":{}}`,
+		"changeip without ip_watch": `{"changeip":{"provider":"command","program":"/usr/local/bin/changeip"}}`,
+		// Arguments would let a configuration hand an interpreter code to run as root.
+		"program arguments":    `{` + watch + `,"changeip":{"provider":"command","program":"/usr/bin/python3","args":["-c","print()"]}}`,
+		"hidden program":       `{` + watch + `,"changeip":{"provider":"command","program":"/root/changeip"}}`,
+		"unknown module field": `{"ip_watch":{"interval_seconds":60,"ipv6":false,"extra":1}}`,
+		"missing module field": `{"ip_watch":{"interval_seconds":60}}`,
+		"plain HTTP ChangeIP":  `{` + watch + `,"changeip":{"provider":"http_bearer","url":"http://x.test/","bearer_token":"t"}}`,
+		"SOCKS5 without login": `{` + watch + `,"socks5":{"port":1080}}`,
+		"runner with profiles": `{"ipquality_runner":{"profiles":[]}}`,
+		"records without xui":  `{` + watch + `,"connection_records":{}}`,
 	} {
 		if _, err := model(t, modules); err == nil {
 			t.Errorf("%s accepted", name)

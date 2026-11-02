@@ -10,6 +10,16 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
 
+// The provider runs its program without arguments, so the test binary itself
+// is the program: started with the helper variable set, it acts out a mode
+// instead of running the tests.
+func TestMain(m *testing.M) {
+	if os.Getenv("AKASTR_AGENT_HELPER_PROCESS") == "1" {
+		helperProcess(os.Getenv("AKASTR_AGENT_HELPER_MODE"))
+	}
+	os.Exit(m.Run())
+}
+
 func TestProviderCompletesWithoutShell(t *testing.T) {
 	provider := newHelperProvider(t, "success", time.Second)
 	result := provider.Run(context.Background())
@@ -70,11 +80,8 @@ func TestProviderRejectsProgramSymlink(t *testing.T) {
 	}
 }
 
-func TestCommandHelperProcess(t *testing.T) {
-	if os.Getenv("AKASTR_AGENT_HELPER_PROCESS") != "1" {
-		return
-	}
-	switch os.Getenv("AKASTR_AGENT_HELPER_MODE") {
+func helperProcess(mode string) {
+	switch mode {
 	case "success":
 		os.Exit(0)
 	case "failure":
@@ -99,11 +106,7 @@ func newHelperProvider(t *testing.T, mode string, timeout time.Duration) *Provid
 	}
 	t.Setenv("AKASTR_AGENT_HELPER_PROCESS", "1")
 	t.Setenv("AKASTR_AGENT_HELPER_MODE", mode)
-	provider, err := New(Config{
-		Program: executable,
-		Args:    []string{"-test.run=TestCommandHelperProcess"},
-		Timeout: timeout,
-	})
+	provider, err := New(Config{Program: executable, Timeout: timeout})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}

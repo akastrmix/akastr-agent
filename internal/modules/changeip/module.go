@@ -20,8 +20,6 @@ const (
 
 var bearerToken = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
 
-var shellEntryPoints = map[string]struct{}{"bash": {}, "busybox": {}, "dash": {}, "env": {}, "sh": {}}
-
 // Directories hidden from the service by its systemd sandbox.
 var sandboxHiddenRoots = []string{"/home", "/root", "/run/user", "/tmp", "/var/tmp"}
 
@@ -29,11 +27,12 @@ type Config struct {
 	Provider string `json:"provider"`
 	// SourceCommand is the administrator's edit text, kept by Cloud for
 	// round-trips only. The Agent never executes it.
-	SourceCommand string   `json:"source_command,omitempty"`
-	URL           string   `json:"url,omitempty"`
-	BearerToken   string   `json:"bearer_token,omitempty"`
-	Program       string   `json:"program,omitempty"`
-	Args          []string `json:"args,omitempty"`
+	SourceCommand string `json:"source_command,omitempty"`
+	URL           string `json:"url,omitempty"`
+	BearerToken   string `json:"bearer_token,omitempty"`
+	// Program runs without arguments: a configuration can pick a program
+	// already on the node but cannot hand it anything to run.
+	Program string `json:"program,omitempty"`
 }
 
 func ParseConfig(raw json.RawMessage) (Config, error) {
@@ -50,20 +49,15 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 		}
 		if len(cfg.BearerToken) > 4096 || !bearerToken.MatchString(cfg.BearerToken) ||
 			len(cfg.SourceCommand) > 8192 || strings.ContainsRune(cfg.SourceCommand, '\x00') ||
-			cfg.Program != "" || cfg.Args != nil {
+			cfg.Program != "" {
 			return Config{}, errors.New("HTTP ChangeIP provider configuration is invalid")
 		}
 	case "command":
 		if err := validateProgram(cfg.Program); err != nil {
 			return Config{}, err
 		}
-		if cfg.URL != "" || cfg.BearerToken != "" || cfg.SourceCommand != "" || len(cfg.Args) > 32 {
+		if cfg.URL != "" || cfg.BearerToken != "" || cfg.SourceCommand != "" {
 			return Config{}, errors.New("command ChangeIP provider configuration is invalid")
-		}
-		for _, argument := range cfg.Args {
-			if argument == "" || len(argument) > 4096 || strings.ContainsRune(argument, '\x00') {
-				return Config{}, errors.New("ChangeIP arguments must be non-empty, bounded, and contain no NUL")
-			}
 		}
 	default:
 		return Config{}, errors.New("ChangeIP provider must be http_bearer or command")
@@ -71,15 +65,13 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 	return cfg, nil
 }
 
-// validateProgram rejects programs that would reopen a generic shell entry
-// point or that the service sandbox cannot see.
+// validateProgram rejects programs the service sandbox cannot see: installers
+// check the configuration outside the sandbox, so such a program would pass
+// there and then keep the service from starting.
 func validateProgram(value string) error {
 	if value == "" || len(value) > 4096 || !path.IsAbs(value) || path.Clean(value) != value ||
 		strings.IndexFunc(value, func(character rune) bool { return character < 0x20 || character == 0x7f }) >= 0 {
 		return errors.New("ChangeIP program must be a clean absolute path without control characters")
-	}
-	if _, denied := shellEntryPoints[path.Base(value)]; denied {
-		return errors.New("ChangeIP program must not be a generic shell entry point")
 	}
 	for _, root := range sandboxHiddenRoots {
 		if value == root || strings.HasPrefix(value, root+"/") {

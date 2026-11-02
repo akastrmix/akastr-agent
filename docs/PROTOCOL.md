@@ -17,7 +17,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | 模块 | 字段 | 作用 |
 |---|---|---|
 | `ip_watch` | `interval_seconds`（10–300）、`ipv6` | 上报 `ip.address` 与 `changeip.unchanged` |
-| `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`、`args` | 执行 `changeip.execute`；需要 `ip_watch` |
+| `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`（不带参数运行） | 执行 `changeip.execute`；需要 `ip_watch` |
 | `socks5` | `port`、`username`、`password`（该代理的登录） | 只给 Cloud 用的配置段：Cloud 派发 IPQuality 时取出登录；Agent 不读取、不运行代理 |
 | `ipquality_runner` | 无字段（`{}`） | 执行 `ipquality.execute` |
 | `xui` | `panel_url`、`username`、`password` | 按目标状态管理本机 3x-ui 的受管客户端，上报 `xui.snapshot` |

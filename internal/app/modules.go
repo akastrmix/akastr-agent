@@ -208,7 +208,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 				})
 			} else {
 				provider, err = changecommand.New(changecommand.Config{
-					Program: m.changeIP.Program, Args: m.changeIP.Args, Timeout: changeIPTimeout,
+					Program: m.changeIP.Program, Timeout: changeIPTimeout,
 				})
 			}
 			if err != nil {

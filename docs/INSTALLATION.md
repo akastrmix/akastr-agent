@@ -45,7 +45,7 @@ apt-get install --yes ca-certificates curl
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于节点上 root-only 的配置文件。
 
-“固定本机程序”填写节点上已有程序或脚本的干净绝对路径，例如 `/usr/local/bin/changeip`。没有参数就保持参数框为空；有参数时每行填写一个。程序必须是 Agent service 可读取的非 symlink regular file 并具有执行权限；脚本需要有效 shebang。它不接受相对路径、控制字符、shell/env/busybox 入口，以及 sandbox 隐藏的 home、runtime user 或临时目录。主控以后只能触发这组固定 argv，不能远程换程序或参数。
+“固定本机程序”填写节点上已有程序或脚本的干净绝对路径，例如 `/usr/local/bin/changeip`。Agent 以 root 身份不带参数运行它：后台只能选节点上已有的程序，不能交给它别的代码去执行；需要参数的服务商脚本，由节点上有 root 的人另写一个包装脚本。程序必须是 Agent service 可读取的非 symlink regular file 并具有执行权限；脚本需要有效 shebang。它不接受相对路径、控制字符，以及 sandbox 隐藏的 home、runtime user 或临时目录（安装器在 sandbox 外检查配置，这类路径会通过检查，service 却看不到它而无法启动）。
 
 公布 SOCKS5 只描述已有代理，Agent 不安装、不配置代理服务。填写 1–65535 的监听端口和该代理的用户名、密码；登录只用于主控派发 IPQuality 检测，不进入安装命令或列表。主控始终使用 Agent 最近一次观测到的公网 IPv4，不使用域名或手填 IP。节点尚未上报过公网 IPv4 时不会派发 IPQuality。
 

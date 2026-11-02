@@ -47,7 +47,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/desired`：保存各 `Desired` 模块的目标（只在内存）、决定何时应用（变化后、定期、失败退避）并回报状态；不认识任何模块。
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
-- `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不用 shell 解释 payload并以固定 argv 运行本机程序。
+- `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不经 shell、不带参数运行配置指定的本机程序。
 - `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，每分钟上报快照：入站、受管客户端的流量（Xray 自己的计数，客户用量的唯一来源）、连接账本里它们的 TCP 连接数，以及 Xray 是否走内核直传（直传时 Vision 下载要到连接结束才计入）。
 - `internal/xray`：本机 Xray 的共用读取，不认识任何模块，同一份日志只读一次，由 `internal/app` 分给账本和连接记录。`process` 找到 3x-ui 所运行的唯一 Xray 进程，读出它的程序、配置文件路径、geo 文件位置和是否直传（环境变量只读这两项）；`accesslog` 跟读 3x-ui 所运行 Xray 的访问日志（截断时从 3x-ui 的副本补读），逐行交出“入站端口 + 来源地址:端口 → 用户”以及原始时间、目标、出站和是否进了 `blackhole` 出站（读 Xray 正在运行的配置得知），不保存连接；`ledger` 是唯一的连接账本：把这些行绑定到内核的 TCP 连接上，数出每个用户当前的连接，把每个用户的连接与 UDP 流交给限速，并在绑定的连接确认关闭后告诉连接记录它的那一行、按内核计数的流量和承载的请求数。它不汇总用户流量。
 - `internal/panel`：本机 3x-ui 面板的客户端，`xui` 与 `routing` 模块共用一个登录：列入站、增删改客户端、重置流量、读写 Xray 模板、经面板重启 Xray。路径和请求体都固定在这里，Cloud 不能指定。

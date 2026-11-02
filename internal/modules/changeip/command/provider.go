@@ -23,7 +23,6 @@ const (
 
 type Config struct {
 	Program string
-	Args    []string
 	Timeout time.Duration
 }
 
@@ -60,7 +59,7 @@ func (p *Provider) Run(ctx context.Context) changeip.Result {
 	runContext, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
 
-	process := exec.Command(p.config.Program, p.config.Args...)
+	process := exec.Command(p.config.Program)
 	process.Stdin = nil
 	process.Stdout = io.Discard
 	process.Stderr = io.Discard
