@@ -76,12 +76,12 @@ Runner 固定使用官方 [xykt/IPQuality](https://github.com/xykt/IPQuality)，
 点击“添加节点”后，节点会立刻出现在下方列表中，状态为“待安装”，同时显示一键命令。复制完整命令到目标 VPS 执行。命令形态如下，实际安装码由后台填写：
 
 ```text
-curl -fsSL https://origin.akastrmix.com/agent/install.sh | sh -s -- '安装码'
+curl -fsSL 'https://origin.akastrmix.com/agent/install.sh?agent_id=节点UUID' | sh -s -- '安装码'
 ```
 
 上面只展示命令结构；实际安装必须完整复制后台生成的命令，不要手工替换占位符。
 
-不要改写、拆分或公开这行命令。`/agent/install.sh` 不接收安装码，只以不缓存的 302 跳转到 Cloud 当前批准版本的 GitHub Release installer；同一命令重跑会取得当时批准的版本，而非 GitHub latest。命令信任官方 HTTPS 入口及其固定版本 Release 跳转，发布流程验真 installer，installer 内部仍校验 Agent binary 的 SHA-256。
+不要改写、拆分或公开这行命令。`/agent/install.sh` 只带节点编号、不接收安装码，以不缓存的 302 跳转到这台节点更新渠道（正式版或测试版，见 Cloud ADR 0101）当前批准版本的 GitHub Release installer；同一命令重跑会取得当时批准的版本，而非 GitHub latest，测试版节点重装也不会退回较旧的正式版。命令信任官方 HTTPS 入口及其固定版本 Release 跳转，发布流程验真 installer，installer 内部仍校验 Agent binary 的 SHA-256。
 
 安装码只是 `节点UUID.机器token` 的组合，不是新增凭据或短码兑换服务；脚本拆开后通过环境变量交给 Agent 程序，使用 HTTPS bootstrap `https://origin.akastrmix.com/internal/agents/bootstrap`。机器 token 是长期安装凭据，可能进入 shell history 和安装脚本参数，但不会写入节点磁盘，也不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
