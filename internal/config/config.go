@@ -13,6 +13,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -71,7 +72,7 @@ func Parse(raw []byte) (Config, error) {
 	if !canonicalUUID.MatchString(cfg.AgentID) {
 		return Config{}, errors.New("configuration agent_id is invalid")
 	}
-	if name := strings.TrimSpace(cfg.Name); name == "" || name != cfg.Name || len(name) > 64 {
+	if name := strings.TrimSpace(cfg.Name); name == "" || name != cfg.Name || utf8.RuneCountInString(name) > 64 {
 		return Config{}, errors.New("configuration name must be 1-64 characters without surrounding whitespace")
 	}
 	endpoint, err := url.Parse(cfg.ControlEndpoint)
