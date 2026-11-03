@@ -20,19 +20,22 @@ type Xray struct {
 	Cwd string
 }
 
-// Find finds the one Xray process 3x-ui runs.
+// Find finds the one Xray process 3x-ui runs. The Agent's own runs of the
+// same binary, such as the routing module's api commands, are not it.
 func Find(proc string) (Xray, error) {
 	dirs, err := os.ReadDir(proc)
 	if err != nil {
 		return Xray{}, err
 	}
+	self := strconv.Itoa(os.Getpid())
 	var pids []string
 	for _, d := range dirs {
 		if _, err := strconv.Atoi(d.Name()); err != nil {
 			continue
 		}
 		// 3x-ui names its binary xray-<os>-<arch>.
-		if exe, err := os.Readlink(filepath.Join(proc, d.Name(), "exe")); err == nil && strings.HasPrefix(filepath.Base(exe), "xray-linux-") {
+		if exe, err := os.Readlink(filepath.Join(proc, d.Name(), "exe")); err == nil && strings.HasPrefix(filepath.Base(exe), "xray-linux-") &&
+			parent(filepath.Join(proc, d.Name())) != self {
 			pids = append(pids, d.Name())
 		}
 	}
@@ -45,6 +48,21 @@ func Find(proc string) (Xray, error) {
 		return Xray{}, err
 	}
 	return Xray{dir: dir, Cwd: cwd}, nil
+}
+
+// parent is the process ID of a process's parent, empty when unreadable. The
+// command name in stat may hold spaces and parentheses, so fields count from
+// its closing one.
+func parent(dir string) string {
+	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[1]
 }
 
 // Config is the path of the configuration file it runs.
