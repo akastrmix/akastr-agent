@@ -7,7 +7,7 @@
 ## 1) 安全与边界
 
 - Agent 是 systemd 管理的单 Go 进程，负责本机受控执行、观察和恢复；Cloud 负责业务与跨节点编排。保持轻量、低资源、少依赖。
-- 只执行本机预配置、协议允许的 typed operation，主动建立出站控制连接；不提供 HTTP 控制面、远程 shell、任意 argv/URL 或开放式主机控制。唯一例外是默认关闭的 `diagnostics` 模块：它在只读、一次性的 systemd 沙盒里运行 Cloud 转来的诊断脚本，不能写盘，不能改服务和网络配置；输出不落盘、不进日志（Cloud ADR 0102）。
+- 只执行本机预配置、协议允许的 typed operation，主动建立出站控制连接；不提供 HTTP 控制面、远程 shell、任意 argv/URL 或开放式主机控制。唯一例外是默认关闭的 `diagnostics` 模块：它在只读、一次性的 systemd 沙盒里运行 Cloud 转来的诊断脚本，不能写盘，也不能直接改服务和网络配置；但它读得到凭据、能联网，经网络登录面板等接口这条路没有堵（主人已接受）；输出不落盘、不进日志（Cloud ADR 0102）。
 - secret 只在 Git 外 root-only 文件中保存，不进入日志、测试 fixture、capability 或普通 wire payload；仅允许协议明确需要的受控 credential 流程。`diagnostics` 的结果可能包含诊断脚本读到的内容，这类内容只在内存中转发，Agent 和 Cloud 都不写盘、不写日志。
 - 本地持久状态必须有界，无法证明安全恢复时 fail closed，不静默重置可能涉及副作用的状态。幂等、互斥和恢复语义见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)，wire 以 [PROTOCOL.md](docs/PROTOCOL.md) 为准。
 - 未实现功能不创建空实现、占位 wire 字段或未被真实需求使用的框架。
