@@ -147,25 +147,22 @@ func (p *fakePanel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.stats[c["email"].(string)].enable = c["enable"] == true
 		p.writes = append(p.writes, "update "+c["email"].(string))
 		reply(w, nil)
-	case len(parts) == 6 && parts[4] == "delClient":
+	case len(parts) == 6 && parts[4] == "delClientByEmail":
 		id, _ := strconv.Atoi(parts[3])
 		ib := p.inbound(id)
-		i := p.identityIndex(ib, parts[5])
-		if i < 0 || len(ib.clients) == 1 {
-			w.Write([]byte(`{"success":false,"msg":"no client remained in Inbound"}`))
-			return
-		}
-		// 3x-ui removes every client the identity matches.
 		kept := []map[string]any{}
 		for _, c := range ib.clients {
-			if p.identityIndex(&fakeInbound{protocol: ib.protocol, clients: []map[string]any{c}}, parts[5]) == 0 {
-				p.writes = append(p.writes, "delete "+c["email"].(string))
-				delete(p.stats, c["email"].(string))
-			} else {
+			if c["email"] != parts[5] {
 				kept = append(kept, c)
 			}
 		}
+		if len(kept) == len(ib.clients) || len(kept) == 0 {
+			w.Write([]byte(`{"success":false,"msg":"no client remained in Inbound"}`))
+			return
+		}
 		ib.clients = kept
+		delete(p.stats, parts[5])
+		p.writes = append(p.writes, "delete "+parts[5])
 		reply(w, nil)
 	case len(parts) == 6 && parts[4] == "resetClientTraffic":
 		st := p.stats[parts[5]]

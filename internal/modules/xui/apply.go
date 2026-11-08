@@ -38,7 +38,8 @@ func (p *Panel) Validate(key string, raw json.RawMessage) error {
 	return err
 }
 
-// action is one panel write. identity addresses an existing client.
+// action is one panel write. identity addresses an existing client: its
+// secret for an update, its email for a delete.
 type action struct {
 	kind     string // add, update or delete
 	identity string
@@ -282,9 +283,8 @@ func plan(ib panel.Inbound, target Target) ([]action, error) {
 			}
 		}
 	}
-	// The panel addresses a client by its secret (Shadowsocks: email) and acts
-	// on every client that matches, so a shared secret would reach a client
-	// Cloud does not own.
+	// The panel finds the client to update by its secret (Shadowsocks: email),
+	// so a shared secret could pick a client Cloud does not own.
 	for _, c := range owned {
 		if foreign[identity(c)] {
 			return nil, errors.New("xui_client_conflict")
@@ -308,7 +308,7 @@ func plan(ib panel.Inbound, target Target) ([]action, error) {
 	for _, email := range unwanted {
 		c := owned[email]
 		if remaining > 1 {
-			actions = append(actions, action{kind: "delete", identity: identity(c)})
+			actions = append(actions, action{kind: "delete", identity: email})
 			remaining--
 			continue
 		}

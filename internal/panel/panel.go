@@ -173,8 +173,10 @@ func (c *Client) UpdateClient(ctx context.Context, inboundID int, identity strin
 	return c.call(ctx, "panel/api/inbounds/updateClient/"+url.PathEscape(identity), clientBody(inboundID, client), nil)
 }
 
-func (c *Client) DeleteClient(ctx context.Context, inboundID int, identity string) error {
-	return c.call(ctx, "panel/api/inbounds/"+strconv.Itoa(inboundID)+"/delClient/"+url.PathEscape(identity), map[string]any{}, nil)
+// DeleteClient addresses the client by its email. The panel routes on the
+// decoded path, so a secret holding "/" could not be addressed at all.
+func (c *Client) DeleteClient(ctx context.Context, inboundID int, email string) error {
+	return c.call(ctx, "panel/api/inbounds/"+strconv.Itoa(inboundID)+"/delClientByEmail/"+url.PathEscape(email), map[string]any{}, nil)
 }
 
 func (c *Client) ResetTraffic(ctx context.Context, inboundID int, email string) error {
