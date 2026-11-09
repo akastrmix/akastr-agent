@@ -15,8 +15,9 @@ import (
 var managedKeys = []string{"outbounds", "routing", "api"}
 
 var (
-	directOutbound  = json.RawMessage(`{"tag":"direct","protocol":"freedom"}`)
-	blockedOutbound = json.RawMessage(`{"tag":"blocked","protocol":"blackhole"}`)
+	// Spelled as in 3x-ui's default template, so the panel shows them as its own.
+	directOutbound  = json.RawMessage(`{"tag":"direct","protocol":"freedom","settings":{"domainStrategy":"AsIs","redirect":"","noises":[]}}`)
+	blockedOutbound = json.RawMessage(`{"tag":"blocked","protocol":"blackhole","settings":{}}`)
 	// The rule 3x-ui puts first when the template has none.
 	defaultAPIRule = json.RawMessage(`{"type":"field","inboundTag":["api"],"outboundTag":"api"}`)
 )

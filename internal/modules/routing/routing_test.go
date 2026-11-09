@@ -283,13 +283,19 @@ func TestTakeoverRewritesOnlyTheManagedParts(t *testing.T) {
 	if got := firstOutbound(saved); got != "direct" {
 		t.Errorf("default outbound %s", got)
 	}
-	var outbounds []map[string]any
+	var outbounds []json.RawMessage
 	_ = json.Unmarshal(saved["outbounds"], &outbounds)
 	var tags []string
 	for _, o := range outbounds {
-		tags = append(tags, o["tag"].(string))
+		var tagged struct {
+			Tag string `json:"tag"`
+		}
+		_ = json.Unmarshal(o, &tagged)
+		tags = append(tags, tagged.Tag)
 	}
-	if !slices.Equal(tags, []string{"direct", "blocked", "ak-o-11111111-aaaaaaaa"}) || outbounds[0]["settings"] != nil {
+	// The panel's own direct (UseIPv4 here) gives way to the Agent's.
+	if !slices.Equal(tags, []string{"direct", "blocked", "ak-o-11111111-aaaaaaaa"}) ||
+		string(canonical(outbounds[0])) != string(canonical(directOutbound)) {
 		t.Errorf("template outbounds: %s", saved["outbounds"])
 	}
 	var routing map[string]json.RawMessage

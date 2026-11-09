@@ -342,7 +342,9 @@ func xrayRules(rules []Rule, inbounds []panel.Inbound) ([]json.RawMessage, error
 			}
 			inboundTags = append(inboundTags, tag)
 		}
+		// "type" is what 3x-ui writes on every rule; Xray accepts it as is.
 		raw, _ := json.Marshal(struct {
+			Type        string   `json:"type"`
 			RuleTag     string   `json:"ruleTag"`
 			InboundTag  []string `json:"inboundTag,omitempty"`
 			User        []string `json:"user,omitempty"`
@@ -353,7 +355,7 @@ func xrayRules(rules []Rule, inbounds []panel.Inbound) ([]json.RawMessage, error
 			Network     string   `json:"network,omitempty"`
 			Protocol    []string `json:"protocol,omitempty"`
 			OutboundTag string   `json:"outboundTag"`
-		}{rulePrefix + strconv.Itoa(i+1), inboundTags, r.Users, r.Sources, r.Domains, r.IPs, r.Ports, r.Networks, r.Protocols, r.Outbound})
+		}{"field", rulePrefix + strconv.Itoa(i+1), inboundTags, r.Users, r.Sources, r.Domains, r.IPs, r.Ports, r.Networks, r.Protocols, r.Outbound})
 		out = append(out, raw)
 	}
 	return out, nil
