@@ -146,6 +146,9 @@ func (m modules) prepare(ctx context.Context, paths layout.Layout, client *http.
 func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	if m.xui != nil {
 		client := panel.New(m.xui.PanelURL, m.xui.Username, m.xui.Password)
+		// The outbound check logs in on its own: a test takes seconds, and a
+		// client makes one call at a time.
+		checks := panel.New(m.xui.PanelURL, m.xui.Username, m.xui.Password)
 		panel, err := xui.NewPanel(client, filepath.Join(paths.StateDir, xui.Name))
 		if err != nil {
 			return err
@@ -153,6 +156,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		runtime.desired.Add(xui.Name, panel)
 		if m.routing != nil {
 			runtime.desired.Add(routing.Name, routing.New(client))
+			runtime.reporters = append(runtime.reporters, routing.NewHealth(checks))
 		}
 		// The log is read once, and one account of the connections serves the
 		// snapshot's connection counts, the limiter and the connection records.

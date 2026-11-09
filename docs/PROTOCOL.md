@@ -217,6 +217,7 @@ Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量�
 | `changeip.unchanged` | `command_id`、`address`、`observed_at` |
 | `xui.snapshot` | `inbounds`、`traffic`、`splice`、`connections`，见下 |
 | `connection_records.batch` | `records`、`dropped`，见下 |
+| `routing.outbound_health` | `outbounds`，见下 |
 
 `xui.snapshot` 每分钟读取一次面板并发送，内容没变也发（Cloud 用相邻两份快照的差算速度，闲着的一分钟也要报出来），每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照原样重发，内容变了才被新快照取代。
 
@@ -234,6 +235,14 @@ Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量�
 - Cloud 以节点、`at` 与 `source` 识别一条记录：开始记录重复到达不改变任何东西，结束记录补上结束字段，先到也可以。所以重发和 Agent 重启后补发都没有副作用。
 - 打开日志时读到的旧行（Agent 启动或日志重新打开）不产生开始记录，上一个进程已经发过；它们照常用来认出仍开着的连接（同时收 TCP 和 UDP 的入站除外），但 Agent 启动时就开着的连接没有结束记录（见上文结束记录）。Agent 停止期间写下的行因此没有记录；停止前 30 秒内关闭的连接（账本还为晚到的行留着它）没有结束记录。
 - 每 10 秒或攒满 1000 条时发一批；同一时间只有一批等待回执，未确认的批次在下一次定时或连接 ready 时以同一 `report_id` 重发。内存里最多积压 20000 条，超出时丢最旧的。记录不写盘，更新或重启时未发出的会丢失。Cloud 写入一批失败时记错误日志并照常回执，这批丢失，不为此断开节点连接（记录是允许丢的数据，见 Cloud ADR 0098）。
+
+`routing.outbound_health`（出站检测，开了 `routing` 模块的节点才发）每 5 分钟一轮，Agent 启动后先测一轮：读面板的 Xray 模板，对其中每个 `ak-o-` 出站依次调用 3x-ui 2.9.4 的出站测试（`POST panel/xray/testOutbound`，表单 `outbound` 为这个出站，`allOutbounds` 为模板的全部出站，与面板自己的测试页相同）。面板为此临时起一个 Xray，经这个出站访问面板设置里的出站测试地址，不碰正在运行的 Xray；面板同一时间只做一个测试。出站检测用自己的面板会话，测试的几秒不挡住其他模块的面板调用。`outbounds` 按模板顺序列出每个 `ak-o-` 出站，每项必须且只能包含 `tag`、`up`、`delay_ms`：
+
+- 测通：`up` 为 true，`delay_ms` 为面板测得的毫秒数（第二次请求的耗时）；
+- 经出站的请求失败（面板错误以 `Request failed` 开头）：`up` 为 false，`delay_ms` 为 null；
+- 面板没能测（已有测试在运行、临时 Xray 没起来、面板调用失败）：两者都为 null，不代表出站好坏。
+
+模板里没有 `ak-o-` 出站时 `outbounds` 为空数组；读不到模板的一轮不发。面板的错误原文可能含出站服务器地址，不上报、不写日志。只保留最新一轮，未确认的上一轮被新一轮取代，同一轮在连接 ready 时原样重发。
 
 ## IP 观察、ChangeIP 与 IPv4 核对
 

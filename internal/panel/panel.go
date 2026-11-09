@@ -23,7 +23,14 @@ import (
 	"time"
 )
 
-const maxReply = 8 * 1024 * 1024
+const (
+	maxReply = 8 * 1024 * 1024
+	// requestTimeout bounds each request, the login included.
+	requestTimeout = 20 * time.Second
+	// testTimeout bounds an outbound test: 3x-ui 2.9.4 waits up to 3 s for
+	// its temporary Xray and up to 10 s for each of its two requests.
+	testTimeout = 60 * time.Second
+)
 
 // Client calls one panel with one login; calls run one at a time.
 type Client struct {
@@ -73,19 +80,24 @@ func New(panelURL, username, password string) *Client {
 	transport.Proxy = nil
 	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} // local panel certificates may be self-signed
 	return &Client{url: strings.TrimRight(panelURL, "/") + "/", username: username, password: password,
-		client: &http.Client{Transport: transport, Jar: jar, Timeout: 20 * time.Second,
+		client: &http.Client{Transport: transport, Jar: jar,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 
 // call sends a GET when body is nil, a form when it is url.Values, else JSON,
 // and logs in once more when the session has expired.
 func (c *Client) call(ctx context.Context, path string, body any, out any) error {
+	return c.callWithin(ctx, requestTimeout, path, body, out)
+}
+
+// callWithin is call with its own bound on the request.
+func (c *Client) callWithin(ctx context.Context, limit time.Duration, path string, body any, out any) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for attempt := 0; attempt < 2; attempt++ {
-		raw, expired, err := c.request(ctx, path, body)
+		raw, expired, err := c.request(ctx, limit, path, body)
 		if expired && attempt == 0 {
-			_, _, err = c.request(ctx, "login", map[string]string{"username": c.username, "password": c.password})
+			_, _, err = c.request(ctx, requestTimeout, "login", map[string]string{"username": c.username, "password": c.password})
 			if err != nil {
 				return errors.New("xui_login_failed")
 			}
@@ -105,7 +117,9 @@ func (c *Client) call(ctx context.Context, path string, body any, out any) error
 	return errors.New("xui_login_failed")
 }
 
-func (c *Client) request(ctx context.Context, path string, body any) (json.RawMessage, bool, error) {
+func (c *Client) request(ctx context.Context, limit time.Duration, path string, body any) (json.RawMessage, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, limit)
+	defer cancel()
 	method, contentType := "POST", "application/json"
 	var data []byte
 	switch b := body.(type) {
@@ -213,4 +227,21 @@ func (c *Client) SaveTemplate(ctx context.Context, t Template) error {
 		return errors.New("xui_request_invalid")
 	}
 	return c.call(ctx, "panel/xray/update", url.Values{"xraySetting": {string(config)}, "outboundTestUrl": {t.OutboundTestURL}}, nil)
+}
+
+// OutboundTest is what the panel's outbound test found. 3x-ui answers a test
+// that could not pass with Success false and an Error in its own words.
+type OutboundTest struct {
+	Success bool   `json:"success"`
+	Delay   int64  `json:"delay"` // milliseconds
+	Error   string `json:"error"`
+}
+
+// TestOutbound has the panel start a temporary Xray with all the outbounds
+// and fetch its outbound test URL through the one tested; the running Xray is
+// not touched. The panel runs one test at a time and refuses another.
+func (c *Client) TestOutbound(ctx context.Context, outbound, all json.RawMessage) (OutboundTest, error) {
+	var result OutboundTest
+	err := c.callWithin(ctx, testTimeout, "panel/xray/testOutbound", url.Values{"outbound": {string(outbound)}, "allOutbounds": {string(all)}}, &result)
+	return result, err
 }
