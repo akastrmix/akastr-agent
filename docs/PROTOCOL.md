@@ -25,6 +25,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | `connection_records` | 无字段（`{}`） | 上报 `connection_records.batch`；需要 `xui` |
 | `routing` | 无字段（`{}`） | 按目标状态写入本机 Xray 的路由规则与出站；需要 `xui` |
 | `diagnostics` | 无字段（`{}`） | 回答 `diagnostics.run`：在只读沙盒里运行诊断脚本（见[诊断](#诊断)） |
+| `firewall` | 无字段（`{}`） | 按目标状态筛选发往本机的入站，上报 `firewall.status`；节点上须有 `/usr/sbin/nft`（见 [firewall](#firewall)） |
 
 `xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
 
@@ -105,7 +106,7 @@ Runner 同一时间只执行一个 command，Cloud 只把检测派给空闲的 R
 
 ## 目标状态
 
-Operation 只用于不能重复执行的一次性动作。Cloud 拥有、经常变化、可以反复应用的设置（3x-ui 受管客户端，以后的防火墙规则等）用目标状态：Cloud 按 `(module, key)` 下发完整目标，Agent 反复对齐。
+Operation 只用于不能重复执行的一次性动作。Cloud 拥有、经常变化、可以反复应用的设置（3x-ui 受管客户端、防火墙规则等）用目标状态：Cloud 按 `(module, key)` 下发完整目标，Agent 反复对齐。
 
 | 方向 | type | body |
 |---|---|---|
@@ -186,6 +187,46 @@ key 是 Cloud 的一个下载限速：自动限速的单位（一份订阅在一
 - **关闭与卸载**：保留最后一次写入的模板和运行配置，交还面板手动管理，不恢复接管前的样子（Cloud ADR 0099）。
 - **错误码**：`routing_inbound_missing`（规则引用的面板入站不存在）、`routing_config_invalid`（`run -test` 不通过）、`routing_panel_failed`（读或存模板失败）、`routing_xray_unavailable`（找不到 3x-ui 运行的唯一 Xray、它的程序或回环上的 api 入站）、`routing_apply_failed`（热更新没完成）、`routing_restart_failed`（经面板重启失败，或重启后没有恢复）。命令输出可能含出站密码，只在本机解析，不上报、不写日志。
 
+### `firewall`
+
+只有一个 key：`node`，即整台节点的入站筛选（Cloud ADR 0108）。Cloud 只下发带类型的事实，不下发规则文本；规则、骨架与顺序由 Agent 生成。state 必须且只能包含七项：
+
+| 字段 | 含义 |
+|---|---|
+| `mode` | `off`（不装表）、`observe`（封禁与 `rules` 照常执行，入站上限与兜底只记录不丢）、`enforce` |
+| `retry` | 0 到 2^53−1；主人在后台点“重试”时加一，只用于让目标内容变得不同 |
+| `sets` | 命名的地址集合，最多 64 个，名字 `[a-z0-9_]{1,32}`。每个必须且只能包含 `addresses`（IPv4/IPv6 地址或网段，按规范写法：主机位为零，不带 zone，不用 IPv4 映射地址）与 `domains`（完整小写域名，由节点解析）。所有集合合计最多 4096 个地址、64 个域名。空集合不匹配任何来源 |
+| `blocked` | 封禁用的集合名，或 null |
+| `exempt` | 命中即跳过封禁的集合名（自有节点），或 null |
+| `ceilings` | 入站上限，最多 256 条，每条必须且只能包含 `protocol`（`tcp`/`udp`）、`ports`、`sources`（1–64 个集合名）：目的端口在 `ports`、来源不在任何一个 `sources` 集合里的包被挡 |
+| `rules` | 按生效顺序排好的规则，最多 512 条，每条必须且只能包含 `action`（`allow`/`drop`）、`sources`（字符串 `"any"`，或 1–64 个集合名；空数组是格式错误，“没有来源”不会被当成所有人）、`protocol`（`tcp`/`udp`/`ping`/`any`）、`ports` |
+
+`ports` 是 1–64 段 `[起, 止]`（1–65535，起不大于止）；规则的 `protocol` 为 `ping`、`any` 时 `ports` 必须是空数组。TCP 和 UDP 都要的规则由 Cloud 拆成两条；`ping` 是 IPv4 与 IPv6 的回显请求。空目标是 `{"mode":"off","retry":0,"sets":{},"blocked":null,"exempt":null,"ceilings":[],"rules":[]}`；模块开着时 key 不退役。最大的目标约 200 KiB，远在消息上限之内。
+
+- **表**：只有一张 `inet akastr_firewall`，挂在 input 钩子（filter 优先级），IPv4 与 IPv6 共用一套规则，不按本机地址匹配（有的节点公网地址不在网卡上）。别的表、`/etc/nftables.conf` 与 sshd 配置不读不改。
+- **固定顺序**：
+  1. 回环放行。这条规则的注释记着模式与规则摘要 `akastr:<mode>:<digest>`。
+  2. 封禁：来源在 `blocked`、不在 `exempt`、且属于连接跟踪原始方向（对方发起）的包丢弃，所以被封来源的已有连接立即断开，本机连出去的回包不受影响。
+  3. 保底放行：已建立及相关连接；RFC 4890 4.4.1 要求主机不丢的 ICMPv6（差错报文、组播侦听、邻居发现与路由通告、反向邻居发现、SEND 与组播路由通告）；IPv4 的不可达、超时与参数错误；来自 `fe80::/10`、源端口 547 到目的端口 546 的 DHCPv6 回包。不含 ping。
+  4. `ceilings`：命中就记录；`enforce` 丢弃，`observe` 继续往下走。
+  5. `rules`：逐条，命中第一条即停（放行或丢弃）。
+  6. 兜底：记录；`enforce` 丢弃，`observe` 放行。
+- **命中记录**：入站上限与兜底命中的包记在表里有界、一小时内没有新命中即过期的集合中：兜底按“协议 + 端口”（最多 512 条）、ICMP 与 ICMPv6 按报文类型、其他协议按协议号（各 64 条），入站上限按“来源 + 协议 + 端口”（IPv4、IPv6 各 512 条），每条带包数。TCP 只记发起连接的包，开启时已经存在的连接不会被当成新来源。记录与丢弃是两条规则，集合满了只是少记，不会少丢。整张表替换时记录清零。
+- **应用**（每次变化后、每 5 分钟、失败退避后，按下列顺序）：
+  1. `off`：有表就删，清掉状态文件里确认可用的目标，不探测。
+  2. 渲染规则，对不含集合成员的部分算摘要；表上的摘要相同就只在一个事务里替换各集合的成员（域名解析结果或地址变化），结束。表被外部清空、Agent 更新改了骨架，摘要都对不上，按下面各步重新安装。
+  3. 摘要（连同 `retry`）等于记下的失败目标：回 `firewall_unconfirmed`，不装。
+  4. 连接跟踪上限低于本机目标值（每 GiB 内存 131072 条，向上取整，只升不降）时，经 `systemd-run` 起两个一次性 root 单元，依次运行 `/usr/sbin/modprobe nf_conntrack` 与 `/usr/sbin/sysctl -w net.netfilter.nf_conntrack_max=<N>`（Agent 自己的单元不能加载模块、不能写内核参数）；没调上去回 `firewall_conntrack_failed`，不装。不改超时。
+  5. 新开一条到控制地址的连接（解析域名、TCP、TLS 握手，不复用已有连接）；不通回 `firewall_probe_unavailable`，不装。
+  6. 把“未确认”的这份目标连同上一份确认可用的目标写进状态文件，写不进去回 `firewall_state_failed`，不装。
+  7. 规则经标准输入交给 `nft`，先检查再在一个事务里整表替换；被拒回 `firewall_apply_failed`。
+  8. 再探测，约 20 秒内多次尝试：通了把这份记为确认可用；不通则装回上一份（没有就删表），记下这份目标，回 `firewall_unconfirmed`，之后不再安装相同内容，直到内容变化或 `retry` 增加。
+- **进程启动**（连上 Cloud 之前）：状态文件读不出来时不装表、写错误日志，等 Cloud 的目标（应用时重写这个文件）；表不在而有确认可用的目标（机器重启过）时先调连接跟踪上限，再按状态文件装回，不探测；表在且有未确认的目标时先探测，不通就装回上一份并记下失败；表在且没有未确认的目标时不动。收到第一份完整 key 列表之前不删表。
+- **域名**：每两分钟解析一次（新出现的域名在应用时立即解析）；失败或结果为空时保留上一次的地址并标出失败，任何情况下都不会变成所有人；每个域名最多取 32 个地址。地址变化只替换集合成员。
+- **进程外状态**：表在 Agent 正常停止、更新换进程和崩溃时都原样保留；模块关闭后，下一个进程删掉表和 `StateDir/firewall`；卸载在删除程序之前删表，机器上没有 `nft` 或没有加载 nf_tables 时跳过。调高的连接跟踪上限保留到机器重启。
+- **状态文件** `StateDir/firewall/state.json`（带 schema 标记、原子写）：最后一份确认可用的目标、未确认的目标、失败目标的摘要、各域名最后一次解析结果。
+- **错误码**：`firewall_tool_missing`（运行中找不到 `/usr/sbin/nft`；配置开启模块而节点没有 `nft` 时，候选程序拒绝该配置，节点保留旧配置）、`firewall_conntrack_failed`、`firewall_probe_unavailable`、`firewall_unconfirmed`、`firewall_apply_failed`、`firewall_state_failed`。
+
 ## 诊断
 
 开了 `diagnostics` 模块的节点回答 Cloud 转来的诊断脚本。这是协议里唯一由 Cloud 提供脚本内容的能力，模块默认关闭，只在该节点的配置开启它时才存在（Cloud ADR 0102）。它不走 Operation：不握手、不写 journal、不重放；回答随会话丢失时由操作者重新请求，脚本只读，重跑没有副作用。
@@ -218,6 +259,7 @@ Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量�
 | `xui.snapshot` | `inbounds`、`traffic`、`splice`、`connections`，见下 |
 | `connection_records.batch` | `records`、`dropped`，见下 |
 | `routing.outbound_health` | `outbounds`，见下 |
+| `firewall.status` | `mode`、`ssh_ports`、`panel_port`、`listening`、`conntrack`、`hits`、`domains`、`foreign_tables`，见下 |
 
 `xui.snapshot` 每分钟读取一次面板并发送，内容没变也发（Cloud 用相邻两份快照的差算速度，闲着的一分钟也要报出来），每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照原样重发，内容变了才被新快照取代。
 
@@ -243,6 +285,17 @@ Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量�
 - 面板没能测（已有测试在运行、临时 Xray 没起来、面板调用失败）：两者都为 null，不代表出站好坏。
 
 模板里没有 `ak-o-` 出站时 `outbounds` 为空数组；读不到模板的一轮不发。面板的错误原文可能含出站服务器地址，不上报、不写日志。只保留最新一轮，未确认的上一轮被新一轮取代，同一轮在连接 ready 时原样重发。
+
+`firewall.status`（开了 `firewall` 模块的节点才发，模式为 `off` 时也发）每分钟一次，连接 ready 后立即发；只保留最新一份，未确认的旧一份原样重发，内容变了才被取代。data 必须且只能包含：
+
+- `mode`：节点此刻实际装着的模式（`off`/`observe`/`enforce`）。
+- `ssh_ports`：sshd 进程实际在监听、且不只在回环上的 TCP 端口，升序，最多 16 个；认不出（例如 sshd 由 socket 单元启动）时为空数组。
+- `panel_port`：开了 `xui` 时面板地址里的端口，否则 null。
+- `listening`：不只监听回环的 TCP 监听端口和未连接的 UDP 端口，每项 `protocol`、`port`，按协议、端口排序，最多 256 项。
+- `conntrack`：`count` 与 `max`；连接跟踪没加载时为 null。
+- `hits`：`final`、`ceiling`、`truncated`。`final` 每项为 `protocol`、`packets`，TCP/UDP 另带 `port`，`icmp`/`icmpv6` 另带 `type`，其他协议的 `protocol` 是十进制协议号；`ceiling` 每项为 `source`、`protocol`、`port`、`packets`。`truncated` 为 true 表示某个记录集合已满，有命中没记下。没有表时都为空。
+- `domains`：当前目标里每个域名的 `name`、`addresses`、`resolved_at`（最后一次成功解析，RFC 3339，从未成功为 null）、`failed`（最后一次解析失败或为空）。
+- `foreign_tables`：本机其他 nftables 表的“族 名字”，最多 32 个，只读名字，不读内容。
 
 ## IP 观察、ChangeIP 与 IPv4 核对
 

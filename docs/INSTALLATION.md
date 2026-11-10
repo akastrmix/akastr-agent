@@ -41,6 +41,7 @@ apt-get install --yes ca-certificates curl
 - 限速：需要同时开启 3x-ui，并按上一条开启访问日志；没开时后台显示“访问日志不可用”。限速规则见 [PROTOCOL.md](PROTOCOL.md#rate_limit)；
 - 连接记录：需要同时开启 3x-ui，并按上文开启访问日志；没开时没有记录。上报内容见 [PROTOCOL.md](PROTOCOL.md#上报与回执)；
 - 路由接管：需要同时开启 3x-ui。开启前在 3x-ui 面板做一次数据库备份，并在 Cloud 节点详情的“路由”里核对最终规则表；首次开启会经面板重启一次 Xray，之后在面板里改路由和出站不会长久生效（DNS 等其余设置照常）。关闭后保留最后写入的配置，交还面板手动管理。规则见 [PROTOCOL.md](PROTOCOL.md#routing)；
+- 防火墙：只筛选发往本机的入站，规则在 Cloud 的“策略 → 防火墙”和节点详情的“防火墙”里管理，开启模块后默认是“关闭”模式，不装任何规则。需要节点上的 `nft`（Debian 包 `nftables`，有的服务商镜像不带）：安装命令会补装；在已装好的节点上后来才开启时，若没有 `nft`，节点不接受新配置，后台显示“节点不接受当前配置”，在节点上重跑安装命令即可。机器上已有 fail2ban 等别的规则表时保留它们。规则见 [PROTOCOL.md](PROTOCOL.md#firewall)；
 - IPQuality Runner：见下文，可以开多台。
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于节点上 root-only 的配置文件。
@@ -106,6 +107,7 @@ Akastr Agent <release-version> installed successfully.
 /var/lib/akastr-agent/state.json
 /var/lib/akastr-agent/changeip-reconciliation.json（仅在换 IP 核对期间存在内容）
 /var/lib/akastr-agent/update-attempt.json（仅在更新失败后出现）
+/var/lib/akastr-agent/firewall/state.json（仅在开了防火墙模块时存在）
 /usr/local/lib/akastr-agent/current -> slots/a 或 slots/b
 /usr/local/lib/akastr-agent/slots/{a,b}/{akastr-agent,config.json}
 /usr/local/lib/akastr-agent/ipquality/<sha256>.sh
@@ -187,7 +189,7 @@ systemctl --no-pager --full status akastr-agent.service
 curl -fsSL https://<AkastrCloud 主控>/agent/install.sh | sh -s -- --uninstall --confirm-destroy-local-agent
 ```
 
-卸载会停止唯一 service，并永久删除该 unit、`/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行记录；中途失败直接重跑同一卸载命令。执行记录删除后，若主控仍有该节点未完成的任务，重装会被主控拒绝，直到管理员处理这些任务。操作者自行管理的固定 ChangeIP 程序不受影响。它不会自动删除后台节点。
+卸载会停止唯一 service，删除防火墙模块的规则表（机器上没有 `nft` 时跳过），并永久删除该 unit、`/etc/akastr-agent`、`/var/lib/akastr-agent`、`/usr/local/lib/akastr-agent`、private key 和本地执行记录；中途失败直接重跑同一卸载命令。执行记录删除后，若主控仍有该节点未完成的任务，重装会被主控拒绝，直到管理员处理这些任务。操作者自行管理的固定 ChangeIP 程序不受影响。它不会自动删除后台节点。
 
 3x-ui 节点上，这份执行记录里也有每个受管客户端已执行过的流量重置。面板里还留着受管客户端时（没重装 3x-ui，或重装系统后恢复了 3x-ui 备份），新装的 Agent 不知道哪些重置做过，会把开通满一个计量周期的客户端流量再清零一次，这台节点上客户本周期的已用流量因此变少。只是重装 Agent 时直接重跑后台一键命令（会保留执行记录），不要先卸载。
 

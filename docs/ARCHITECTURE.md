@@ -4,7 +4,7 @@
 
 每个安装实例只存在一个 `akastr-agent.service` 和一个 Go 主进程。主进程主动连接 AkastrCloud 的 WSS 控制端点，并在内部检查主控批准的更新（见第 8 节）；节点没有额外 updater service、timer 或常驻辅助进程，也不开放通用管理 HTTP 服务。实例只公布配置中明确启用的能力。
 
-每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、3x-ui 客户端管理、限速、连接记录、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点，模块可以任意组合，只受技术依赖约束（ChangeIP 需要公网 IP 观察，限速与连接记录需要 3x-ui 客户端管理）；Runner 可以有多台，由 Cloud 分配检测。
+每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、3x-ui 客户端管理、限速、连接记录、路由、诊断、防火墙、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点，模块可以任意组合，只受技术依赖约束（ChangeIP 需要公网 IP 观察，限速与连接记录需要 3x-ui 客户端管理）；Runner 可以有多台，由 Cloud 分配检测。
 
 项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。节点由后台先创建，得到节点 UUID 与长期机器 token；provider secret 只在以机器 token 加密的持久 bootstrap 里，不以明文进入 PostgreSQL。节点上的配置就是 Cloud 下发的 bootstrap 明文，Agent 不再转写成第二种格式。配置有单调的 desired/applied revision，两者不等时 Cloud 不派发操作；配置更新由主进程自动取回收敛，不需要重跑安装命令。
 
@@ -56,6 +56,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/modules/connectionrecords`：把受管客户端的日志行和连接结束事件变成记录，在内存里有界排队、分批上报；不写盘。
 - `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
 - `internal/modules/ratelimit`：按目标把指定用户的下载限速。按连接账本中的连接与 UDP 流，在默认路由网卡的 clsact egress 上加 flower 过滤，同一组共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
+- `internal/modules/firewall`：把 Cloud 算好的入站筛选目标渲染成一张 nftables 表 `inet akastr_firewall`（骨架与顺序在 Agent，Cloud 只给带类型的事实，见 [PROTOCOL.md](PROTOCOL.md#firewall)），规则经标准输入交给固定路径的 `nft`。改表前后各新开一条到控制地址的连接确认 Cloud 可达，装上后连不通就装回上一份，并记住这份目标不再重装；只有集合成员变化（域名解析结果、地址增减）时在一个事务里替换成员，不换表也不探测。连接跟踪上限经一次性 root 单元按内存调高（本模块唯一的高权限动作，程序与参数固定）。每分钟上报 `firewall.status`：实际模式、sshd 端口、监听端口、连接跟踪用量、命中记录、域名解析结果与本机其他表的名字。进程外留下的是这张表、调高的连接跟踪上限和 `StateDir/firewall/state.json`：正常停止、更新换进程和崩溃时都原样保留（Agent 每次发布和改配置都会重启，照限速“启动即清理”会让落地机每次发布都暴露），新进程见表在就不动，机器重启后按状态文件装回最后确认可用的目标；模块关闭后，下一个进程删表和状态目录；卸载在删除程序前删表。连接跟踪上限保留到机器重启（Cloud ADR 0108 接受的残留）。
 - `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/install`：一次安装命令的全部收敛步骤（第 8 节）；安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。

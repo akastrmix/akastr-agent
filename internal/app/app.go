@@ -28,6 +28,7 @@ func NewModel(cfg config.Config) (*Model, error) {
 	if err != nil {
 		return nil, err
 	}
+	parsed.controlEndpoint = cfg.ControlEndpoint
 	return &Model{Config: cfg, modules: parsed}, nil
 }
 

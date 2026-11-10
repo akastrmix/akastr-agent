@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	changehttp "github.com/akastrmix/akastr-agent/internal/modules/changeip/httpcurl"
 	"github.com/akastrmix/akastr-agent/internal/modules/connectionrecords"
 	"github.com/akastrmix/akastr-agent/internal/modules/diagnostics"
+	"github.com/akastrmix/akastr-agent/internal/modules/firewall"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
 	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
@@ -52,6 +55,9 @@ type modules struct {
 	records     *connectionrecords.Config
 	routing     *routing.Config
 	diagnostics *diagnostics.Config
+	firewall    *firewall.Config
+	// controlEndpoint is where the firewall checks that Cloud stays reachable.
+	controlEndpoint string
 }
 
 func parseModules(sections map[string]json.RawMessage) (modules, error) {
@@ -77,6 +83,8 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 			m.routing, err = parseSection(routing.ParseConfig, raw)
 		case diagnostics.Name:
 			m.diagnostics, err = parseSection(diagnostics.ParseConfig, raw)
+		case firewall.Name:
+			m.firewall, err = parseSection(firewall.ParseConfig, raw)
 		default:
 			return modules{}, fmt.Errorf("configuration module %q is unknown to this Agent", name)
 		}
@@ -119,6 +127,10 @@ func (m modules) hostCommands() (commands, packages []string) {
 	if m.rateLimit != nil {
 		commands = append(commands, ratelimit.TCProgram)
 		packages = append(packages, "iproute2")
+	}
+	if m.firewall != nil {
+		commands = append(commands, firewall.HostCommands...)
+		packages = append(packages, "nftables", "kmod", "procps")
 	}
 	return commands, packages
 }
@@ -187,6 +199,21 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	if m.rateLimit == nil {
 		runtime.workers = append(runtime.workers, ratelimit.Leftovers{})
 	}
+	if m.firewall != nil {
+		if err := firewall.Available(); err != nil {
+			return err
+		}
+		filter := firewall.New(paths.StateDir, m.controlEndpoint)
+		runtime.desired.Add(firewall.Name, filter)
+		runtime.workers = append(runtime.workers, filter)
+		var panelPort *int
+		if m.xui != nil {
+			panelPort = urlPort(m.xui.PanelURL)
+		}
+		runtime.reporters = append(runtime.reporters, firewall.NewStatus(filter, panelPort))
+	} else {
+		runtime.workers = append(runtime.workers, firewall.Leftovers{StateDir: paths.StateDir})
+	}
 	sweeper := diagnostics.NewSweeper()
 	runtime.workers = append(runtime.workers, sweeper)
 	if m.diagnostics != nil {
@@ -232,6 +259,22 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		runtime.addCommands(ipqualityrunner.New(provider, qualityscript.PinnedVersion))
 	}
 	return nil
+}
+
+// urlPort is the port a URL connects to.
+func urlPort(raw string) *int {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	port, err := strconv.Atoi(u.Port())
+	if u.Port() == "" {
+		port, err = map[string]int{"http": 80, "https": 443}[u.Scheme], nil
+	}
+	if err != nil || port < 1 || port > 65535 {
+		return nil
+	}
+	return &port
 }
 
 // sharedLog passes the access log's lines to the ledger, then to also.

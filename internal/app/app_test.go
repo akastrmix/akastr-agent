@@ -35,7 +35,7 @@ func TestModuleConfigurationFailsClosed(t *testing.T) {
 	watch := `"ip_watch":{"interval_seconds":60,"ipv6":false}`
 	for name, modules := range map[string]string{
 		"no module":                 `{}`,
-		"unknown module":            `{` + watch + `,"firewall":{}}`,
+		"unknown module":            `{` + watch + `,"unknown_module":{}}`,
 		"changeip without ip_watch": `{"changeip":{"provider":"command","program":"/usr/local/bin/changeip"}}`,
 		// Arguments would let a configuration hand an interpreter code to run as root.
 		"program arguments":    `{` + watch + `,"changeip":{"provider":"command","program":"/usr/bin/python3","args":["-c","print()"]}}`,

@@ -67,6 +67,12 @@ uninstall_agent() {
   # A running Agent must never lose its identity and execution records.
   ! systemctl is-active --quiet akastr-agent.service \
     || fail 'akastr-agent.service is still running; nothing was removed'
+  # The firewall table outlives the Agent process, so it leaves with the Agent.
+  # Without nf_tables loaded there is no table to remove.
+  if [ -x /usr/sbin/nft ] && [ -e /sys/module/nf_tables ]; then
+    printf 'table inet akastr_firewall {}\ndelete table inet akastr_firewall\n' | /usr/sbin/nft -f - \
+      || fail 'the Agent is stopped but its firewall table could not be removed; rerun --uninstall'
+  fi
   if [ -e "$SERVICE_FILE" ]; then
     rm -f -- "$SERVICE_FILE"
     systemctl daemon-reload
