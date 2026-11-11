@@ -28,7 +28,7 @@ const (
 
 	commandTimeout = 30 * time.Second
 	probeTimeout   = 10 * time.Second
-	// Each GiB of memory allows this many tracked connections (Cloud ADR 0108).
+	// Each GiB of memory allows this many tracked connections (Cloud ADR 0109).
 	conntrackPerGiB = 131072
 )
 

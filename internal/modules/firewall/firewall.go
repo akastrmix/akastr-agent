@@ -1,5 +1,5 @@
 // Package firewall filters what reaches this node from outside, as Cloud
-// computes it (Cloud ADR 0108). The module owns one nftables table for IPv4
+// computes it (Cloud ADR 0109). The module owns one nftables table for IPv4
 // and IPv6; Cloud sends typed facts and the module renders the rules, whose
 // skeleton and order are fixed here.
 //
@@ -136,7 +136,7 @@ func (f *Firewall) Apply(ctx context.Context, targets map[string]json.RawMessage
 	}
 }
 
-// apply runs the steps of ADR 0108 in order; f.mu is held.
+// apply runs the steps of ADR 0109 in order; f.mu is held.
 func (f *Firewall) apply(ctx context.Context, t Target) string {
 	if f.missing() {
 		return codeToolMissing
@@ -285,7 +285,7 @@ func (f *Firewall) Run(ctx context.Context) error {
 	}
 }
 
-// start applies the process start rules of ADR 0108. A state file that
+// start applies the process start rules of ADR 0109. A state file that
 // cannot be read installs nothing; the next target from Cloud replaces it.
 func (f *Firewall) start(ctx context.Context) {
 	defer close(f.started)
