@@ -25,7 +25,9 @@ import (
 )
 
 const (
-	pollInterval = time.Second
+	// A new connection is limited only once its line is read, so the log is
+	// read often; a read with nothing new costs one stat.
+	pollInterval = 250 * time.Millisecond
 	locateEvery  = 5 * time.Minute
 	locateRetry  = 10 * time.Second
 	// A line naming an inbound the panel did not list rereads the list at most

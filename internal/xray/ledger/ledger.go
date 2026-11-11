@@ -50,8 +50,10 @@ import (
 
 const (
 	// The kernel is asked for every connection this often; a closing
-	// connection's last bytes come with its close notice.
-	dumpInterval = 2 * time.Second
+	// connection's last bytes come with its close notice. A line binds only a
+	// connection a dump has shown, so this bounds how long a new connection
+	// runs before it can be limited.
+	dumpInterval = 500 * time.Millisecond
 	// A connection missing from this many dumps in a row has closed.
 	missingDumps = 2
 	// A closed connection is kept this long, so a line read after the close

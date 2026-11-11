@@ -30,9 +30,10 @@ import (
 )
 
 const (
-	Name         = "rate_limit"
-	maxMbps      = 10000
-	syncInterval = 2 * time.Second
+	Name    = "rate_limit"
+	maxMbps = 10000
+	// A limited user's new connection runs at full speed until the next sync.
+	syncInterval = 500 * time.Millisecond
 	// Leftovers retries a failed cleanup this often.
 	leftoverRetry = 30 * time.Second
 	stopTimeout   = 15 * time.Second
