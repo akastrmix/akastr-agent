@@ -21,7 +21,9 @@ type Xray struct {
 }
 
 // Find finds the one Xray process 3x-ui runs. The Agent's own runs of the
-// same binary, such as the routing module's api commands, are not it.
+// same binary, such as the routing module's api commands, are not it; nor are
+// the panel's short ones: reading the version names no configuration, and
+// the outbound test runs a temporary xray_test_*.json for a few seconds.
 func Find(proc string) (Xray, error) {
 	dirs, err := os.ReadDir(proc)
 	if err != nil {
@@ -34,8 +36,12 @@ func Find(proc string) (Xray, error) {
 			continue
 		}
 		// 3x-ui names its binary xray-<os>-<arch>.
-		if exe, err := os.Readlink(filepath.Join(proc, d.Name(), "exe")); err == nil && strings.HasPrefix(filepath.Base(exe), "xray-linux-") &&
-			parent(filepath.Join(proc, d.Name())) != self {
+		dir := filepath.Join(proc, d.Name())
+		if exe, err := os.Readlink(filepath.Join(dir, "exe")); err != nil || !strings.HasPrefix(filepath.Base(exe), "xray-linux-") ||
+			parent(dir) == self {
+			continue
+		}
+		if config := configOf(dir); config != "" && !strings.HasPrefix(filepath.Base(config), "xray_test_") {
 			pids = append(pids, d.Name())
 		}
 	}
@@ -67,15 +73,21 @@ func parent(dir string) string {
 
 // Config is the path of the configuration file it runs.
 func (x Xray) Config() (string, error) {
-	cmdline, err := os.ReadFile(filepath.Join(x.dir, "cmdline"))
-	if err != nil {
-		return "", err
-	}
-	config := configArg(strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00"))
+	config := configOf(x.dir)
 	if config == "" {
 		return "", errors.New("the Xray command line names no configuration file")
 	}
 	return x.Resolve(config), nil
+}
+
+// configOf is the configuration a process was started with, as its command
+// line names it; empty when it names none or the process is gone.
+func configOf(dir string) string {
+	cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))
+	if err != nil {
+		return ""
+	}
+	return configArg(strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00"))
 }
 
 func configArg(args []string) string {

@@ -19,8 +19,10 @@ func fakeXray(t *testing.T, environ string) string {
 			t.Fatal(err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(pid, "environ"), []byte(environ), 0o600); err != nil {
-		t.Fatal(err)
+	for name, content := range map[string]string{"environ": environ, "cmdline": "bin/xray-linux-amd64\x00-c\x00bin/config.json\x00"} {
+		if err := os.WriteFile(filepath.Join(pid, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	return proc
 }

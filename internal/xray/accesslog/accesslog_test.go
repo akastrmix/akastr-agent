@@ -288,14 +288,21 @@ func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 			t.Fatalf("locate accepted %s", section)
 		}
 	}
-	// A second Xray from 3x-ui is ambiguous.
+	// The panel's outbound test runs the same binary for a few seconds; a
+	// second Xray on another configuration is ambiguous.
 	other := filepath.Join(proc, "4343")
-	if err := os.MkdirAll(other, 0o700); err != nil {
-		t.Fatal(err)
+	must := func(err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := os.Symlink("/usr/local/x-ui/bin/xray-linux-amd64", filepath.Join(other, "exe")); err != nil {
-		t.Fatal(err)
+	must(os.MkdirAll(other, 0o700))
+	must(os.Symlink(filepath.Join(dir, "bin", "xray-linux-amd64"), filepath.Join(other, "exe")))
+	must(os.WriteFile(filepath.Join(other, "cmdline"), []byte("bin/xray-linux-amd64\x00-c\x00bin/xray_test_123.json\x00"), 0o600))
+	if found, err := locate(proc); err != nil || found.log != filepath.Join(dir, "access.log") {
+		t.Fatalf("locate beside the outbound test = %+v, %v", found, err)
 	}
+	must(os.WriteFile(filepath.Join(other, "cmdline"), []byte("bin/xray-linux-amd64\x00-c\x00bin/other.json\x00"), 0o600))
 	if _, err := locate(proc); err == nil {
 		t.Fatal("locate chose between two Xray processes")
 	}
