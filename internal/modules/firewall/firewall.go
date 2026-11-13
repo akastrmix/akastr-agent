@@ -103,6 +103,12 @@ func (f *Firewall) Validate(key string, raw json.RawMessage) error {
 	return err
 }
 
+// Started closes once the start rules ran. The control connection waits for it:
+// a connection opened while a restarted machine has no table yet would be
+// untracked when the table comes back, and the replies to it dropped until the
+// Agent next sends something.
+func (f *Firewall) Started() <-chan struct{} { return f.started }
+
 // Apply converges the node to Cloud's target. Without the key the module owns
 // nothing; an unusable target leaves the node as it is.
 func (f *Firewall) Apply(ctx context.Context, targets map[string]json.RawMessage) (map[string]string, error) {

@@ -34,6 +34,9 @@ type Runtime interface {
 	// Run keeps modules running; they publish reports and target statuses on
 	// the ready session.
 	Run(context.Context, module.Publish, desired.Send) error
+	// Started returns once the modules that must start before Cloud is reached
+	// have; Run must already be running.
+	Started(context.Context) error
 	ControlReady()
 	// Acknowledge settles the module report Cloud has stored.
 	Acknowledge(reportID string) error
@@ -125,7 +128,13 @@ func (c *Client) Run(ctx context.Context) error {
 	modulesDone := make(chan error, 1)
 	controlDone := make(chan error, 1)
 	go func() { modulesDone <- c.runtime.Run(runContext, c.publish, c.sendStatus) }()
-	go func() { controlDone <- c.runControlLoop(runContext) }()
+	go func() {
+		if err := c.runtime.Started(runContext); err != nil {
+			controlDone <- err
+			return
+		}
+		controlDone <- c.runControlLoop(runContext)
+	}()
 	select {
 	case err := <-modulesDone:
 		cancel()

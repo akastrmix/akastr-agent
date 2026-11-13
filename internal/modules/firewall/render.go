@@ -45,9 +45,12 @@ icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-
 icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
 ip6 saddr fe80::/10 udp sport 547 udp dport 546 accept`
 
-// Without the final drop this records what the default would catch.
-const finalRecord = tcpConnecting + ` update @h_final { meta l4proto . th dport counter }
-meta l4proto udp update @h_final { meta l4proto . th dport counter }
+// Without the final drop this records what the default would catch. A TCP or
+// UDP port counts only when a local socket would take the packet: scanners
+// try every closed port and would otherwise fill the set within the hour,
+// while what the owner needs to see is a service the rules leave out.
+const finalRecord = tcpConnecting + ` socket transparent { 0, 1 } update @h_final { meta l4proto . th dport counter }
+meta l4proto udp socket transparent { 0, 1 } update @h_final { meta l4proto . th dport counter }
 meta l4proto icmp update @h_icmp4 { icmp type counter }
 meta l4proto ipv6-icmp update @h_icmp6 { icmpv6 type counter }
 meta l4proto != { tcp, udp, icmp, ipv6-icmp } update @h_proto { meta l4proto counter }`

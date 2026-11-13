@@ -126,6 +126,23 @@ func (r *Runtime) Run(ctx context.Context, publish module.Publish, status desire
 	return err
 }
 
+// Started waits until every worker that must start before Cloud is reached
+// has done so.
+func (r *Runtime) Started(ctx context.Context) error {
+	for _, worker := range r.workers {
+		starter, ok := worker.(module.Starter)
+		if !ok {
+			continue
+		}
+		select {
+		case <-starter.Started():
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 func (r *Runtime) ControlReady() {
 	r.desired.ControlReady()
 	for _, reporter := range r.reporters {

@@ -71,6 +71,12 @@ type Worker interface {
 	Run(ctx context.Context) error
 }
 
+// Starter is a worker whose start must be done before the Agent reaches Cloud:
+// the channel closes once it is, whatever the outcome.
+type Starter interface {
+	Started() <-chan struct{}
+}
+
 // Queries answers one request message type on the session it arrived on.
 // Nothing is kept: an answer lost with the session is simply asked again, so
 // only work that is safe to repeat may be a query.

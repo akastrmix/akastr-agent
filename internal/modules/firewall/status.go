@@ -327,8 +327,14 @@ type socket struct {
 	protocol string
 	port     int
 	inode    string
-	loopback bool
+	// onLink is a socket bound to a loopback or link-local address, which
+	// nothing beyond this host or its own link can reach.
+	onLink bool
 }
+
+// dhcpClientPorts are where DHCP clients listen for their server's answers;
+// the rules let those in already, so they are not services to decide on.
+var dhcpClientPorts = map[int]bool{68: true, 546: true}
 
 // readSockets lists the listening TCP sockets and the unconnected UDP ones.
 func readSockets(proc string) ([]socket, error) {
@@ -352,7 +358,10 @@ func readSockets(proc string) ([]socket, error) {
 			if !ok {
 				continue
 			}
-			sockets = append(sockets, socket{protocol: source.protocol, port: port, inode: fields[9], loopback: address.IsLoopback()})
+			sockets = append(sockets, socket{
+				protocol: source.protocol, port: port, inode: fields[9],
+				onLink: address.IsLoopback() || address.IsLinkLocalUnicast(),
+			})
 		}
 	}
 	return sockets, nil
@@ -379,7 +388,7 @@ func listeningPorts(sockets []socket) []listening {
 	result := []listening{}
 	for _, s := range sockets {
 		entry := listening{Protocol: s.protocol, Port: s.port}
-		if s.loopback || s.port == 0 || seen[entry] {
+		if s.onLink || s.port == 0 || seen[entry] || (s.protocol == "udp" && dhcpClientPorts[s.port]) {
 			continue
 		}
 		seen[entry] = true
@@ -394,8 +403,8 @@ func listeningPorts(sockets []socket) []listening {
 	return result
 }
 
-// sshPorts are the TCP ports sshd itself listens on outside loopback; an
-// sshd started by a socket unit is not recognized and gives none.
+// sshPorts are the TCP ports sshd itself listens on beyond loopback and link
+// addresses; an sshd started by a socket unit is not recognized and gives none.
 func sshPorts(proc string, sockets []socket) []int {
 	owned := map[string]bool{}
 	entries, _ := os.ReadDir(proc)
@@ -417,7 +426,7 @@ func sshPorts(proc string, sockets []socket) []int {
 	}
 	ports := []int{}
 	for _, s := range sockets {
-		if s.protocol == "tcp" && !s.loopback && owned[s.inode] && !slices.Contains(ports, s.port) && len(ports) < maxSSHPorts {
+		if s.protocol == "tcp" && !s.onLink && owned[s.inode] && !slices.Contains(ports, s.port) && len(ports) < maxSSHPorts {
 			ports = append(ports, s.port)
 		}
 	}

@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -97,16 +96,24 @@ func TestRulesInARealKernel(t *testing.T) {
 	}
 	noSets := `{}`
 
-	// Observe drops nothing that the final rule catches, and records it.
+	// Observe drops nothing that the final rule catches, and records it; a
+	// port nothing listens on is a scanner's guess and stays out of the record.
 	put("observe", noSets, "null", "[]")
 	alive("existing inbound", inbound, true)
 	alive("existing outbound", outbound, true)
 	if !reaches(5003) {
 		t.Fatal("observe dropped a new connection")
 	}
+	reaches(5009)
 	status := &Status{firewall: f, system: system}
-	if hits := status.readHits(context.Background()); !strings.Contains(fmt.Sprint(hits.Final), "tcp") {
-		t.Fatalf("observe recorded nothing: %+v", hits)
+	recorded := map[int]bool{}
+	for _, hit := range status.readHits(context.Background()).Final {
+		if hit.Protocol == "tcp" && hit.Port != nil {
+			recorded[*hit.Port] = true
+		}
+	}
+	if !recorded[5003] || recorded[5009] {
+		t.Fatalf("observe recorded %v, want the listening 5003 and not the closed 5009", recorded)
 	}
 
 	// Replacing the whole table keeps established connections; enforce drops
