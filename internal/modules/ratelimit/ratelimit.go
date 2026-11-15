@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/akastrmix/akastr-agent/internal/hostroute"
 	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
@@ -97,7 +98,7 @@ var (
 
 func New(flows Flows) *Limiter {
 	return &Limiter{flows: flows, tc: execTC{}, links: links, limits: map[string]Target{}, rules: newRules(),
-		routes: func() ([]string, []string, error) { return defaultRoutes("/proc") }}
+		routes: func() ([]string, []string, error) { return hostroute.Defaults("/proc") }}
 }
 
 func (l *Limiter) Validate(_ string, raw json.RawMessage) error {

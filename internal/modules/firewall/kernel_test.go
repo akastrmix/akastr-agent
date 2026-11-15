@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -23,23 +26,73 @@ const (
 	sysSetns = 308
 )
 
-// nsHost runs the real rules in a network namespace; connection tracking and
-// the probe stay out of the host's kernel settings and network.
-type nsHost struct{ *system }
+// nsHost runs the real rules in a network namespace; connection tracking,
+// forwarding and the probe stay out of the host's kernel settings and network.
+type nsHost struct {
+	*system
+	namespace string
+}
 
 func (nsHost) conntrackMax() (int64, bool)                 { return 1 << 40, true }
 func (nsHost) raiseConntrack(context.Context, int64) error { return errors.New("not in tests") }
 func (nsHost) probe(context.Context) error                 { return nil }
+func (nsHost) transit() ([]string, []string)               { return []string{"eth0"}, nil }
 
-// TestRulesInARealKernel installs rendered rules in a throwaway network
-// namespace and checks what they let through. It needs root and nft.
-func TestRulesInARealKernel(t *testing.T) {
+func (h nsHost) forwarding() (bool, error) {
+	out, err := exec.Command(ipProgram, "netns", "exec", h.namespace, sysctl, "-n", "net.ipv4.ip_forward").Output()
+	return strings.TrimSpace(string(out)) == "1", err
+}
+
+func (h nsHost) setForwarding(_ context.Context, on bool) error {
+	value := "0"
+	if on {
+		value = "1"
+	}
+	return exec.Command(ipProgram, "netns", "exec", h.namespace, sysctl, "-qw", "net.ipv4.ip_forward="+value).Run()
+}
+
+// kernelReady skips unless everything the rules use is already in the kernel:
+// these tests run on shared machines and never load a module. Without nft_fib
+// the guard that translates only packets for this node becomes the node's
+// address, which is the same thing here.
+func kernelReady(t *testing.T, node string) {
+	t.Helper()
 	if os.Geteuid() != 0 || toolMissing() {
 		t.Skip("needs root and nft")
 	}
 	if _, err := os.Stat(ipProgram); err != nil {
 		t.Skip("needs ip")
 	}
+	for _, module := range []string{"nf_tables", "nf_conntrack", "nf_conntrack_netlink", "nf_nat", "nft_chain_nat",
+		"nft_nat", "nft_masq", "nft_ct", "nft_socket", "veth", "bridge"} {
+		if _, err := os.Stat("/sys/module/" + module); err != nil {
+			t.Skipf("kernel module %s is not loaded, and tests never load modules", module)
+		}
+	}
+	for _, module := range []string{"nft_fib", "nft_fib_inet", "nft_fib_ipv4", "nft_fib_ipv6"} {
+		if _, err := os.Stat("/sys/module/" + module); err != nil {
+			guard := localGuard
+			localGuard = "ip daddr " + node
+			t.Cleanup(func() { localGuard = guard })
+			t.Logf("%s not loaded: the local-destination guard is ip daddr %s", module, node)
+			return
+		}
+	}
+}
+
+func inSpace(t *testing.T, namespace string) func() (int, error) {
+	return func() (int, error) {
+		var fd int
+		var err error
+		inNamespace(t, namespace, func() { fd, err = openNetlink() })
+		return fd, err
+	}
+}
+
+// TestRulesInARealKernel installs rendered rules in a throwaway network
+// namespace and checks what they let through. It needs root and nft.
+func TestRulesInARealKernel(t *testing.T) {
+	kernelReady(t, "10.201.0.1")
 	node, peer := fmt.Sprintf("akfw-%d-n", os.Getpid()), fmt.Sprintf("akfw-%d-p", os.Getpid())
 	t.Cleanup(func() {
 		_ = exec.Command(ipProgram, "netns", "del", node).Run()
@@ -59,8 +112,9 @@ func TestRulesInARealKernel(t *testing.T) {
 			t.Fatalf("ip %v: %v %s", args, err, out)
 		}
 	}
-	system := &system{nft: []string{ipProgram, "netns", "exec", node, NFTProgram}, proc: "/proc"}
-	f := newFirewall(nsHost{system}, t.TempDir())
+	system := &system{nft: []string{ipProgram, "netns", "exec", node, NFTProgram}, proc: "/proc", sys: "/sys"}
+	system.netlink = inSpace(t, node)
+	f := newFirewall(nsHost{system, node}, t.TempDir())
 	f.missing = func() bool { return false }
 	f.start(context.Background())
 
@@ -223,4 +277,323 @@ func answers(c net.Conn) bool {
 	}
 	line, err := bufio.NewReader(c).ReadString('\n')
 	return err == nil && line == "ping\n"
+}
+
+// TestForwardingInARealKernel puts a client, the node and two landings on one
+// link and forwards through the node with the real rules.
+func TestForwardingInARealKernel(t *testing.T) {
+	kernelReady(t, "10.202.0.1")
+	prefix := fmt.Sprintf("akfw-%d-", os.Getpid())
+	space := func(name string) string { return prefix + name }
+	for _, name := range []string{"sw", "c", "n", "a", "b"} {
+		t.Cleanup(func() { _ = exec.Command(ipProgram, "netns", "del", space(name)).Run() })
+	}
+	ip := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command(ipProgram, args...).CombinedOutput(); err != nil {
+			t.Fatalf("ip %v: %v %s", args, err, out)
+		}
+	}
+	for _, name := range []string{"sw", "c", "n", "a", "b"} {
+		ip("netns", "add", space(name))
+		ip("-n", space(name), "link", "set", "lo", "up")
+	}
+	ip("-n", space("sw"), "link", "add", "br0", "type", "bridge")
+	ip("-n", space("sw"), "link", "set", "br0", "up")
+	hosts := map[string]string{"c": "10.202.0.10", "n": "10.202.0.1", "a": "10.202.0.20", "b": "10.202.0.30"}
+	for name, address := range hosts {
+		ip("-n", space("sw"), "link", "add", "p-"+name, "type", "veth", "peer", "name", "eth0", "netns", space(name))
+		ip("-n", space("sw"), "link", "set", "p-"+name, "master", "br0", "up")
+		ip("-n", space(name), "addr", "add", address+"/24", "dev", "eth0")
+		ip("-n", space(name), "link", "set", "eth0", "up")
+	}
+	ip("-n", space("n"), "route", "add", "default", "via", "10.202.0.254")
+	// The client uses the node as its router to landing b: the transit check.
+	ip("-n", space("c"), "route", "add", hosts["b"]+"/32", "via", hosts["n"])
+	for _, setting := range []string{"net.ipv4.ip_forward=0", "net.ipv4.conf.all.send_redirects=0", "net.ipv4.conf.eth0.send_redirects=0"} {
+		ip("netns", "exec", space("n"), sysctl, "-qw", setting)
+	}
+	for _, setting := range []string{"net.ipv4.conf.all.accept_redirects=0", "net.ipv4.conf.eth0.accept_redirects=0"} {
+		ip("netns", "exec", space("c"), sysctl, "-qw", setting)
+	}
+
+	for _, landing := range []string{"a", "b"} {
+		tag := strings.ToUpper(landing)
+		taggedEcho(t, space(landing), "tcp", ":5000", tag)
+		taggedEcho(t, space(landing), "udp", ":5000", tag)
+	}
+	taggedEcho(t, space("b"), "tcp", ":6000", "B")
+	taggedEcho(t, space("n"), "tcp", ":7000", "N")
+
+	system := &system{nft: []string{ipProgram, "netns", "exec", space("n"), NFTProgram}, proc: "/proc", sys: "/sys"}
+	system.netlink = inSpace(t, space("n"))
+	host := nsHost{system, space("n")}
+	f := newFirewall(host, t.TempDir())
+	f.missing = func() bool { return false }
+	f.start(context.Background())
+	put := func(mode, blocked string, forwards ...string) {
+		t.Helper()
+		sets := `{}`
+		ban := "null"
+		if blocked != "" {
+			sets, ban = `{"ban":{"addresses":["`+blocked+`"],"domains":[]}}`, `"ban"`
+		}
+		raw := `{"mode":"` + mode + `","retry":0,"sets":` + sets + `,"blocked":` + ban + `,"exempt":null,"ceilings":[],
+			"rules":[{"action":"allow","sources":"any","protocol":"tcp","ports":[[22,22]]}],"forwards":[` + strings.Join(forwards, ",") + `]}`
+		codes, err := f.Apply(context.Background(), map[string]json.RawMessage{Key: json.RawMessage(raw)})
+		if err != nil || codes[Key] != "" {
+			t.Fatalf("Apply(%s %v) = %v, %v", mode, forwards, codes, err)
+		}
+	}
+	to := func(landing, protocol string) string {
+		return `{"protocol":"` + protocol + `","port":5000,"to":"` + hosts[landing] + `","to_port":5000}`
+	}
+	both := func(landing string) []string { return []string{to(landing, "tcp"), to(landing, "udp")} }
+	node := hosts["n"] + ":5000"
+	forwarded := func(t *testing.T) string {
+		t.Helper()
+		tag, _ := ask(t, space("c"), "tcp", node)
+		return tag
+	}
+
+	// Through the map, the landing sees the node's address.
+	put("enforce", "", both("a")...)
+	if on, _ := host.forwarding(); !on {
+		t.Fatal("forwarding stayed off")
+	}
+	tcpFlow, udpFlow := flow(t, space("c"), "tcp", node), flow(t, space("c"), "udp", node)
+	for name, c := range map[string]*tagged{"tcp": tcpFlow, "udp": udpFlow} {
+		if tag, peer := c.ask(); tag != "A" || peer != hosts["n"] {
+			t.Fatalf("%s through the forward: %q from the landing's view of %q", name, tag, peer)
+		}
+	}
+	// Changing members keeps live connections.
+	put("enforce", "", append(both("a"), `{"protocol":"tcp","port":5001,"to":"`+hosts["b"]+`","to_port":5001}`)...)
+	if tag, _ := tcpFlow.ask(); tag != "A" {
+		t.Fatalf("live TCP after a member change: %q", tag)
+	}
+	if tag, _ := udpFlow.ask(); tag != "A" {
+		t.Fatalf("live UDP after a member change: %q", tag)
+	}
+
+	// The landing moves: the old UDP flow follows with its next packet, and
+	// the node's own connections to the old landing are not forwards.
+	ownTCP, ownUDP := flow(t, space("n"), "tcp", hosts["a"]+":5000"), flow(t, space("n"), "udp", hosts["a"]+":5000")
+	for _, c := range []*tagged{ownTCP, ownUDP} {
+		c.ask()
+	}
+	put("enforce", "", both("b")...)
+	// Deleted, they would come back on the node's next packet, but what the
+	// landing sends first meanwhile would be a new connection and dropped.
+	if own := trackedFrom(t, system, hosts["a"]+":5000"); own != 2 {
+		t.Fatalf("the node's own connections to the old landing left in tracking: %d, want 2", own)
+	}
+	if tag, _ := udpFlow.ask(); tag != "B" {
+		t.Fatalf("old UDP flow after the landing moved: %q", tag)
+	}
+	if tag, _ := tcpFlow.ask(); tag == "A" {
+		t.Fatal("old TCP connection still reaches the old landing")
+	}
+	if tag := forwarded(t); tag != "B" {
+		t.Fatalf("new connection after the landing moved: %q", tag)
+	}
+	for name, c := range map[string]*tagged{"tcp": ownTCP, "udp": ownUDP} {
+		if tag, _ := c.ask(); tag != "A" {
+			t.Fatalf("the node's own %s connection to the old landing: %q", name, tag)
+		}
+	}
+
+	// The forward goes: the old flow stops reaching the landing, and
+	// forwarding goes back off.
+	put("enforce", "")
+	if tag, _ := udpFlow.ask(); tag == "B" {
+		t.Fatal("old UDP flow still reaches the landing of a removed forward")
+	}
+	if on, _ := host.forwarding(); on {
+		t.Fatal("forwarding left on")
+	}
+
+	// A ban holds before translation.
+	put("enforce", "", both("a")...)
+	live := flow(t, space("c"), "tcp", node)
+	put("enforce", hosts["c"], both("a")...)
+	if tag, _ := live.ask(); tag != "" {
+		t.Fatal("ban left the banned client's forwarded connection")
+	}
+	if tag := forwarded(t); tag != "" {
+		t.Fatal("banned client used the forward")
+	}
+
+	// Someone using the node as a router gets nowhere, on any port, and is
+	// not redirected to a landing either.
+	put("enforce", "", both("a")...)
+	for _, port := range []string{"6000", "5000"} {
+		if tag, _ := ask(t, space("c"), "tcp", hosts["b"]+":"+port); tag != "" {
+			t.Fatalf("transit to b:%s through the node answered by %q", port, tag)
+		}
+	}
+	if tag := forwarded(t); tag != "A" {
+		t.Fatalf("forward beside the transit check: %q", tag)
+	}
+
+	// Off still forwards and filters nothing; off without forwards is no table.
+	put("off", "", both("a")...)
+	if tag := forwarded(t); tag != "A" {
+		t.Fatalf("forward in mode off: %q", tag)
+	}
+	if tag, _ := ask(t, space("c"), "tcp", hosts["n"]+":7000"); tag != "N" {
+		t.Fatal("mode off filtered a local service")
+	}
+	put("off", "")
+	if installed, err := system.installed(context.Background()); err != nil || installed != "" {
+		t.Fatalf("off without forwards left a table: %q %v", installed, err)
+	}
+	if on, _ := host.forwarding(); on {
+		t.Fatal("forwarding left on after the table went")
+	}
+}
+
+// taggedEcho answers each TCP line or UDP datagram with "tag peer".
+func taggedEcho(t *testing.T, namespace, network, address, tag string) {
+	t.Helper()
+	if network == "udp" {
+		var pc net.PacketConn
+		var err error
+		inNamespace(t, namespace, func() { pc, err = net.ListenPacket("udp4", address) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { pc.Close() })
+		go func() {
+			buf := make([]byte, 512)
+			for {
+				n, peer, err := pc.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				host, _, _ := net.SplitHostPort(peer.String())
+				_, _ = pc.WriteTo([]byte(tag+" "+host+" "+string(buf[:n])), peer)
+			}
+		}()
+		return
+	}
+	var listener net.Listener
+	var err error
+	inNamespace(t, namespace, func() { listener, err = net.Listen("tcp4", address) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			c, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer c.Close()
+				host, _, _ := net.SplitHostPort(c.RemoteAddr().String())
+				reader := bufio.NewReader(c)
+				for {
+					line, err := reader.ReadString('\n')
+					if err != nil || func() error { _, err := c.Write([]byte(tag + " " + host + " " + line)); return err }() != nil {
+						return
+					}
+				}
+			}()
+		}
+	}()
+}
+
+// tagged is one live connection or UDP flow; ask returns who answered it.
+type tagged struct {
+	conn   net.Conn
+	reader *bufio.Reader
+	udp    bool
+	seq    int
+}
+
+func flow(t *testing.T, namespace, network, address string) *tagged {
+	t.Helper()
+	var c net.Conn
+	var err error
+	inNamespace(t, namespace, func() { c, err = net.DialTimeout(network+"4", address, time.Second) })
+	if err != nil {
+		t.Fatalf("dial %s %s from %s: %v", network, address, namespace, err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return &tagged{conn: c, reader: bufio.NewReader(c), udp: network == "udp"}
+}
+
+// ask opens a new connection and asks once; "" when nobody answers.
+func ask(t *testing.T, namespace, network, address string) (string, string) {
+	t.Helper()
+	var c net.Conn
+	var err error
+	inNamespace(t, namespace, func() { c, err = net.DialTimeout(network+"4", address, time.Second) })
+	if err != nil {
+		return "", ""
+	}
+	defer c.Close()
+	return (&tagged{conn: c, reader: bufio.NewReader(c), udp: network == "udp"}).ask()
+}
+
+func (c *tagged) ask() (tag, peer string) {
+	c.seq++
+	payload := strconv.Itoa(c.seq)
+	deadline := time.Now().Add(time.Second)
+	_ = c.conn.SetDeadline(deadline)
+	if c.udp {
+		if _, err := c.conn.Write([]byte(payload)); err != nil {
+			return "", ""
+		}
+		buf := make([]byte, 512)
+		for time.Now().Before(deadline) {
+			n, err := c.conn.Read(buf)
+			if errors.Is(err, syscall.ECONNREFUSED) {
+				continue
+			}
+			if err != nil {
+				return "", ""
+			}
+			if fields := strings.Fields(string(buf[:n])); len(fields) == 3 && fields[2] == payload {
+				return fields[0], fields[1]
+			}
+		}
+		return "", ""
+	}
+	if _, err := c.conn.Write([]byte(payload + "\n")); err != nil {
+		return "", ""
+	}
+	for {
+		line, err := c.reader.ReadString('\n')
+		if err != nil {
+			return "", ""
+		}
+		if fields := strings.Fields(line); len(fields) == 3 && fields[2] == payload {
+			return fields[0], fields[1]
+		}
+	}
+}
+
+// trackedFrom counts the untranslated tracked connections whose replies come
+// from address.
+func trackedFrom(t *testing.T, s *system, address string) int {
+	t.Helper()
+	fd, err := s.netlink()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(fd)
+	from := netip.MustParseAddrPort(address)
+	count := 0
+	err = (&ctNetlink{fd: fd}).exchange(ctGet, syscall.NLM_F_REQUEST|syscall.NLM_F_DUMP, nil, func(payload []byte) {
+		if e, ok := parseTracked(payload); ok && e.reply == from && e.status&ipsDstNAT == 0 {
+			count++
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return count
 }

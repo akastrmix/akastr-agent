@@ -8,14 +8,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/akastrmix/akastr-agent/internal/hostroute"
 )
 
 // The programs the module runs, each with fixed arguments. Rules reach nft on
@@ -44,17 +49,31 @@ type host interface {
 	// probe opens a new connection to Cloud: name lookup, TCP and TLS.
 	probe(ctx context.Context) error
 	memory() (uint64, error)
+	// forwarding reads whether IPv4 forwarding is on.
+	forwarding() (bool, error)
+	// setForwarding turns IPv4 forwarding on or off.
+	setForwarding(ctx context.Context, on bool) error
+	// boot names this run of the machine; a reboot changes it.
+	boot() string
+	// transit lists the default-route interfaces of each family.
+	transit() (v4, v6 []string)
+	// forget deletes the tracked connections this module translated on
+	// protocol and port whose replies come from the old target to.
+	forget(ctx context.Context, protocol string, port int, to netip.AddrPort) error
 }
 
 type system struct {
 	// nft is the command line that runs nft; tests run it in a namespace.
 	nft      []string
 	proc     string
+	sys      string
 	endpoint string
+	// netlink opens the connection-tracking socket; tests open it in a namespace.
+	netlink func() (int, error)
 }
 
 func newSystem(controlEndpoint string) *system {
-	return &system{nft: []string{NFTProgram}, proc: "/proc", endpoint: controlEndpoint}
+	return &system{nft: []string{NFTProgram}, proc: "/proc", sys: "/sys", endpoint: controlEndpoint, netlink: openNetlink}
 }
 
 // HostCommands are the programs the installer provides for the module.
@@ -144,7 +163,31 @@ func (s *system) installed(ctx context.Context) (string, error) {
 	if !present {
 		return "", nil
 	}
-	out, err := s.run(ctx, "", "-j", "list", "chain", "inet", Table, "input")
+	// A table from before forwarding has no marker chain: it reads as
+	// unmarked and is replaced like a stale one.
+	chains, err := s.run(ctx, "", "-j", "list", "chains", "inet")
+	if err != nil {
+		return "", err
+	}
+	var chainListing struct {
+		Nftables []struct {
+			Chain *struct {
+				Table string `json:"table"`
+				Name  string `json:"name"`
+			} `json:"chain"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(chains, &chainListing); err != nil {
+		return "", err
+	}
+	marked := false
+	for _, item := range chainListing.Nftables {
+		marked = marked || (item.Chain != nil && item.Chain.Table == Table && item.Chain.Name == markerChain)
+	}
+	if !marked {
+		return "unmarked", nil
+	}
+	out, err := s.run(ctx, "", "-j", "list", "chain", "inet", Table, markerChain)
 	if err != nil {
 		return "", err
 	}
@@ -255,6 +298,68 @@ func (s *system) memory() (uint64, error) {
 		}
 	}
 	return 0, errors.New("MemTotal missing")
+}
+
+// forwarding reads net.ipv4.ip_forward.
+func (s *system) forwarding() (bool, error) {
+	data, err := os.ReadFile(filepath.Join(s.proc, "sys/net/ipv4/ip_forward"))
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(data)) == "1", nil
+}
+
+// setForwarding runs as a one-off root unit, like raiseConntrack: the Agent's
+// own unit cannot write kernel settings. Only IPv4, and no settings file: a
+// reboot turns it off again.
+func (s *system) setForwarding(ctx context.Context, on bool) error {
+	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	defer cancel()
+	value := "0"
+	if on {
+		value = "1"
+	}
+	args := []string{"--quiet", "--wait", "--collect", "--service-type=exec", "--description=akastr-firewall-forwarding",
+		sysctl, "-w", "net.ipv4.ip_forward=" + value}
+	if err := exec.CommandContext(ctx, systemdRun, args...).Run(); err != nil {
+		return fmt.Errorf("sysctl: %w", err)
+	}
+	return nil
+}
+
+func (s *system) boot() string {
+	data, err := os.ReadFile(filepath.Join(s.proc, "sys/kernel/random/boot_id"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+var interfaceName = regexp.MustCompile(`^[A-Za-z0-9_.:@-]{1,15}$`)
+
+// transit lists each family's default-route interfaces. A bridge is left out:
+// where br_netfilter is loaded, traffic between its ports passes the forward
+// hook entering and leaving through the bridge itself, untranslated.
+func (s *system) transit() (v4, v6 []string) {
+	routes4, routes6, err := hostroute.Defaults(s.proc)
+	if err != nil {
+		slog.Warn("default routes unreadable; no transit check", "error", err.Error())
+		return nil, nil
+	}
+	keep := func(names []string) []string {
+		var kept []string
+		for _, name := range names {
+			if !interfaceName.MatchString(name) {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(s.sys, "class/net", name, "bridge")); err == nil {
+				continue
+			}
+			kept = append(kept, name)
+		}
+		return kept
+	}
+	return keep(routes4), keep(routes6)
 }
 
 // conntrackLimit is the tracked-connection limit for this much memory: whole

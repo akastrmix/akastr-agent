@@ -23,6 +23,16 @@ type fakeHost struct {
 	reachable func() bool
 	probes    int
 	conntrack int64
+	// ipForward is net.ipv4.ip_forward; setFails makes turning it on fail.
+	ipForward bool
+	setFails  bool
+	switches  []bool
+	bootID    string
+	// forgetFails makes cleaning fail; forgotten lists what was cleaned.
+	forgetFails bool
+	forgotten   []string
+	// events orders what reached the machine.
+	events []string
 }
 
 var markerText = regexp.MustCompile(`comment "(akastr:[^"]+)"`)
@@ -43,14 +53,66 @@ func (h *fakeHost) load(_ context.Context, script string) error {
 	switch {
 	case script == remove():
 		h.table = ""
+		h.events = append(h.events, "remove")
 	case strings.HasPrefix(script, remove()):
 		h.table = script
+		h.events = append(h.events, "install")
 	case h.table != "":
 		// A member update: the rules stay, the members are the new ones.
 		rules, _, _ := strings.Cut(h.table, "}\n}\n")
-		h.table = rules + "}\n}\n" + strings.ReplaceAll(script, "flush set", "#flush set")
+		h.table = rules + "}\n}\n" + strings.NewReplacer("flush set", "#flush set", "flush map", "#flush map").Replace(script)
 	}
 	return nil
+}
+
+func (h *fakeHost) forwarding() (bool, error) { return h.ipForward, nil }
+
+func (h *fakeHost) setForwarding(_ context.Context, on bool) error {
+	h.switches = append(h.switches, on)
+	if on && h.setFails {
+		return errors.New("systemd-run failed")
+	}
+	h.ipForward = on
+	h.events = append(h.events, "forwarding "+strconv.FormatBool(on))
+	return nil
+}
+
+func (h *fakeHost) boot() string {
+	if h.bootID == "" {
+		return "boot-1"
+	}
+	return h.bootID
+}
+
+func (h *fakeHost) transit() ([]string, []string) { return []string{"eth0"}, nil }
+
+func (h *fakeHost) forget(_ context.Context, protocol string, port int, to netip.AddrPort) error {
+	if h.forgetFails {
+		return errors.New("netlink failed")
+	}
+	h.forgotten = append(h.forgotten, protocol+"/"+strconv.Itoa(port)+"->"+to.String())
+	return nil
+}
+
+var forwardElements = regexp.MustCompile(`add element inet akastr_firewall forwards \{ ([^}]*) \}`)
+
+// forwards reads the map entries the table carries now.
+func (h *fakeHost) forwards() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := len(h.loads) - 1; i >= 0; i-- {
+		script := h.loads[i]
+		if script == remove() {
+			return ""
+		}
+		if strings.HasPrefix(script, remove()) || strings.Contains(script, "flush map inet akastr_firewall forwards") {
+			if m := forwardElements.FindStringSubmatch(script); m != nil {
+				return m[1]
+			}
+			return ""
+		}
+	}
+	return ""
 }
 
 func (h *fakeHost) conntrackMax() (int64, bool) { return h.conntrack, h.conntrack > 0 }
@@ -105,6 +167,15 @@ func target(mode string, port int, extra ...string) json.RawMessage {
 	}
 	return json.RawMessage(`{"mode":"` + mode + `","retry":0,"sets":` + sets + `,"blocked":null,"exempt":null,"ceilings":[],
 		"rules":[{"action":"allow","sources":"any","protocol":"tcp","ports":[[` + strconv.Itoa(port) + `,` + strconv.Itoa(port) + `]]}]}`)
+}
+
+// forwarding adds forwards to a target, as Cloud sends them.
+func forwarding(raw json.RawMessage, forwards string) json.RawMessage {
+	return json.RawMessage(strings.TrimSuffix(strings.TrimSpace(string(raw)), "}") + `,"forwards":[` + forwards + `]}`)
+}
+
+func forward(protocol string, port int, to string) string {
+	return `{"protocol":"` + protocol + `","port":` + strconv.Itoa(port) + `,"to":"` + to + `","to_port":` + strconv.Itoa(port) + `}`
 }
 
 func apply(t *testing.T, f *Firewall, raw json.RawMessage) string {
@@ -215,7 +286,7 @@ func TestRestartWithUnconfirmedRulesRestoresPreviousWhenCloudIsUnreachable(t *te
 	if code := f.save(); code != "" {
 		t.Fatal(code)
 	}
-	if err := h.load(context.Background(), render(candidate, nil).install()); err != nil {
+	if err := h.load(context.Background(), render(candidate, nil, placement{}).install()); err != nil {
 		t.Fatal(err)
 	}
 	h.reachable = func() bool { return false }
@@ -328,8 +399,172 @@ func TestNoSourcesNeverMeansEveryone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules := render(valid, nil).rules
+	rules := render(valid, nil, placement{}).rules
 	if !strings.Contains(rules, "ip saddr @m_x_4 accept") || regexp.MustCompile(`(?m)^\s+accept$`).MatchString(rules) {
 		t.Fatalf("rule for an empty set:\n%s", rules)
+	}
+}
+
+// Forwarding goes back off only where this Agent turned it on; a machine that
+// forwarded before (Docker) keeps forwarding.
+func TestForwardingIsTurnedOffOnlyWhereTheAgentTurnedItOn(t *testing.T) {
+	for _, before := range []bool{false, true} {
+		h := &fakeHost{ipForward: before}
+		f := newTestFirewall(t, h, t.TempDir())
+		started(t, f)
+		if code := apply(t, f, forwarding(target("observe", 22), forward("udp", 34820, "203.0.113.7"))); code != "" || !h.ipForward {
+			t.Fatalf("before=%v: code %q, ip_forward %v", before, code, h.ipForward)
+		}
+		if opened := f.state.ForwardingOpened != ""; opened == before {
+			t.Fatalf("before=%v: recorded as opened = %v", before, opened)
+		}
+		if code := apply(t, f, target("observe", 22)); code != "" || h.ipForward != before {
+			t.Fatalf("before=%v: after the last forward went: code %q, ip_forward %v", before, code, h.ipForward)
+		}
+		if before && len(h.switches) != 0 {
+			t.Fatalf("touched forwarding that was already on: %v", h.switches)
+		}
+	}
+}
+
+func TestForwardingThatCannotBeTurnedOnKeepsTheForwardsTheTableHas(t *testing.T) {
+	h := &fakeHost{setFails: true}
+	f := newTestFirewall(t, h, t.TempDir())
+	started(t, f)
+	a := forwarding(target("observe", 22), forward("tcp", 34820, "203.0.113.7"))
+	if code := apply(t, f, a); code != codeForwardingFailed || h.table == "" || h.forwards() != "" {
+		t.Fatalf("code %q, forwards %q, table installed %v", code, h.forwards(), h.table != "")
+	}
+	h.setFails = false
+	if code := apply(t, f, a); code != "" || !strings.Contains(h.forwards(), "203.0.113.7") {
+		t.Fatalf("code %q, forwards %q", code, h.forwards())
+	}
+	// Someone turns forwarding off and it cannot come back: the landing moves,
+	// but the table keeps what it had rather than half of the change.
+	h.ipForward, h.setFails = false, true
+	b := forwarding(target("observe", 22), forward("tcp", 34820, "203.0.113.8"))
+	if code := apply(t, f, b); code != codeForwardingFailed || !strings.Contains(h.forwards(), "203.0.113.7") {
+		t.Fatalf("code %q, forwards %q", code, h.forwards())
+	}
+}
+
+// A forward change only replaces members: no new table, no probe.
+func TestForwardChangesFollowEvenARefusedTarget(t *testing.T) {
+	h := &fakeHost{}
+	f := newTestFirewall(t, h, t.TempDir())
+	started(t, f)
+	if code := apply(t, f, forwarding(target("enforce", 22), forward("tcp", 34820, "203.0.113.7"))); code != "" {
+		t.Fatal(code)
+	}
+	installs, probes := h.installs(), h.probes
+	if code := apply(t, f, forwarding(target("enforce", 22), forward("tcp", 34820, "203.0.113.8"))); code != "" ||
+		h.installs() != installs || h.probes != probes || !strings.Contains(h.forwards(), "203.0.113.8") {
+		t.Fatalf("code %q, installs %d → %d, probes %d → %d, forwards %q", code, installs, h.installs(), probes, h.probes, h.forwards())
+	}
+	// New rules that cut the node off are undone and refused from then on;
+	// the landing's next address still reaches the table.
+	calls := 0
+	h.reachable = func() bool { calls++; return calls == 1 }
+	if code := apply(t, f, forwarding(target("enforce", 23), forward("tcp", 34820, "203.0.113.9"))); code != codeUnconfirmed {
+		t.Fatalf("cut-off target code = %q", code)
+	}
+	h.reachable = nil
+	if code := apply(t, f, forwarding(target("enforce", 23), forward("tcp", 34820, "203.0.113.10"))); code != codeUnconfirmed ||
+		!installedPort(h, 22) || !strings.Contains(h.forwards(), "203.0.113.10") {
+		t.Fatalf("code %q, forwards %q, table %q", code, h.forwards(), h.table)
+	}
+}
+
+// Mode off keeps the forwards working without filtering and, like removing
+// the table, never waits on Cloud; without forwards it removes the table.
+func TestModeOffKeepsForwardsWithoutProbing(t *testing.T) {
+	h := &fakeHost{reachable: func() bool { return false }}
+	f := newTestFirewall(t, h, t.TempDir())
+	started(t, f)
+	if code := apply(t, f, forwarding(target("off", 22), forward("udp", 34820, "203.0.113.7"))); code != "" ||
+		h.probes != 0 || !strings.Contains(h.forwards(), "203.0.113.7") || strings.Contains(h.table, "chain input") {
+		t.Fatalf("code %q, probes %d, forwards %q, table %q", code, h.probes, h.forwards(), h.table)
+	}
+	if code := apply(t, f, target("off", 22)); code != "" || h.table != "" || h.ipForward {
+		t.Fatalf("code %q, table %q, ip_forward %v", code, h.table, h.ipForward)
+	}
+}
+
+// Old connections go to the old target until cleaned; a failed cleaning is
+// kept, across restarts, for the next round.
+func TestCleaningOldConnectionsIsRetried(t *testing.T) {
+	dir := t.TempDir()
+	h := &fakeHost{}
+	f := newTestFirewall(t, h, dir)
+	started(t, f)
+	apply(t, f, forwarding(target("observe", 22), forward("udp", 34820, "203.0.113.7")))
+	h.forgetFails = true
+	if code := apply(t, f, forwarding(target("observe", 22), forward("udp", 34820, "203.0.113.8"))); code != "" || len(f.state.Stale) != 1 {
+		t.Fatalf("code %q, stale %+v", code, f.state.Stale)
+	}
+	h.forgetFails = false
+	next := newTestFirewall(t, h, dir)
+	started(t, next)
+	if code := apply(t, next, forwarding(target("observe", 22), forward("udp", 34820, "203.0.113.8"))); code != "" ||
+		len(next.state.Stale) != 0 || strings.Join(h.forgotten, ",") != "udp/34820->203.0.113.7:34820" {
+		t.Fatalf("code %q, stale %+v, forgotten %v", code, next.state.Stale, h.forgotten)
+	}
+}
+
+// After a reboot forwarding is off again and the Agent turns it on before
+// the table comes back.
+func TestRestartTurnsForwardingOnBeforeTheTable(t *testing.T) {
+	dir := t.TempDir()
+	h := &fakeHost{}
+	f := newTestFirewall(t, h, dir)
+	started(t, f)
+	apply(t, f, forwarding(target("enforce", 22), forward("tcp", 34820, "203.0.113.7")))
+	rebooted := &fakeHost{bootID: "boot-2", reachable: func() bool { return false }}
+	next := newTestFirewall(t, rebooted, dir)
+	started(t, next)
+	if strings.Join(rebooted.events, ",") != "forwarding true,install" || !strings.Contains(rebooted.forwards(), "203.0.113.7") ||
+		next.state.ForwardingOpened != "boot-2" {
+		t.Fatalf("events %v, forwards %q, opened %q", rebooted.events, rebooted.forwards(), next.state.ForwardingOpened)
+	}
+}
+
+// A Cloud or a state file from before forwarding has no "forwards": none.
+func TestTargetsAndStateWithoutForwardsMeanNone(t *testing.T) {
+	decoded, err := decodeTarget(target("enforce", 22))
+	if err != nil || decoded.Forwards == nil || len(decoded.Forwards) != 0 {
+		t.Fatalf("decoded %+v, %v", decoded.Forwards, err)
+	}
+	for _, bad := range []string{
+		`null`,
+		forward("tcp", 22, "203.0.113.7") + "," + forward("tcp", 22, "203.0.113.8"),
+		forward("icmp", 22, "203.0.113.7"),
+		forward("tcp", 0, "203.0.113.7"),
+		forward("tcp", 22, "203.0.113.0/24"),
+		forward("tcp", 22, "0.0.0.0"),
+		forward("tcp", 22, "127.0.0.1"),
+		forward("tcp", 22, "2001:db8::1"),
+		`{"protocol":"tcp","port":22,"to":"203.0.113.7"}`,
+	} {
+		raw := forwarding(target("enforce", 22), bad)
+		if bad == "null" {
+			raw = json.RawMessage(strings.Replace(string(forwarding(target("enforce", 22), "")), `"forwards":[]`, `"forwards":null`, 1))
+		}
+		if _, err := decodeTarget(raw); err == nil {
+			t.Fatalf("accepted forwards %s", bad)
+		}
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(StateDirectory(dir), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := `{"schema_version":1,"confirmed":` + string(target("enforce", 22)) + `,"candidate":null,"failed":"","domains":{}}`
+	if err := os.WriteFile(filepath.Join(StateDirectory(dir), "state.json"), []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &fakeHost{}
+	f := newTestFirewall(t, h, dir)
+	started(t, f)
+	if !installedPort(h, 22) || h.forwards() != "" || len(f.state.Forwards) != 0 {
+		t.Fatalf("old state not restored as no forwards: table %q, forwards %+v", h.table, f.state.Forwards)
 	}
 }

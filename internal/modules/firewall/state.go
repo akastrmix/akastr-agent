@@ -10,11 +10,15 @@ const (
 	stateSchema = 1
 	// maxDomainAddresses bounds what one name may resolve to.
 	maxDomainAddresses = 32
+	// maxStale bounds the old forward targets still waiting to be cleaned;
+	// past it the oldest are given up (their connections time out).
+	maxStale  = 2 * maxForwards
+	maxBootID = 64
 )
 
 // persisted is StateDir/firewall/state.json: what the node restores without
-// Cloud. Its size follows the target bounds: two targets and the last result
-// of each domain they name.
+// Cloud. Its size follows the target bounds: two targets, the last result of
+// each domain they name, and the forwards with their old targets.
 type persisted struct {
 	SchemaVersion int `json:"schema_version"`
 	// Confirmed is the last target installed while Cloud stayed reachable.
@@ -26,6 +30,17 @@ type persisted struct {
 	// again until Cloud changes it.
 	Failed  string                  `json:"failed"`
 	Domains map[string]domainResult `json:"domains"`
+	// Forwards are what the table forwards now. They follow every target,
+	// whatever happens to the rest of it.
+	Forwards []Forward `json:"forwards"`
+	// Stale are the old targets of forwards that were removed or changed
+	// whose tracked connections are not cleaned yet: until they are, those
+	// connections keep going to the old target.
+	Stale []Forward `json:"stale"`
+	// ForwardingOpened is the boot id of the run of the machine in which this
+	// Agent turned IPv4 forwarding on; empty when it did not. Only then does
+	// the Agent turn it off again, and a reboot has already done that.
+	ForwardingOpened string `json:"forwarding_opened"`
 }
 
 // domainResult is a domain's last addresses. A failed or empty lookup keeps
@@ -37,13 +52,37 @@ type domainResult struct {
 }
 
 func emptyState() persisted {
-	return persisted{SchemaVersion: stateSchema, Domains: map[string]domainResult{}}
+	return persisted{SchemaVersion: stateSchema, Domains: map[string]domainResult{}, Forwards: []Forward{}, Stale: []Forward{}}
+}
+
+// normalize reads a file from before port forwarding as one without forwards
+// (cross-version handoff, deleted with the one in decodeTarget).
+func (p *persisted) normalize() {
+	if p.Forwards == nil {
+		p.Forwards = []Forward{}
+	}
+	if p.Stale == nil {
+		p.Stale = []Forward{}
+	}
+	for _, t := range []*Target{p.Confirmed, p.Candidate} {
+		if t != nil && t.Forwards == nil {
+			t.Forwards = []Forward{}
+		}
+	}
 }
 
 func (p persisted) validate() error {
 	invalid := errors.New("firewall state file is invalid")
 	if p.SchemaVersion != stateSchema || p.Domains == nil || len(p.Domains) > 3*maxDomains || len(p.Failed) > digestLength {
 		return invalid
+	}
+	if !validForwards(p.Forwards) || len(p.Stale) > maxStale || len(p.ForwardingOpened) > maxBootID {
+		return invalid
+	}
+	for _, old := range p.Stale {
+		if !validForwards([]Forward{old}) {
+			return invalid
+		}
 	}
 	for _, t := range []*Target{p.Confirmed, p.Candidate} {
 		if t != nil && t.validate() != nil {

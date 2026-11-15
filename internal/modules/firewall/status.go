@@ -192,7 +192,10 @@ func (s *Status) read(ctx context.Context) statusData {
 			data.Mode = mode
 		}
 	}
-	data.Hits = s.readHits(ctx)
+	// A table in mode off only forwards: there is nothing recorded.
+	if data.Mode != modeOff {
+		data.Hits = s.readHits(ctx)
+	}
 	return data
 }
 

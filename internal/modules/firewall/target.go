@@ -19,6 +19,7 @@ const (
 	maxRanges       = 64
 	maxRuleSources  = 64
 	maxDomainLength = 253
+	maxForwards     = 256
 )
 
 const (
@@ -44,6 +45,16 @@ type Target struct {
 	Exempt   *string               `json:"exempt"`
 	Ceilings []Ceiling             `json:"ceilings"`
 	Rules    []Rule                `json:"rules"`
+	Forwards []Forward             `json:"forwards"`
+}
+
+// Forward sends what reaches this node on one protocol and port on to another
+// machine (Cloud ADR 0110). Only IPv4.
+type Forward struct {
+	Protocol string `json:"protocol"`
+	Port     int    `json:"port"`
+	To       string `json:"to"`
+	ToPort   int    `json:"to_port"`
 }
 
 // AddressSet is a named group of sources. An empty set matches nobody.
@@ -96,16 +107,27 @@ func (s *Sources) UnmarshalJSON(data []byte) error {
 
 // off is the target of a node whose key is gone: no table.
 func off() Target {
-	return Target{Mode: modeOff, Sets: map[string]AddressSet{}, Ceilings: []Ceiling{}, Rules: []Rule{}}
+	return Target{Mode: modeOff, Sets: map[string]AddressSet{}, Ceilings: []Ceiling{}, Rules: []Rule{}, Forwards: []Forward{}}
 }
 
-var targetFields = []string{"mode", "retry", "sets", "blocked", "exempt", "ceilings", "rules"}
+var targetFields = []string{"mode", "retry", "sets", "blocked", "exempt", "ceilings", "rules", "forwards"}
 
 // decodeTarget accepts exactly the contract's fields, every one present;
 // only blocked and exempt may be null.
 func decodeTarget(raw []byte) (Target, error) {
 	var object map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &object); err != nil || len(object) != len(targetFields) {
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return Target{}, errInvalid
+	}
+	// Cross-version handoff: a Cloud from before port forwarding sends no
+	// "forwards", which means none. Delete this once every node runs at least
+	// the Agent that added forwards and the Cloud that sends them is live
+	// (Cloud ADR 0110); the state file's old targets are normalized in state.go
+	// under the same condition.
+	if _, found := object["forwards"]; !found {
+		object["forwards"] = json.RawMessage(`[]`)
+	}
+	if len(object) != len(targetFields) {
 		return Target{}, errInvalid
 	}
 	for _, field := range targetFields {
@@ -119,6 +141,9 @@ func decodeTarget(raw []byte) (Target, error) {
 	var t Target
 	if err := decoder.Decode(&t); err != nil || decoder.More() {
 		return Target{}, errInvalid
+	}
+	if t.Forwards == nil {
+		t.Forwards = []Forward{}
 	}
 	// Every nested object must carry all of its fields, so a missing list
 	// never reads as an empty one.
@@ -156,6 +181,7 @@ func requireNested(object map[string]json.RawMessage) error {
 	for field, fields := range map[string][]string{
 		"ceilings": {"protocol", "ports", "sources"},
 		"rules":    {"action", "sources", "protocol", "ports"},
+		"forwards": {"protocol", "port", "to", "to_port"},
 	} {
 		var items []json.RawMessage
 		if json.Unmarshal(object[field], &items) != nil {
@@ -175,6 +201,9 @@ func (t Target) validate() error {
 		return errInvalid
 	}
 	if t.Retry < 0 || t.Retry > 1<<53-1 || len(t.Sets) > maxSets || len(t.Ceilings) > maxCeilings || len(t.Rules) > maxRules {
+		return errInvalid
+	}
+	if !validForwards(t.Forwards) {
 		return errInvalid
 	}
 	addresses, domains := 0, 0
@@ -241,6 +270,31 @@ func (t Target) validate() error {
 		}
 	}
 	return nil
+}
+
+// validForwards allows one forward per protocol and port, each to a single
+// usable IPv4 address in its canonical form.
+func validForwards(forwards []Forward) bool {
+	if len(forwards) > maxForwards {
+		return false
+	}
+	seen := map[[2]any]bool{}
+	for _, f := range forwards {
+		key := [2]any{f.Protocol, f.Port}
+		if (f.Protocol != "tcp" && f.Protocol != "udp") || !validPort(f.Port) || !validPort(f.ToPort) || !forwardAddress(f.To) || seen[key] {
+			return false
+		}
+		seen[key] = true
+	}
+	return true
+}
+
+func validPort(port int) bool { return port >= 1 && port <= 65535 }
+
+func forwardAddress(text string) bool {
+	address, err := netip.ParseAddr(text)
+	return err == nil && address.Is4() && address.String() == text && !address.IsUnspecified() &&
+		!address.IsLoopback() && !address.IsMulticast() && address != netip.AddrFrom4([4]byte{255, 255, 255, 255})
 }
 
 func validRanges(ports [][2]int, empty bool) bool {

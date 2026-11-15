@@ -25,7 +25,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | `connection_records` | 无字段（`{}`） | 上报 `connection_records.batch`；需要 `xui` |
 | `routing` | 无字段（`{}`） | 按目标状态写入本机 Xray 的路由规则与出站；需要 `xui` |
 | `diagnostics` | 无字段（`{}`） | 回答 `diagnostics.run`：在只读沙盒里运行诊断脚本（见[诊断](#诊断)） |
-| `firewall` | 无字段（`{}`） | 按目标状态筛选发往本机的入站，上报 `firewall.status`；节点上须有 `/usr/sbin/nft`（见 [firewall](#firewall)） |
+| `firewall` | 无字段（`{}`） | 按目标状态筛选发往本机的入站并做端口转发，上报 `firewall.status`；节点上须有 `/usr/sbin/nft`（见 [firewall](#firewall)） |
 
 `xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
 
@@ -189,43 +189,59 @@ key 是 Cloud 的一个下载限速：自动限速的单位（一份订阅在一
 
 ### `firewall`
 
-只有一个 key：`node`，即整台节点的入站筛选（Cloud ADR 0109）。Cloud 只下发带类型的事实，不下发规则文本；规则、骨架与顺序由 Agent 生成。state 必须且只能包含七项：
+只有一个 key：`node`，即整台节点的入站筛选与端口转发（Cloud ADR 0109、0110）。Cloud 只下发带类型的事实，不下发规则文本；规则、骨架与顺序由 Agent 生成。state 必须且只能包含八项：
 
 | 字段 | 含义 |
 |---|---|
-| `mode` | `off`（不装表）、`observe`（封禁与 `rules` 照常执行，入站上限与兜底只记录不丢）、`enforce` |
+| `mode` | `off`（不筛选：没有 `forwards` 时不装表，有时只装转发）、`observe`（封禁与 `rules` 照常执行，入站上限与兜底只记录不丢）、`enforce` |
 | `retry` | 0 到 2^53−1；主人在后台点“重试”时加一，只用于让目标内容变得不同 |
 | `sets` | 命名的地址集合，最多 64 个，名字 `[a-z0-9_]{1,32}`。每个必须且只能包含 `addresses`（IPv4/IPv6 地址或网段，按规范写法：主机位为零，不带 zone，不用 IPv4 映射地址）与 `domains`（完整小写域名，由节点解析）。所有集合合计最多 4096 个地址、64 个域名。空集合不匹配任何来源 |
 | `blocked` | 封禁用的集合名，或 null |
 | `exempt` | 命中即跳过封禁的集合名（自有节点），或 null |
 | `ceilings` | 入站上限，最多 256 条，每条必须且只能包含 `protocol`（`tcp`/`udp`）、`ports`、`sources`（1–64 个集合名）：目的端口在 `ports`、来源不在任何一个 `sources` 集合里的包被挡 |
 | `rules` | 按生效顺序排好的规则，最多 512 条，每条必须且只能包含 `action`（`allow`/`drop`）、`sources`（字符串 `"any"`，或 1–64 个集合名；空数组是格式错误，“没有来源”不会被当成所有人）、`protocol`（`tcp`/`udp`/`ping`/`any`）、`ports` |
+| `forwards` | 端口转发，最多 256 条，每条必须且只能包含 `protocol`（`tcp`/`udp`）、`port`（本机对外端口）、`to`（规范写法的 IPv4 单个地址，不能是 0.0.0.0、回环、组播或广播）、`to_port`；同一 `protocol` + `port` 只能出现一次。只转 IPv4 |
 
-`ports` 是 1–64 段 `[起, 止]`（1–65535，起不大于止）；规则的 `protocol` 为 `ping`、`any` 时 `ports` 必须是空数组。TCP 和 UDP 都要的规则由 Cloud 拆成两条；`ping` 是 IPv4 与 IPv6 的回显请求。空目标是 `{"mode":"off","retry":0,"sets":{},"blocked":null,"exempt":null,"ceilings":[],"rules":[]}`；模块开着时 key 不退役。最大的目标约 200 KiB，远在消息上限之内。
+`ports` 是 1–64 段 `[起, 止]`（1–65535，起不大于止）；规则的 `protocol` 为 `ping`、`any` 时 `ports` 必须是空数组。TCP 和 UDP 都要的规则或转发由 Cloud 拆成两条；`ping` 是 IPv4 与 IPv6 的回显请求。空目标是 `{"mode":"off","retry":0,"sets":{},"blocked":null,"exempt":null,"ceilings":[],"rules":[],"forwards":[]}`；模块开着时 key 不退役。最大的目标约 220 KiB，远在消息上限之内。
 
-- **表**：只有一张 `inet akastr_firewall`，挂在 input 钩子（filter 优先级），IPv4 与 IPv6 共用一套规则，不按本机地址匹配（有的节点公网地址不在网卡上）。别的表、`/etc/nftables.conf` 与 sshd 配置不读不改。
-- **固定顺序**：
-  1. 回环放行。这条规则的注释记着模式与规则摘要 `akastr:<mode>:<digest>`。
-  2. 封禁：来源在 `blocked`、不在 `exempt`、且属于连接跟踪原始方向（对方发起）的包丢弃，所以被封来源的已有连接立即断开，本机连出去的回包不受影响。
-  3. 保底放行：已建立及相关连接；RFC 4890 4.4.1 要求主机不丢的 ICMPv6（差错报文、组播侦听、邻居发现与路由通告、反向邻居发现、SEND 与组播路由通告）；IPv4 的不可达、超时与参数错误；来自 `fe80::/10`、源端口 547 到目的端口 546 的 DHCPv6 回包。不含 ping。
-  4. `ceilings`：命中就记录；`enforce` 丢弃，`observe` 继续往下走。
-  5. `rules`：逐条，命中第一条即停（放行或丢弃）。
-  6. 兜底：记录；`enforce` 丢弃，`observe` 放行。
+跨版本交接：不带 `forwards` 的目标（发 `forwards` 之前的 Cloud）和状态文件里这样的旧目标按“没有转发”处理；带了就必须是数组。所有节点的 Agent 都不低于加入转发的版本、且发 `forwards` 的 Cloud 已上线后，下一个 Agent 版本删掉这条容忍。
+
+- **表**：只有一张 `inet akastr_firewall`，IPv4 与 IPv6 共用一套规则，不按本机地址匹配（有的节点公网地址不在网卡上）。别的表、`/etc/nftables.conf`、`/etc/sysctl*` 与 sshd 配置不读不改。
+- **链**（`observe`、`enforce` 都有全部五条；`off` 且有转发时只有中间三条，不封禁、不筛选、不记录）：
+  1. prerouting 过滤（优先级在连接跟踪之后、地址转换之前，有 `blocked` 时才有）：回环放行；来源在 `blocked`、不在 `exempt`、且属于连接跟踪原始方向（对方发起）的包丢弃。所以封禁同时管到本机服务和转发，被封来源的已有连接立即断开，本机连出去的回包不受影响。
+  2. 地址转换（nat prerouting）：只对 IPv4、只对发给本机地址的包（`fib daddr type local`，与 Docker 的 `addrtype LOCAL` 相同：容器或虚拟机经本机发往别处同一端口的包不被改走），按“协议 + 目的端口”查转发映射，命中的改成 `to:to_port`。这条规则的注释记着模式与规则摘要 `akastr:<mode>:<digest>`；没有这条链的表（转发之前的骨架）按未标记处理、整表替换。
+  3. 来源伪装（nat postrouting）：只对做过目的地址转换、且原始协议与端口是本模块某条转发的连接做 masquerade；别的程序（Docker 等）做的转换不碰。不用 mark。
+  4. 过路包检查（forward）：从默认路由所在的网卡进、又从同一网卡出、且没做过任何地址转换的包丢弃（IPv4、IPv6 各按自己的默认路由网卡），防止同网段的人把节点当路由器用。默认路由网卡是网桥时不检查它：加载了 br_netfilter 的机器上，网桥里机器之间的包也是同一网卡进出。其余不管，策略放行。别的表在 forward 上默认丢弃的（例如 Docker 的 FORWARD 链），本模块管不到，转发在这样的机器上走不通。
+  5. input 过滤（挂 input 钩子，filter 优先级），固定顺序：
+     1. 回环放行。
+     2. 保底放行：已建立及相关连接；RFC 4890 4.4.1 要求主机不丢的 ICMPv6（差错报文、组播侦听、邻居发现与路由通告、反向邻居发现、SEND 与组播路由通告）；IPv4 的不可达、超时与参数错误；来自 `fe80::/10`、源端口 547 到目的端口 546 的 DHCPv6 回包。不含 ping。
+     3. `ceilings`：命中就记录；`enforce` 丢弃，`observe` 继续往下走。
+     4. `rules`：逐条，命中第一条即停（放行或丢弃）。
+     5. 兜底：记录；`enforce` 丢弃，`observe` 放行。
+  
+  转发流量只受封禁和过路包检查约束，不经过入站上限、规则组和兜底。
+- **转发是成员**：转发映射、各协议的转发端口集合和过路包检查的网卡都是集合成员，不进摘要。加、删、改转发和默认路由换网卡都只换成员，不整表替换、不探测、不进失败摘要。
 - **命中记录**：入站上限与兜底命中的包记在表里有界、一小时内没有新命中即过期的集合中：兜底按“协议 + 端口”（最多 512 条）、ICMP 与 ICMPv6 按报文类型、其他协议按协议号（各 64 条），入站上限按“来源 + 协议 + 端口”（IPv4、IPv6 各 512 条），每条带包数。TCP 只记发起连接的包，开启时已经存在的连接不会被当成新来源。兜底的 TCP、UDP 只在本机有套接字会收这个包时才记（`socket` 匹配）：扫描器逐个试的空端口不记，否则公网节点上一小时内就会填满集合，而要看的是规则漏放的服务。记录与丢弃是两条规则，集合满了只是少记，不会少丢。整张表替换时记录清零。
 - **应用**（每次变化后、每 5 分钟、失败退避后，按下列顺序）：
-  1. `off`：有表就删，清掉状态文件里确认可用的目标，不探测。
-  2. 渲染规则，对不含集合成员的部分算摘要；表上的摘要相同就只在一个事务里替换各集合的成员（域名解析结果或地址变化），结束。表被外部清空、Agent 更新改了骨架，摘要都对不上，按下面各步重新安装。
-  3. 摘要（连同 `retry`）等于记下的失败目标：回 `firewall_unconfirmed`，不装。
-  4. 连接跟踪上限低于本机目标值（每 GiB 内存 131072 条，向上取整，只升不降）时，经 `systemd-run` 起两个一次性 root 单元，依次运行 `/usr/sbin/modprobe nf_conntrack` 与 `/usr/sbin/sysctl -w net.netfilter.nf_conntrack_max=<N>`（Agent 自己的单元不能加载模块、不能写内核参数）；没调上去回 `firewall_conntrack_failed`，不装。不改超时。
-  5. 新开一条到控制地址的连接（解析域名、TCP、TLS 握手，不复用已有连接）；不通回 `firewall_probe_unavailable`，不装。
-  6. 把“未确认”的这份目标连同上一份确认可用的目标写进状态文件，写不进去回 `firewall_state_failed`，不装。
-  7. 规则经标准输入交给 `nft`，先检查再在一个事务里整表替换；被拒回 `firewall_apply_failed`。
-  8. 再探测，约 20 秒内多次尝试：通了把这份记为确认可用；不通则装回上一份（没有就删表），记下这份目标，回 `firewall_unconfirmed`，之后不再安装相同内容，直到内容变化或 `retry` 增加。
-- **进程启动**（控制连接等这一步做完才建立：机器刚重启时连接跟踪还没加载，先建的连接在装表后没有跟踪记录，对端发来的包会被丢，直到本机再发数据）：状态文件读不出来时不装表、写错误日志，等 Cloud 的目标（应用时重写这个文件）；表不在而有确认可用的目标（机器重启过）时先调连接跟踪上限，再按状态文件装回，不探测；表在且有未确认的目标时先探测，不通就装回上一份并记下失败；表在且没有未确认的目标时不动。收到第一份完整 key 列表之前不删表。
+  1. `off` 且没有 `forwards`：有表就删，按下文清理全部转发的旧连接、关回转发开关，清掉状态文件里确认可用的目标，不探测。
+  2. 目标有转发而 `net.ipv4.ip_forward` 为 0 时，打开转发开关（见下）；打不开回 `firewall_forwarding_failed`，转发成员保持上一份（没有上一份就为空），其余照常应用。
+  3. 节点上装着本模块的表时，先在一个事务里换掉转发成员与过路包检查的网卡，再清理旧连接。这一步不受下面的摘要与失败摘要影响，所以规则一直失败的节点上，转发也跟着落地换 IP。
+  4. 渲染规则，对不含成员的部分算摘要；表上的摘要相同就只在一个事务里替换各地址集合的成员（域名解析结果或地址变化），结束。表被外部清空、Agent 更新改了骨架，摘要都对不上，按下面各步重新安装。
+  5. 摘要（连同 `retry`）等于记下的失败目标：回 `firewall_unconfirmed`，不装（`off` 不检查）。
+  6. 连接跟踪上限低于本机目标值（每 GiB 内存 131072 条，向上取整，只升不降）时，经 `systemd-run` 起两个一次性 root 单元，依次运行 `/usr/sbin/modprobe nf_conntrack` 与 `/usr/sbin/sysctl -w net.netfilter.nf_conntrack_max=<N>`（Agent 自己的单元不能加载模块、不能写内核参数）；没调上去回 `firewall_conntrack_failed`，不装。任何模式要装表都先做这一步：地址转换离不开连接跟踪。不改超时。
+  7. `off`（有转发）：直接整表替换，不探测，也不记失败；结束。
+  8. 新开一条到控制地址的连接（解析域名、TCP、TLS 握手，不复用已有连接）；不通回 `firewall_probe_unavailable`，不装。
+  9. 把“未确认”的这份目标连同上一份确认可用的目标写进状态文件，写不进去回 `firewall_state_failed`，不装。
+  10. 规则经标准输入交给 `nft`，先检查再在一个事务里整表替换；被拒回 `firewall_apply_failed`。
+  11. 再探测，约 20 秒内多次尝试：通了把这份记为确认可用；不通则装回上一份（连同当前的转发；没有上一份就只装转发，没有转发就删表），记下这份目标，回 `firewall_unconfirmed`，之后不再安装相同内容，直到内容变化或 `retry` 增加。
+- **转发开关**：目标里有转发、而 `net.ipv4.ip_forward` 为 0 时，经一次性 root 临时单元运行 `/usr/sbin/sysctl -w net.ipv4.ip_forward=1`（程序与参数写死），并在状态文件里记下这次开机的 `boot_id`。最后一条转发没了、模块关闭或卸载时，只在记下的 `boot_id` 就是这次开机时运行 `sysctl -w net.ipv4.ip_forward=0` 并清掉记录；本来就开着（Docker 等）的机器上从不关，机器重启后的记录作废。不写 sysctl 配置文件，从不碰 IPv6。
+- **旧连接**：已建立的转发连接按连接跟踪里的记录走，改目标或删转发后仍去旧目标，直到超时（UDP 约 2 分钟，TCP 默认 5 天）。所以每次转发成员换上之后，对每条删掉的转发、每条 `to` 或 `to_port` 变了的转发，经 netlink（只用标准库）删掉“协议相同、原始目的端口等于 `port`、回程来源等于旧的 `to:to_port`、且做过目的地址转换”的连接跟踪记录；本机自己连到同一地址端口的连接没做过转换，不删。删掉后旧连接的下一个包按新映射走。不清整张表。旧目标取自状态文件里上一份已应用的转发，先写进状态文件再清，所以进程重启也不漏；删除失败的留待下一轮（最迟 5 分钟），写错误日志，不影响目标是否生效；又被用回的目标不删。
+- **进程启动**（控制连接等这一步做完才建立：机器刚重启时连接跟踪还没加载，先建的连接在装表后没有跟踪记录，对端发来的包会被丢，直到本机再发数据）：状态文件读不出来时不装表、写错误日志，等 Cloud 的目标（应用时重写这个文件）；表不在而有确认可用的目标或转发（机器重启过）时依次调连接跟踪上限、打开转发开关（有转发时）、按状态文件装回，不探测；表在且有未确认的目标时先探测，不通就装回上一份并记下失败；表在且没有未确认的目标时不动。收到第一份完整 key 列表之前不删表。
 - **域名**：每两分钟解析一次（新出现的域名在应用时立即解析）；失败或结果为空时保留上一次的地址并标出失败，任何情况下都不会变成所有人；每个域名最多取 32 个地址。地址变化只替换集合成员。
-- **进程外状态**：表在 Agent 正常停止、更新换进程和崩溃时都原样保留；模块关闭后，下一个进程删掉表和 `StateDir/firewall`；卸载在删除程序之前删表，机器上没有 `nft` 或没有加载 nf_tables 时跳过。调高的连接跟踪上限保留到机器重启。
-- **状态文件** `StateDir/firewall/state.json`（带 schema 标记、原子写）：最后一份确认可用的目标、未确认的目标、失败目标的摘要、各域名最后一次解析结果。
-- **错误码**：`firewall_tool_missing`（运行中找不到 `/usr/sbin/nft`；配置开启模块而节点没有 `nft` 时，候选程序拒绝该配置，节点保留旧配置）、`firewall_conntrack_failed`、`firewall_probe_unavailable`、`firewall_unconfirmed`、`firewall_apply_failed`、`firewall_state_failed`。
+- **进程外状态**：表在 Agent 正常停止、更新换进程和崩溃时都原样保留，打开的转发开关也一样；模块关闭后，下一个进程按记录关回转发开关、删掉表、清理转发的旧连接，再删 `StateDir/firewall`；卸载在删除程序之前删表并按记录关回转发开关，机器上没有 `nft` 或没有加载 nf_tables 时跳过删表。调高的连接跟踪上限保留到机器重启。
+- **状态文件** `StateDir/firewall/state.json`（带 schema 标记、原子写）：最后一份确认可用的目标、未确认的目标、失败目标的摘要、各域名最后一次解析结果、表上现在的转发、待清理的旧转发目标（最多 512 条，超出时放弃最早的，由超时收尾）和打开转发开关时的 `boot_id`。
+- **错误码**：`firewall_tool_missing`（运行中找不到 `/usr/sbin/nft`；配置开启模块而节点没有 `nft` 时，候选程序拒绝该配置，节点保留旧配置）、`firewall_conntrack_failed`、`firewall_forwarding_failed`、`firewall_probe_unavailable`、`firewall_unconfirmed`、`firewall_apply_failed`、`firewall_state_failed`。
+- **内核模块**：规则用到 nf_tables、连接跟踪及其 netlink、地址转换（`nft_chain_nat`、`nft_nat`、`nft_masq`）、`nft_ct`、`nft_socket` 与 `nft_fib`（`nft_fib_inet`、`nft_fib_ipv4`、`nft_fib_ipv6`），由 nft 和 netlink 按需自动加载；缺任何一个，整张表被拒。
 
 ## 诊断
 

@@ -1,7 +1,11 @@
-// Package firewall filters what reaches this node from outside, as Cloud
-// computes it (Cloud ADR 0109). The module owns one nftables table for IPv4
-// and IPv6; Cloud sends typed facts and the module renders the rules, whose
-// skeleton and order are fixed here.
+// Package firewall filters what reaches this node from outside and forwards
+// ports to other nodes, as Cloud computes it (Cloud ADR 0109, 0110). The
+// module owns one nftables table for IPv4 and IPv6; Cloud sends typed facts
+// and the module renders the rules, whose skeleton and order are fixed here.
+//
+// Forwards are members, not rules: they follow every target first, whatever
+// the rest of the target does, and IPv4 forwarding is turned on for them at
+// run time and off again only when this Agent turned it on.
 //
 // Rules only change after a check that a new connection to Cloud still works
 // before and after the change; a target that cuts the node off is undone and
@@ -13,6 +17,7 @@
 package firewall
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,6 +53,7 @@ const (
 	codeUnconfirmed      = "firewall_unconfirmed"
 	codeApplyFailed      = "firewall_apply_failed"
 	codeStateFailed      = "firewall_state_failed"
+	codeForwardingFailed = "firewall_forwarding_failed"
 )
 
 // Config has no fields: the module is on or off.
@@ -142,52 +148,77 @@ func (f *Firewall) Apply(ctx context.Context, targets map[string]json.RawMessage
 	}
 }
 
-// apply runs the steps of ADR 0109 in order; f.mu is held.
+// wantsTable: observe and enforce filter, and forwards work in any mode; off
+// without forwards is no table at all.
+func wantsTable(mode string, forwards []Forward) bool { return mode != modeOff || len(forwards) > 0 }
+
+// apply runs the steps of ADR 0109 in order, with the forwarding of ADR 0110
+// ahead of them; f.mu is held.
 func (f *Firewall) apply(ctx context.Context, t Target) string {
 	if f.missing() {
 		return codeToolMissing
 	}
 	f.current = &t
-	if t.Mode == modeOff {
-		installed, err := f.host.installed(ctx)
-		if err == nil && installed != "" {
-			err = f.host.load(ctx, remove())
-		}
-		if err != nil {
-			slog.Warn("firewall table not removed", "code", codeApplyFailed, "error", err.Error())
-			return codeApplyFailed
-		}
-		if f.state.Confirmed != nil || f.state.Candidate != nil {
-			f.state.Confirmed, f.state.Candidate = nil, nil
-			return f.save()
-		}
-		return ""
-	}
-	f.resolveMissing(ctx, t)
-	r := render(t, f.state.resolved())
 	installed, err := f.host.installed(ctx)
 	if err != nil {
 		slog.Warn("firewall table unreadable", "code", codeApplyFailed, "error", err.Error())
 		return codeApplyFailed
 	}
-	if _, digest, ok := parseMarker(installed); ok && digest == r.digest {
-		// Same rules: only the members may differ, and they change in place.
-		if err := f.host.load(ctx, r.syncMembers()); err != nil {
-			slog.Warn("firewall members not updated", "code", codeApplyFailed, "error", err.Error())
+	if !wantsTable(t.Mode, t.Forwards) {
+		if installed != "" {
+			if err := f.host.load(ctx, remove()); err != nil {
+				slog.Warn("firewall table not removed", "code", codeApplyFailed, "error", err.Error())
+				return codeApplyFailed
+			}
+		}
+		code := f.placed(ctx, []Forward{})
+		if f.state.Confirmed != nil || f.state.Candidate != nil {
+			f.state.Confirmed, f.state.Candidate = nil, nil
+			code = cmp.Or(code, f.save())
+		}
+		return code
+	}
+	f.resolveMissing(ctx, t)
+	forwards, forwardCode := f.openForwarding(ctx, t.Forwards)
+	r := render(t, f.state.resolved(), f.placement(forwards))
+	if _, digest, marked := parseMarker(installed); marked {
+		// The forwards follow every target before the rules are compared, so
+		// a node whose rules keep failing still forwards to where the landing
+		// is now.
+		if err := f.host.load(ctx, r.syncForwarding()); err != nil {
+			slog.Warn("forwards not updated", "code", codeApplyFailed, "error", err.Error())
 			return codeApplyFailed
 		}
-		if !reflect.DeepEqual(f.state.Confirmed, &t) || f.state.Candidate != nil {
-			f.state.Confirmed, f.state.Candidate = &t, nil
-			return f.save()
+		forwardCode = cmp.Or(f.placed(ctx, forwards), forwardCode)
+		if digest == r.digest {
+			// Same rules: only the members may differ, and they change in place.
+			if err := f.host.load(ctx, r.syncMembers()); err != nil {
+				slog.Warn("firewall members not updated", "code", codeApplyFailed, "error", err.Error())
+				return codeApplyFailed
+			}
+			if !reflect.DeepEqual(f.state.Confirmed, &t) || f.state.Candidate != nil {
+				f.state.Confirmed, f.state.Candidate = &t, nil
+				return cmp.Or(f.save(), forwardCode)
+			}
+			return forwardCode
 		}
-		return ""
 	}
 	key := r.failureKey(t.Retry)
-	if key == f.state.Failed {
+	if t.Mode != modeOff && key == f.state.Failed {
 		return codeUnconfirmed
 	}
 	if code := f.raiseConntrack(ctx); code != "" {
 		return code
+	}
+	if t.Mode == modeOff {
+		// A table without filtering cannot cut the node off: no probe and no
+		// record of failure, like removing the table.
+		if err := f.host.load(ctx, r.install()); err != nil {
+			slog.Warn("firewall rules refused", "code", codeApplyFailed, "error", err.Error())
+			return codeApplyFailed
+		}
+		f.state.Confirmed, f.state.Candidate = &t, nil
+		return cmp.Or(f.placed(ctx, forwards), f.save(), forwardCode)
 	}
 	if err := f.host.probe(ctx); err != nil {
 		slog.Warn("Cloud unreachable before the firewall change; nothing changed", "code", codeProbeUnavailable, "error", err.Error())
@@ -204,15 +235,121 @@ func (f *Firewall) apply(ctx context.Context, t Target) string {
 		_ = f.save()
 		return codeApplyFailed
 	}
+	placedCode := f.placed(ctx, forwards)
 	if f.confirm(ctx) {
 		f.state.Confirmed, f.state.Candidate = &t, nil
-		return f.save()
+		return cmp.Or(f.save(), placedCode, forwardCode)
 	}
 	slog.Error("Cloud unreachable after the firewall change; the previous rules are back", "code", codeUnconfirmed)
 	f.restore(ctx)
 	f.state.Failed, f.state.Candidate = key, nil
 	_ = f.save()
 	return codeUnconfirmed
+}
+
+func (f *Firewall) placement(forwards []Forward) placement {
+	v4, v6 := f.host.transit()
+	return placement{forwards: forwards, transit4: v4, transit6: v6}
+}
+
+// openForwarding turns IPv4 forwarding on when the target forwards and it is
+// off. When it cannot, the table keeps the forwards it already has.
+func (f *Firewall) openForwarding(ctx context.Context, wanted []Forward) ([]Forward, string) {
+	if len(wanted) == 0 {
+		return []Forward{}, ""
+	}
+	if on, err := f.host.forwarding(); err == nil && on {
+		return wanted, ""
+	}
+	err := f.host.setForwarding(ctx, true)
+	if err == nil {
+		if on, readErr := f.host.forwarding(); readErr != nil || !on {
+			err = errors.New("still off")
+		}
+	}
+	if err != nil {
+		slog.Warn("IPv4 forwarding not turned on; the forwards stay as they were", "code", codeForwardingFailed, "error", err.Error())
+		return f.state.Forwards, codeForwardingFailed
+	}
+	f.state.ForwardingOpened = f.host.boot()
+	return wanted, f.save()
+}
+
+// closeForwarding turns IPv4 forwarding off again once no forward is left,
+// only when this Agent turned it on in this run of the machine: a machine
+// that forwarded before (Docker and the like) keeps forwarding.
+func (f *Firewall) closeForwarding(ctx context.Context) string {
+	if f.state.ForwardingOpened == "" {
+		return ""
+	}
+	if f.state.ForwardingOpened == f.host.boot() {
+		if err := f.host.setForwarding(ctx, false); err != nil {
+			slog.Warn("IPv4 forwarding not turned back off; retrying with the next target", "error", err.Error())
+			return ""
+		}
+	}
+	f.state.ForwardingOpened = ""
+	return f.save()
+}
+
+// placed records the forwards the table now carries. A removed forward, or
+// one whose target changed, leaves its old target to clean: its tracked
+// connections would keep going there. The list is saved before cleaning, so a
+// restart still cleans. With no forward left, forwarding goes back off.
+func (f *Firewall) placed(ctx context.Context, forwards []Forward) string {
+	forwards = slices.Clone(forwards)
+	slices.SortFunc(forwards, func(a, b Forward) int {
+		return cmp.Or(cmp.Compare(a.Protocol, b.Protocol), cmp.Compare(a.Port, b.Port))
+	})
+	now := map[[2]any]Forward{}
+	for _, forward := range forwards {
+		now[[2]any{forward.Protocol, forward.Port}] = forward
+	}
+	stale := slices.Clone(f.state.Stale)
+	for _, old := range f.state.Forwards {
+		if current, found := now[[2]any{old.Protocol, old.Port}]; (!found || current != old) && !slices.Contains(stale, old) {
+			stale = append(stale, old)
+		}
+	}
+	// A target in use again is live: cleaning it would cut what it carries now.
+	stale = slices.DeleteFunc(stale, func(old Forward) bool { return slices.Contains(forwards, old) })
+	if len(stale) > maxStale {
+		slog.Warn("too many old forward targets to clean; the oldest are left to time out", "dropped", len(stale)-maxStale)
+		stale = stale[len(stale)-maxStale:]
+	}
+	code := ""
+	if !slices.Equal(stale, f.state.Stale) || !slices.Equal(forwards, f.state.Forwards) {
+		f.state.Forwards, f.state.Stale = forwards, stale
+		code = f.save()
+	}
+	code = cmp.Or(code, f.clean(ctx))
+	if len(forwards) == 0 {
+		code = cmp.Or(code, f.closeForwarding(ctx))
+	}
+	return code
+}
+
+// clean deletes the tracked connections still going to each old target. One
+// that fails stays for the next round; it never decides whether a target
+// applied.
+func (f *Firewall) clean(ctx context.Context) string {
+	if len(f.state.Stale) == 0 {
+		return ""
+	}
+	left := []Forward{}
+	for _, old := range f.state.Stale {
+		to := netip.AddrPortFrom(netip.MustParseAddr(old.To), uint16(old.ToPort))
+		if err := f.host.forget(ctx, old.Protocol, old.Port, to); err != nil {
+			slog.Error("old connections of a forward not cleaned; retrying with the next target",
+				"protocol", old.Protocol, "port", old.Port, "error", err.Error())
+			left = append(left, old)
+		}
+	}
+	if len(left) == len(f.state.Stale) {
+		return ""
+	}
+	f.state.Stale = left
+	return f.save()
 }
 
 // confirm gives Cloud several chances to answer a new connection.
@@ -231,10 +368,15 @@ func (f *Firewall) confirm(ctx context.Context) bool {
 	}
 }
 
-// restore puts the last confirmed rules back, or no table; it never probes.
+// restore puts the last confirmed rules back with the forwards in place (or
+// only the forwards, or no table); it never probes.
 func (f *Firewall) restore(ctx context.Context) {
-	if previous := f.state.Confirmed; previous != nil && previous.Mode != modeOff {
-		err := f.host.load(ctx, render(*previous, f.state.resolved()).install())
+	previous := off()
+	if f.state.Confirmed != nil {
+		previous = *f.state.Confirmed
+	}
+	if wantsTable(previous.Mode, f.state.Forwards) {
+		err := f.host.load(ctx, render(previous, f.state.resolved(), f.placement(f.state.Forwards)).install())
 		if err == nil {
 			return
 		}
@@ -302,9 +444,16 @@ func (f *Firewall) start(ctx context.Context) {
 		slog.Error("firewall state file unreadable; nothing restored until Cloud sends the target", "code", codeStateFailed)
 		return
 	}
+	loaded.normalize()
 	f.state = loaded
 	if f.missing() {
 		return
+	}
+	if opened := f.state.ForwardingOpened; opened != "" && opened != f.host.boot() {
+		// The machine restarted, which turned forwarding off: whoever has it
+		// on now is not this Agent.
+		f.state.ForwardingOpened = ""
+		_ = f.save()
 	}
 	installed, err := f.host.installed(ctx)
 	if err != nil {
@@ -318,14 +467,21 @@ func (f *Firewall) start(ctx context.Context) {
 			f.state.Candidate = nil
 			_ = f.save()
 		}
-		if confirmed := f.state.Confirmed; confirmed != nil && confirmed.Mode != modeOff {
-			if f.raiseConntrack(ctx) != "" {
-				slog.Error("firewall not restored: connection tracking limit not raised", "code", codeConntrackFailed)
-				return
-			}
-			if err := f.host.load(ctx, render(*confirmed, f.state.resolved()).install()); err != nil {
-				slog.Error("firewall not restored", "code", codeApplyFailed, "error", err.Error())
-			}
+		previous := off()
+		if f.state.Confirmed != nil {
+			previous = *f.state.Confirmed
+		}
+		if !wantsTable(previous.Mode, f.state.Forwards) {
+			return
+		}
+		// The order of every install: the tracking limit, forwarding, the table.
+		if f.raiseConntrack(ctx) != "" {
+			slog.Error("firewall not restored: connection tracking limit not raised", "code", codeConntrackFailed)
+			return
+		}
+		f.openForwarding(ctx, f.state.Forwards)
+		if err := f.host.load(ctx, render(previous, f.state.resolved(), f.placement(f.state.Forwards)).install()); err != nil {
+			slog.Error("firewall not restored", "code", codeApplyFailed, "error", err.Error())
 		}
 		return
 	}
@@ -335,7 +491,7 @@ func (f *Firewall) start(ctx context.Context) {
 			f.state.Confirmed = candidate
 		} else {
 			slog.Error("Cloud unreachable with the unconfirmed firewall rules; the previous rules are back", "code", codeUnconfirmed)
-			f.state.Failed = render(*candidate, f.state.resolved()).failureKey(candidate.Retry)
+			f.state.Failed = render(*candidate, f.state.resolved(), placement{}).failureKey(candidate.Retry)
 			f.restore(ctx)
 		}
 		f.state.Candidate = nil
@@ -362,7 +518,7 @@ func (f *Firewall) refresh(ctx context.Context) {
 		return
 	}
 	_ = f.save()
-	r := render(*t, f.state.resolved())
+	r := render(*t, f.state.resolved(), f.placement(f.state.Forwards))
 	installed, err := f.host.installed(ctx)
 	if _, digest, ok := parseMarker(installed); err != nil || !ok || digest != r.digest {
 		return

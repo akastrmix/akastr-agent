@@ -33,6 +33,27 @@ const (
 	tcpConnecting = "tcp flags & (fin|syn|rst|ack) == syn"
 )
 
+// Forwarding (Cloud ADR 0110). The forwards are members of a map and their
+// ports members of one set per protocol (nft 1.0.6 cannot concatenate the
+// original port); the default-route interface pairs of the transit check are
+// members too. None of them is in the digest, so adding, changing or removing
+// a forward, or a route moving, never replaces the table.
+const (
+	forwardMap  = "forwards"
+	forwardTCP  = "forward_ports_tcp"
+	forwardUDP  = "forward_ports_udp"
+	transitSet4 = "transit_4"
+	transitSet6 = "transit_6"
+	// markerChain carries the marker on its one rule; every table has it.
+	markerChain = "nat_prerouting"
+)
+
+// localGuard translates only packets addressed to this node, as Docker does
+// with addrtype LOCAL: what a container or VM sends through the node to
+// another host on a forwarded port is not redirected. Kernel tests replace it
+// where nft_fib is not loaded, since they never load kernel modules.
+var localGuard = "fib daddr type local"
+
 var hitSizes = map[string]int{
 	hitFinal: portHitSize, hitCeiling4: portHitSize, hitCeiling6: portHitSize,
 	hitProtocol: otherHitSize, hitICMP4: otherHitSize, hitICMP6: otherHitSize,
@@ -56,19 +77,32 @@ meta l4proto ipv6-icmp update @h_icmp6 { icmpv6 type counter }
 meta l4proto != { tcp, udp, icmp, ipv6-icmp } update @h_proto { meta l4proto counter }`
 
 // rendered is one target as nftables sees it: the rules, whose digest decides
-// whether the installed table must be replaced, and the set members, which
-// change without replacing it.
+// whether the installed table must be replaced, and the members, which change
+// without replacing it: the target's address sets, and the forwarding members
+// that follow every target on their own.
 type rendered struct {
-	mode    string
-	digest  string
-	rules   string
-	members map[string][]string
+	mode       string
+	digest     string
+	rules      string
+	members    map[string][]string
+	forwarding map[string][]string
+}
+
+// placement is what the module puts in the table besides the target's sets:
+// the forwards it applied, which can lag the target's when forwarding cannot
+// be turned on, and the default-route interfaces of each family.
+type placement struct {
+	forwards           []Forward
+	transit4, transit6 []string
 }
 
 // render turns a target into rules. resolved holds each domain's last
 // addresses; a domain without any adds nobody.
-func render(t Target, resolved map[string][]netip.Addr) rendered {
-	r := rendered{mode: t.Mode, members: members(t, resolved)}
+func render(t Target, resolved map[string][]netip.Addr, p placement) rendered {
+	r := rendered{mode: t.Mode, members: map[string][]string{}, forwarding: forwardingMembers(p)}
+	if t.Mode != modeOff {
+		r.members = members(t, resolved)
+	}
 	unmarked := structure(t, "")
 	sum := sha256.Sum256([]byte(unmarked))
 	r.digest = hex.EncodeToString(sum[:])[:digestLength]
@@ -85,7 +119,7 @@ func parseMarker(comment string) (mode, digest string, ok bool) {
 		return "", "", false
 	}
 	mode, digest, found = strings.Cut(rest, ":")
-	if !found || (mode != modeObserve && mode != modeEnforce) || len(digest) != digestLength {
+	if !found || (mode != modeOff && mode != modeObserve && mode != modeEnforce) || len(digest) != digestLength {
 		return "", "", false
 	}
 	return mode, digest, true
@@ -100,23 +134,55 @@ func (r rendered) failureKey(retry int64) string {
 
 // install replaces the whole table in one transaction.
 func (r rendered) install() string {
-	return remove() + r.rules + r.memberScript(false)
+	return remove() + r.rules + memberScript(r.members, false) + memberScript(r.forwarding, false)
 }
 
-// syncMembers replaces every set's members in one transaction.
-func (r rendered) syncMembers() string { return r.memberScript(true) }
+// syncMembers replaces every address set's members in one transaction.
+func (r rendered) syncMembers() string { return memberScript(r.members, true) }
 
-func (r rendered) memberScript(flush bool) string {
+// syncForwarding replaces the forwards, their ports and the transit
+// interfaces in one transaction.
+func (r rendered) syncForwarding() string { return memberScript(r.forwarding, true) }
+
+func memberScript(members map[string][]string, flush bool) string {
 	var b strings.Builder
-	for _, name := range slices.Sorted(maps.Keys(r.members)) {
+	for _, name := range slices.Sorted(maps.Keys(members)) {
 		if flush {
-			fmt.Fprintf(&b, "flush set inet %s %s\n", Table, name)
+			kind := "set"
+			if name == forwardMap {
+				kind = "map"
+			}
+			fmt.Fprintf(&b, "flush %s inet %s %s\n", kind, Table, name)
 		}
-		if elements := r.members[name]; len(elements) > 0 {
+		if elements := members[name]; len(elements) > 0 {
 			fmt.Fprintf(&b, "add element inet %s %s { %s }\n", Table, name, strings.Join(elements, ", "))
 		}
 	}
 	return b.String()
+}
+
+// forwardingMembers lists the forwards as map entries and port set members,
+// and each family's default-route interfaces as "in . out" pairs.
+func forwardingMembers(p placement) map[string][]string {
+	result := map[string][]string{forwardMap: {}, forwardTCP: {}, forwardUDP: {}, transitSet4: {}, transitSet6: {}}
+	forwards := slices.Clone(p.forwards)
+	slices.SortFunc(forwards, func(a, b Forward) int {
+		return cmp.Or(cmp.Compare(a.Protocol, b.Protocol), cmp.Compare(a.Port, b.Port))
+	})
+	for _, f := range forwards {
+		result[forwardMap] = append(result[forwardMap], fmt.Sprintf("%s . %d : %s . %d", f.Protocol, f.Port, f.To, f.ToPort))
+		ports := forwardTCP
+		if f.Protocol == "udp" {
+			ports = forwardUDP
+		}
+		result[ports] = append(result[ports], strconv.Itoa(f.Port))
+	}
+	for set, names := range map[string][]string{transitSet4: p.transit4, transitSet6: p.transit6} {
+		for _, name := range slices.Sorted(slices.Values(names)) {
+			result[set] = append(result[set], fmt.Sprintf("%q . %q", name, name))
+		}
+	}
+	return result
 }
 
 // remove deletes the table whether or not it exists.
@@ -130,27 +196,35 @@ func structure(t Target, mark string) string {
 	var b strings.Builder
 	line := func(format string, args ...any) { fmt.Fprintf(&b, "    "+format+"\n", args...) }
 	fmt.Fprintf(&b, "table inet %s {\n", Table)
-	for _, name := range slices.Sorted(maps.Keys(t.Sets)) {
-		fmt.Fprintf(&b, "  set %s { type ipv4_addr; flags interval; }\n", memberSet(name, 4))
-		fmt.Fprintf(&b, "  set %s { type ipv6_addr; flags interval; }\n", memberSet(name, 6))
+	// Mode off keeps only the forwarding: no sets, no ban, no input chain,
+	// nothing recorded (Cloud ADR 0110).
+	filtering := t.Mode != modeOff
+	if filtering {
+		for _, name := range slices.Sorted(maps.Keys(t.Sets)) {
+			fmt.Fprintf(&b, "  set %s { type ipv4_addr; flags interval; }\n", memberSet(name, 4))
+			fmt.Fprintf(&b, "  set %s { type ipv6_addr; flags interval; }\n", memberSet(name, 6))
+		}
+		hitTypes := map[string]string{
+			hitFinal: "inet_proto . inet_service", hitProtocol: "inet_proto",
+			hitICMP4: "icmp_type", hitICMP6: "icmpv6_type",
+			hitCeiling4: "ipv4_addr . inet_proto . inet_service", hitCeiling6: "ipv6_addr . inet_proto . inet_service",
+		}
+		for _, name := range slices.Sorted(maps.Keys(hitTypes)) {
+			fmt.Fprintf(&b, "  set %s { type %s; size %d; flags dynamic,timeout; timeout %s; }\n",
+				name, hitTypes[name], hitSizes[name], hitTimeout)
+		}
 	}
-	hitTypes := map[string]string{
-		hitFinal: "inet_proto . inet_service", hitProtocol: "inet_proto",
-		hitICMP4: "icmp_type", hitICMP6: "icmpv6_type",
-		hitCeiling4: "ipv4_addr . inet_proto . inet_service", hitCeiling6: "ipv6_addr . inet_proto . inet_service",
-	}
-	for _, name := range slices.Sorted(maps.Keys(hitTypes)) {
-		fmt.Fprintf(&b, "  set %s { type %s; size %d; flags dynamic,timeout; timeout %s; }\n",
-			name, hitTypes[name], hitSizes[name], hitTimeout)
-	}
-	b.WriteString("  chain input {\n")
-	line("type filter hook input priority filter; policy accept;")
-	if mark == "" {
+	fmt.Fprintf(&b, "  map %s { type inet_proto . inet_service : ipv4_addr . inet_service; }\n", forwardMap)
+	fmt.Fprintf(&b, "  set %s { type inet_service; }\n  set %s { type inet_service; }\n", forwardTCP, forwardUDP)
+	fmt.Fprintf(&b, "  set %s { type ifname . ifname; }\n  set %s { type ifname . ifname; }\n", transitSet4, transitSet6)
+	if filtering && t.Blocked != nil {
+		// After connection tracking (-200) and before translation (-100), so
+		// the ban covers forwarded traffic as well as this node's services.
+		// Loopback first, as in input: traffic to the node's own address
+		// crosses prerouting on lo.
+		b.WriteString("  chain prerouting {\n")
+		line("type filter hook prerouting priority mangle; policy accept;")
 		line(`iif "lo" accept`)
-	} else {
-		line(`iif "lo" accept comment %q`, mark)
-	}
-	if t.Blocked != nil {
 		for _, f := range families {
 			exempt := ""
 			if t.Exempt != nil {
@@ -158,7 +232,41 @@ func structure(t Target, mark string) string {
 			}
 			line("ct direction original %s saddr @%s%s drop", f.ip, memberSet(*t.Blocked, f.number), exempt)
 		}
+		b.WriteString("  }\n")
 	}
+	fmt.Fprintf(&b, "  chain %s {\n", markerChain)
+	line("type nat hook prerouting priority dstnat; policy accept;")
+	translate := fmt.Sprintf("meta nfproto ipv4 %s dnat ip to meta l4proto . th dport map @%s", localGuard, forwardMap)
+	if mark == "" {
+		line("%s", translate)
+	} else {
+		line("%s comment %q", translate, mark)
+	}
+	b.WriteString("  }\n")
+	// Masquerade only connections this module translated: the original
+	// protocol and port are one of its forwards. Other programs' translations
+	// keep their source.
+	b.WriteString("  chain nat_postrouting {\n")
+	line("type nat hook postrouting priority srcnat; policy accept;")
+	for _, p := range [][2]string{{"tcp", forwardTCP}, {"udp", forwardUDP}} {
+		line("meta nfproto ipv4 ct status dnat meta l4proto %s ct original proto-dst @%s masquerade", p[0], p[1])
+	}
+	b.WriteString("  }\n")
+	// A packet that enters and leaves through the same default-route
+	// interface untranslated is someone using this node as a router.
+	// Containers, tunnels and bridges use other interfaces.
+	b.WriteString("  chain filter_forward {\n")
+	line("type filter hook forward priority filter; policy accept;")
+	line("meta nfproto ipv4 iifname . oifname @%s ct status & (snat | dnat) == 0 drop", transitSet4)
+	line("meta nfproto ipv6 iifname . oifname @%s ct status & (snat | dnat) == 0 drop", transitSet6)
+	b.WriteString("  }\n")
+	if !filtering {
+		b.WriteString("}\n")
+		return b.String()
+	}
+	b.WriteString("  chain input {\n")
+	line("type filter hook input priority filter; policy accept;")
+	line(`iif "lo" accept`)
 	for _, rule := range strings.Split(guarantee, "\n") {
 		line("%s", rule)
 	}

@@ -73,6 +73,13 @@ uninstall_agent() {
     printf 'table inet akastr_firewall {}\ndelete table inet akastr_firewall\n' | /usr/sbin/nft -f - \
       || fail 'the Agent is stopped but its firewall table could not be removed; rerun --uninstall'
   fi
+  # IPv4 forwarding goes back off only if the Agent turned it on in this boot
+  # (the state file holds that boot's id); a machine that forwarded before keeps it.
+  opened=$(sed -n 's/^  "forwarding_opened": "\([^"]*\)".*/\1/p' /var/lib/akastr-agent/firewall/state.json 2>/dev/null || true)
+  if [ -n "$opened" ] && [ "$opened" = "$(cat /proc/sys/kernel/random/boot_id)" ]; then
+    /usr/sbin/sysctl -qw net.ipv4.ip_forward=0 \
+      || fail 'the Agent is stopped but IPv4 forwarding could not be turned off; rerun --uninstall'
+  fi
   if [ -e "$SERVICE_FILE" ]; then
     rm -f -- "$SERVICE_FILE"
     systemctl daemon-reload
