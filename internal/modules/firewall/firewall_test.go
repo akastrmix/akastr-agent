@@ -568,3 +568,27 @@ func TestTargetsAndStateWithoutForwardsMeanNone(t *testing.T) {
 		t.Fatalf("old state not restored as no forwards: table %q, forwards %+v", h.table, f.state.Forwards)
 	}
 }
+
+// A bridge as a default-route interface is left out of the transit check:
+// with br_netfilter, traffic between its ports enters and leaves through it.
+func TestTransitLeavesBridgesOut(t *testing.T) {
+	root := t.TempDir()
+	proc, sys := filepath.Join(root, "proc"), filepath.Join(root, "sys")
+	for _, dir := range []string{filepath.Join(proc, "net"), filepath.Join(sys, "class/net/eth0"), filepath.Join(sys, "class/net/vmbr0/bridge")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	route := "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"vmbr0\t00000000\t01DEB52F\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"eth0\t00000000\t01DEB52F\t0003\t0\t0\t100\t00000000\t0\t0\t0\n"
+	ipv6 := "00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 00000001 wg0\n"
+	if os.WriteFile(filepath.Join(proc, "net", "route"), []byte(route), 0o600) != nil ||
+		os.WriteFile(filepath.Join(proc, "net", "ipv6_route"), []byte(ipv6), 0o600) != nil {
+		t.Fatal("fixture")
+	}
+	v4, v6 := (&system{proc: proc, sys: sys}).transit()
+	if strings.Join(v4, ",") != "eth0" || strings.Join(v6, ",") != "wg0" {
+		t.Fatalf("transit %v %v", v4, v6)
+	}
+}

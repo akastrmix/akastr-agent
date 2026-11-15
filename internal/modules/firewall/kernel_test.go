@@ -328,9 +328,20 @@ func TestForwardingInARealKernel(t *testing.T) {
 	system := &system{nft: []string{ipProgram, "netns", "exec", space("n"), NFTProgram}, proc: "/proc", sys: "/sys"}
 	system.netlink = inSpace(t, space("n"))
 	host := nsHost{system, space("n")}
+	// Every node arrives here with a table from before forwarding: its marker
+	// sits in input. It reads as unmarked and is replaced.
+	if err := system.load(context.Background(), "table inet akastr_firewall {\n  chain input {\n"+
+		"    type filter hook input priority filter; policy accept;\n"+
+		"    iif \"lo\" accept comment \"akastr:enforce:00000000000000000000000000000000\"\n  }\n}\n"); err != nil {
+		t.Fatal(err)
+	}
+	if installed, err := system.installed(context.Background()); err != nil || installed != "unmarked" {
+		t.Fatalf("a table from before forwarding reads as %q, %v", installed, err)
+	}
 	f := newFirewall(host, t.TempDir())
 	f.missing = func() bool { return false }
 	f.start(context.Background())
+	// put applies twice, as the five-minute round does.
 	put := func(mode, blocked string, forwards ...string) {
 		t.Helper()
 		sets := `{}`
@@ -340,9 +351,11 @@ func TestForwardingInARealKernel(t *testing.T) {
 		}
 		raw := `{"mode":"` + mode + `","retry":0,"sets":` + sets + `,"blocked":` + ban + `,"exempt":null,"ceilings":[],
 			"rules":[{"action":"allow","sources":"any","protocol":"tcp","ports":[[22,22]]}],"forwards":[` + strings.Join(forwards, ",") + `]}`
-		codes, err := f.Apply(context.Background(), map[string]json.RawMessage{Key: json.RawMessage(raw)})
-		if err != nil || codes[Key] != "" {
-			t.Fatalf("Apply(%s %v) = %v, %v", mode, forwards, codes, err)
+		for range 2 {
+			codes, err := f.Apply(context.Background(), map[string]json.RawMessage{Key: json.RawMessage(raw)})
+			if err != nil || codes[Key] != "" {
+				t.Fatalf("Apply(%s %v) = %v, %v", mode, forwards, codes, err)
+			}
 		}
 	}
 	to := func(landing, protocol string) string {
@@ -358,6 +371,9 @@ func TestForwardingInARealKernel(t *testing.T) {
 
 	// Through the map, the landing sees the node's address.
 	put("enforce", "", both("a")...)
+	if installed, err := system.installed(context.Background()); err != nil || !strings.HasPrefix(installed, "akastr:enforce:") {
+		t.Fatalf("the replaced table reads as %q, %v", installed, err)
+	}
 	if on, _ := host.forwarding(); !on {
 		t.Fatal("forwarding stayed off")
 	}

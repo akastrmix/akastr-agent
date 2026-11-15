@@ -214,6 +214,9 @@ func (s *system) installed(ctx context.Context) (string, error) {
 }
 
 func (s *system) load(ctx context.Context, script string) error {
+	if script == "" {
+		return nil
+	}
 	if _, err := s.run(ctx, script, "-c", "-f", "-"); err != nil {
 		return err
 	}
