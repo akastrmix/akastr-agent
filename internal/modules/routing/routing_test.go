@@ -425,6 +425,34 @@ func TestMissingInboundWritesNothing(t *testing.T) {
 	}
 }
 
+// A VLESS reverse tunnel's outbound exists only while its client is
+// connected; rules reach it, and the module leaves it in place.
+func TestRulesReachTheNodesOwnOutbounds(t *testing.T) {
+	n, m := newFakeNode(t, panelTemplate)
+	if code := apply(t, m, target(t, "direct", nil, Rule{Users: []string{"ak-li"}, Outbound: "r-home"})); code != "" {
+		t.Fatal(code)
+	}
+	n.mu.Lock()
+	n.live = append(n.live, "r-home")
+	n.mu.Unlock()
+	n.takeEvents()
+	if code := apply(t, m, target(t, "direct", nil, Rule{Users: []string{"ak-li"}, Outbound: "r-home"})); code != "" {
+		t.Fatal(code)
+	}
+	if events := n.takeEvents(); !slices.Equal(events, []string{"rules"}) {
+		t.Fatalf("second pass: %v", events)
+	}
+	n.mu.Lock()
+	live := slices.Clone(n.live)
+	n.mu.Unlock()
+	if !slices.Contains(live, "r-home") {
+		t.Fatalf("running outbounds: %v", live)
+	}
+	if got := n.ruleTargets(); !slices.Equal(got, []string{"api", "r-home"}) {
+		t.Fatalf("running rules: %v", got)
+	}
+}
+
 func TestInvalidTargetsAreRefused(t *testing.T) {
 	m := New(nil)
 	cases := map[string]string{
@@ -439,6 +467,9 @@ func TestInvalidTargetsAreRefused(t *testing.T) {
 		"foreign tag":          `{"default_outbound":"direct","outbounds":[{"tag":"us","config":{"protocol":"freedom"}}],"rules":[]}`,
 		"unknown field":        `{"default_outbound":"direct","outbounds":[],"rules":[{"user":["ak-a"],"outbound":"direct"}]}`,
 		"missing rules":        `{"default_outbound":"direct","outbounds":[]}`,
+		"node tag default":     `{"default_outbound":"r-home","outbounds":[],"rules":[]}`,
+		"rule to the api":      `{"default_outbound":"direct","outbounds":[],"rules":[{"users":["ak-a"],"outbound":"api"}]}`,
+		"rule to a bad tag":    `{"default_outbound":"direct","outbounds":[],"rules":[{"users":["ak-a"],"outbound":"r home"}]}`,
 	}
 	for name, raw := range cases {
 		if m.Validate(Key, json.RawMessage(raw)) == nil {

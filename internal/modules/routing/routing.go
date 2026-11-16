@@ -51,6 +51,17 @@ const (
 
 var ownedTag = regexp.MustCompile(`^ak-o-[a-z0-9-]{1,100}$`)
 
+// nodeTag is an outbound the node's Xray has by itself, such as the one the
+// client of a VLESS reverse tunnel brings when it connects. Rules may name
+// one; the module never writes or removes it, and Xray closes what a rule
+// sends to a tag it does not have (yet) instead of sending it elsewhere.
+// Names starting with ak- are Cloud's, api is the panel's.
+var nodeTag = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+
+func isNodeTag(tag string) bool {
+	return nodeTag.MatchString(tag) && !strings.HasPrefix(tag, "ak-") && tag != "api"
+}
+
 // Config has no fields: the module is on or off.
 type Config struct{}
 
@@ -122,7 +133,7 @@ func decodeTarget(raw json.RawMessage) (Target, error) {
 	}
 	for _, item := range doc.Rules {
 		r, err := protocol.DecodeKnown[Rule](item, "routing rule")
-		if err != nil || !tags[r.Outbound] || !validRule(r) {
+		if err != nil || !(tags[r.Outbound] || isNodeTag(r.Outbound)) || !validRule(r) {
 			return Target{}, errTarget
 		}
 		t.Rules = append(t.Rules, r)

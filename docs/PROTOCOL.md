@@ -176,13 +176,13 @@ key 是 Cloud 的一个下载限速：自动限速的单位（一份订阅在一
 |---|---|
 | `default_outbound` | 没有规则命中时的出站：`direct` 或 `outbounds` 里的某个标签 |
 | `outbounds` | Cloud 拥有的出站，每项必须且只能包含 `tag`（`ak-o-` 加 1–100 位小写字母、数字或 `-`，不重复）与 `config`（一个 Xray 出站对象，必须有 `protocol`，不得有 `tag`）。Cloud 让标签随内容变化，标签相同即内容相同 |
-| `rules` | 按生效顺序的规则。条件字段 `inbounds`（面板入站 ID）、`users`（`ak-` 受管客户端）、`sources`（客户端的来源地址，写成 Xray 规则的 `sourceIP`：3x-ui 2.9.4 的路由页只认这个名字，旧名 `source` 在面板里显示不出来）、`domains`、`ips`（目标地址）、`protocols`（数组）与 `ports`、`networks`（Xray 的字符串写法），可省略但至少有一项；不认识的字段让整份目标被拒；`outbound` 必填，只能是 `direct`、`blocked` 或 `outbounds` 里的标签 |
+| `rules` | 按生效顺序的规则。条件字段 `inbounds`（面板入站 ID）、`users`（`ak-` 受管客户端）、`sources`（客户端的来源地址，写成 Xray 规则的 `sourceIP`：3x-ui 2.9.4 的路由页只认这个名字，旧名 `source` 在面板里显示不出来）、`domains`、`ips`（目标地址）、`protocols`（数组）与 `ports`、`networks`（Xray 的字符串写法），可省略但至少有一项；不认识的字段让整份目标被拒；`outbound` 必填，只能是 `direct`、`blocked`、`outbounds` 里的标签，或节点 Xray 自己就有的出站标签（1–100 位字母、数字、`.`、`_`、`-`，不以 `ak-` 开头、不是 `api`；例如 VLESS 反向隧道的客户端连上时 Xray 才建出的出站）。后者模块不写也不删；Xray 还没有这个标签时，命中的连接直接断开，不改走默认出站（Xray 26.7.28 实测；Cloud ADR 0111） |
 
 空目标是 `{"default_outbound":"direct","outbounds":[],"rules":[]}`；模块开着时 key 不退役。条件的内容（geosite 类别、端口写法等）由 Xray 判断：写入前就会被拒绝。
 
 - **写到哪里**：3x-ui 每次启动 Xray 都按面板的“Xray 模板”重建配置，所以 Agent 先写模板，再热更新正在运行的 Xray。模板里只替换三处：`outbounds` 整体换成 `[default_outbound, direct, blocked, 其余受管出站]`（`direct` 为 freedom、`blocked` 为 blackhole，写法与 3x-ui 默认模板一致，两者始终存在）；`routing.rules` 换成“面板自己的 api 规则 + 目标规则”，并删除 `routing.balancers`；`api.services` 补上 `RoutingService`。`routing.domainStrategy` 与模板其余字段原样保留，保存时原样回传面板的出站测试地址（缺省会被面板重置）。规则像 3x-ui 一样带 `"type": "field"`，`ruleTag` 由 Agent 按序号写成 `ak-r-N`，`inbounds` 换成面板入站当前的标签。
 - **每一轮**：读面板入站与模板，模板受管部分与目标不同时，先把“运行配置 + 新的受管部分”（去掉入站与日志设置：模块不改它们、Xray 已在运行它们，而 Agent 的 systemd 沙箱看不到 `/root` 下的证书、也不能写日志文件）交给同一个 Xray 程序的 `run -test`，不通过就什么都不写；通过后存模板并读回核对。随后：运行中的 Xray 还没有 `RoutingService`（首次接管）、第一个出站不是 `default_outbound`，或运行中的 `direct`、`blocked` 与模板不一致（有人在面板改过它们并重启了 Xray）时，经面板重启一次 Xray（同机所有连接短暂中断），等新进程的 api 应答；否则用 Xray 自带的 `api` 命令热更新：补上缺少的受管出站，不追加地替换整张规则表，再删掉不在目标里的 `ak-o-` 出站。热更新不断开已有连接，删掉正承载连接的出站也不会（在 Xray 26.7.28 上实测）。每轮都重新替换整张规则表，不因“看起来一样”跳过。
-- **只碰自己的**：只删除 `ak-o-` 开头的出站；面板 api 规则始终在第一条。接管前留在模板里的出站在接管时被替换，首次接管那次重启后消失。接管后在面板里改路由和出站不会长久生效，下一轮（最多 5 分钟）就改回来；改 DNS 等其余模板字段照常有效。
+- **只碰自己的**：只删除 `ak-o-` 开头的出站，规则指向的节点自有出站不动；面板 api 规则始终在第一条。接管前留在模板里的出站在接管时被替换，首次接管那次重启后消失。接管后在面板里改路由和出站不会长久生效，下一轮（最多 5 分钟）就改回来；改 DNS 等其余模板字段照常有效。
 - **失败**：Xray 替换规则表时先清空旧表再逐条构建，中途出错会留下空表，连 api 规则也没了。此时若 api 不再应答、且仍是同一个 Xray 进程，Agent 经面板重启一次 Xray（模板已是验证过的新配置）再回报失败。
 - **关闭与卸载**：保留最后一次写入的模板和运行配置，交还面板手动管理，不恢复接管前的样子（Cloud ADR 0099）。
 - **错误码**：`routing_inbound_missing`（规则引用的面板入站不存在）、`routing_config_invalid`（`run -test` 不通过）、`routing_panel_failed`（读或存模板失败）、`routing_xray_unavailable`（找不到 3x-ui 运行的唯一 Xray、它的程序或回环上的 api 入站）、`routing_apply_failed`（热更新没完成）、`routing_restart_failed`（经面板重启失败，或重启后没有恢复）。命令输出可能含出站密码，只在本机解析，不上报、不写日志。
