@@ -142,7 +142,7 @@ func TestRulesInARealKernel(t *testing.T) {
 	put := func(mode, sets, blocked, ceilings string) {
 		t.Helper()
 		raw := `{"mode":"` + mode + `","retry":0,"sets":` + sets + `,"blocked":` + blocked + `,"exempt":null,"ceilings":` + ceilings + `,
-			"rules":[{"action":"allow","sources":"any","protocol":"tcp","ports":[[5001,5002]]}]}`
+			"rules":[{"action":"allow","sources":"any","protocol":"tcp","ports":[[5001,5002]]}],"forwards":[]}`
 		codes, err := f.Apply(context.Background(), map[string]json.RawMessage{Key: json.RawMessage(raw)})
 		if err != nil || codes[Key] != "" {
 			t.Fatalf("Apply(%s) = %v, %v", mode, codes, err)

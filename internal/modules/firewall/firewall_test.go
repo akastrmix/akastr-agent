@@ -166,12 +166,12 @@ func target(mode string, port int, extra ...string) json.RawMessage {
 		sets = extra[0]
 	}
 	return json.RawMessage(`{"mode":"` + mode + `","retry":0,"sets":` + sets + `,"blocked":null,"exempt":null,"ceilings":[],
-		"rules":[{"action":"allow","sources":"any","protocol":"tcp","ports":[[` + strconv.Itoa(port) + `,` + strconv.Itoa(port) + `]]}]}`)
+		"rules":[{"action":"allow","sources":"any","protocol":"tcp","ports":[[` + strconv.Itoa(port) + `,` + strconv.Itoa(port) + `]]}],"forwards":[]}`)
 }
 
-// forwarding adds forwards to a target, as Cloud sends them.
+// forwarding gives a target forwards, as Cloud sends them.
 func forwarding(raw json.RawMessage, forwards string) json.RawMessage {
-	return json.RawMessage(strings.TrimSuffix(strings.TrimSpace(string(raw)), "}") + `,"forwards":[` + forwards + `]}`)
+	return json.RawMessage(strings.Replace(string(raw), `"forwards":[]`, `"forwards":[`+forwards+`]`, 1))
 }
 
 func forward(protocol string, port int, to string) string {
@@ -381,7 +381,7 @@ func TestFailedLookupKeepsTheLastAddresses(t *testing.T) {
 // Neither an empty set nor a missing source list can open the node to everyone.
 func TestNoSourcesNeverMeansEveryone(t *testing.T) {
 	empty := `{"mode":"enforce","retry":0,"sets":{"x":{"addresses":[],"domains":[]}},"blocked":null,"exempt":null,"ceilings":[],
-		"rules":[{"action":"allow","sources":[],"protocol":"any","ports":[]}]}`
+		"rules":[{"action":"allow","sources":[],"protocol":"any","ports":[]}],"forwards":[]}`
 	if _, err := decodeTarget([]byte(empty)); err == nil {
 		t.Fatal("an empty source list was accepted")
 	}
@@ -528,12 +528,8 @@ func TestRestartTurnsForwardingOnBeforeTheTable(t *testing.T) {
 	}
 }
 
-// A Cloud or a state file from before forwarding has no "forwards": none.
-func TestTargetsAndStateWithoutForwardsMeanNone(t *testing.T) {
-	decoded, err := decodeTarget(target("enforce", 22))
-	if err != nil || decoded.Forwards == nil || len(decoded.Forwards) != 0 {
-		t.Fatalf("decoded %+v, %v", decoded.Forwards, err)
-	}
+// A forward the table cannot carry refuses the whole target.
+func TestInvalidForwardsAreRefused(t *testing.T) {
 	for _, bad := range []string{
 		`null`,
 		forward("tcp", 22, "203.0.113.7") + "," + forward("tcp", 22, "203.0.113.8"),
@@ -552,20 +548,6 @@ func TestTargetsAndStateWithoutForwardsMeanNone(t *testing.T) {
 		if _, err := decodeTarget(raw); err == nil {
 			t.Fatalf("accepted forwards %s", bad)
 		}
-	}
-	dir := t.TempDir()
-	if err := os.MkdirAll(StateDirectory(dir), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	old := `{"schema_version":1,"confirmed":` + string(target("enforce", 22)) + `,"candidate":null,"failed":"","domains":{}}`
-	if err := os.WriteFile(filepath.Join(StateDirectory(dir), "state.json"), []byte(old), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h := &fakeHost{}
-	f := newTestFirewall(t, h, dir)
-	started(t, f)
-	if !installedPort(h, 22) || h.forwards() != "" || len(f.state.Forwards) != 0 {
-		t.Fatalf("old state not restored as no forwards: table %q, forwards %+v", h.table, f.state.Forwards)
 	}
 }
 

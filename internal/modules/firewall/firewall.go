@@ -240,6 +240,12 @@ func (f *Firewall) apply(ctx context.Context, t Target) string {
 		f.state.Confirmed, f.state.Candidate = &t, nil
 		return cmp.Or(f.save(), placedCode, forwardCode)
 	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		// The Agent is stopping, which says nothing about the rules: the
+		// candidate stays recorded with the table, for the next start to
+		// confirm or undo.
+		return codeApplyFailed
+	}
 	slog.Error("Cloud unreachable after the firewall change; the previous rules are back", "code", codeUnconfirmed)
 	f.restore(ctx)
 	f.state.Failed, f.state.Candidate = key, nil
@@ -369,8 +375,10 @@ func (f *Firewall) confirm(ctx context.Context) bool {
 }
 
 // restore puts the last confirmed rules back with the forwards in place (or
-// only the forwards, or no table); it never probes.
+// only the forwards, or no table); it never probes. It runs to the end even
+// when the apply ran out of time: an unconfirmed table must not stay.
 func (f *Firewall) restore(ctx context.Context) {
+	ctx = context.WithoutCancel(ctx)
 	previous := off()
 	if f.state.Confirmed != nil {
 		previous = *f.state.Confirmed
@@ -444,7 +452,6 @@ func (f *Firewall) start(ctx context.Context) {
 		slog.Error("firewall state file unreadable; nothing restored until Cloud sends the target", "code", codeStateFailed)
 		return
 	}
-	loaded.normalize()
 	f.state = loaded
 	if f.missing() {
 		return
@@ -486,12 +493,30 @@ func (f *Firewall) start(ctx context.Context) {
 		return
 	}
 	if candidate := f.state.Candidate; candidate != nil {
-		// The previous process stopped before it confirmed what it installed.
-		if f.confirm(ctx) {
-			f.state.Confirmed = candidate
-		} else {
+		r := render(*candidate, f.state.resolved(), placement{})
+		previous := off()
+		if f.state.Confirmed != nil {
+			previous = *f.state.Confirmed
+		}
+		_, digest, _ := parseMarker(installed)
+		switch {
+		case digest != r.digest && digest == render(previous, f.state.resolved(), placement{}).digest:
+			// The previous process stopped before it installed the candidate:
+			// the table is still the confirmed one.
+		case f.confirm(ctx):
+			// The previous process stopped before it confirmed what it
+			// installed. A table this version cannot tell (an update changed
+			// the rules' digest) stays unconfirmed: Cloud's next target
+			// replaces it.
+			if digest == r.digest {
+				f.state.Confirmed = candidate
+			}
+		case ctx.Err() != nil:
+			// Stopping again: the next start decides.
+			return
+		default:
 			slog.Error("Cloud unreachable with the unconfirmed firewall rules; the previous rules are back", "code", codeUnconfirmed)
-			f.state.Failed = render(*candidate, f.state.resolved(), placement{}).failureKey(candidate.Retry)
+			f.state.Failed = r.failureKey(candidate.Retry)
 			f.restore(ctx)
 		}
 		f.state.Candidate = nil

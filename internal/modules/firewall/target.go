@@ -119,14 +119,6 @@ func decodeTarget(raw []byte) (Target, error) {
 	if err := json.Unmarshal(raw, &object); err != nil {
 		return Target{}, errInvalid
 	}
-	// Cross-version handoff: a Cloud from before port forwarding sends no
-	// "forwards", which means none. Delete this once every node runs at least
-	// the Agent that added forwards and the Cloud that sends them is live
-	// (Cloud ADR 0110); the state file's old targets are normalized in state.go
-	// under the same condition.
-	if _, found := object["forwards"]; !found {
-		object["forwards"] = json.RawMessage(`[]`)
-	}
 	if len(object) != len(targetFields) {
 		return Target{}, errInvalid
 	}

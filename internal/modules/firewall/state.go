@@ -55,22 +55,6 @@ func emptyState() persisted {
 	return persisted{SchemaVersion: stateSchema, Domains: map[string]domainResult{}, Forwards: []Forward{}, Stale: []Forward{}}
 }
 
-// normalize reads a file from before port forwarding as one without forwards
-// (cross-version handoff, deleted with the one in decodeTarget).
-func (p *persisted) normalize() {
-	if p.Forwards == nil {
-		p.Forwards = []Forward{}
-	}
-	if p.Stale == nil {
-		p.Stale = []Forward{}
-	}
-	for _, t := range []*Target{p.Confirmed, p.Candidate} {
-		if t != nil && t.Forwards == nil {
-			t.Forwards = []Forward{}
-		}
-	}
-}
-
 func (p persisted) validate() error {
 	invalid := errors.New("firewall state file is invalid")
 	if p.SchemaVersion != stateSchema || p.Domains == nil || len(p.Domains) > 3*maxDomains || len(p.Failed) > digestLength {

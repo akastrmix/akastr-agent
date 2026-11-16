@@ -43,7 +43,6 @@ func (l Leftovers) Run(ctx context.Context) error {
 func cleanup(ctx context.Context, s *system, stateDir string) error {
 	recorded := emptyState()
 	found, err := state.NewJSONFile(filepath.Join(StateDirectory(stateDir), "state.json")).Load(&recorded)
-	recorded.normalize()
 	known := err == nil && found && recorded.validate() == nil
 	// Forwarding this Agent turned on goes back off before its record goes.
 	if known && recorded.ForwardingOpened != "" && recorded.ForwardingOpened == s.boot() {
