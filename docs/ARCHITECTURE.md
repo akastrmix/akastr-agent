@@ -54,10 +54,11 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/modules/routing`：把 Cloud 算好的整台节点路由（默认出站、`ak-o-` 受管出站和规则表）先写进 3x-ui 的 Xray 模板，再用运行中那个 Xray 程序的 `api` 子命令热更新；什么时候经面板重启 Xray 见 [PROTOCOL.md](PROTOCOL.md#routing)。配置经标准输入交给 Xray，不落盘。它在进程外留下的状态是模板和运行配置，关闭或卸载时保留（Cloud ADR 0099）。每 5 分钟还用面板自带的出站测试把每个 `ak-o-` 出站测一遍并上报（`routing.outbound_health`，Cloud ADR 0106），测试用面板临时起的 Xray，不碰运行中的那个。
 - `internal/modules/diagnostics`：在一次性 systemd 沙盒里运行 Cloud 转来的诊断脚本（Cloud ADR 0102）：临时用户、只多给读取任何文件的权限、整个文件系统只读（临时目录在内存里）、写不进 journal、连不上本机端口（每次运行前先探测，挡不住就不跑）、有时间与资源上限，脚本结束时单元连同它启动的进程一起消失。一次只跑一个；输出只回答一次，不落盘、不进日志。进程外留下的是运行中的单元：会话结束或到时限时停掉，更新换进程或崩溃后由下一个进程启动时停掉（模块关闭时也停），没有 Agent 时由单元自己的时限结束；卸载先停服务，同样停掉。
 - `internal/modules/connectionrecords`：把受管客户端的日志行和连接结束事件变成记录，在内存里有界排队、分批上报；不写盘。
-- `internal/hostroute`：读本机各路由表里 IPv4、IPv6 默认路由所在的网卡，限速与防火墙共用；不认识任何模块。
+- `internal/hostroute`：读本机各路由表里 IPv4、IPv6 默认路由所在的网卡，限速、防火墙与监控共用；不认识任何模块。
 - `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
 - `internal/modules/ratelimit`：按目标把指定用户的下载限速。按连接账本中的连接与 UDP 流，在默认路由网卡的 clsact egress 上加 flower 过滤，同一组共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
 - `internal/modules/firewall`：把 Cloud 算好的入站筛选与端口转发目标渲染成一张 nftables 表 `inet akastr_firewall`（骨架与顺序在 Agent，Cloud 只给带类型的事实，见 [PROTOCOL.md](PROTOCOL.md#firewall)），规则经标准输入交给固定路径的 `nft`。改表前后各新开一条到控制地址的连接确认 Cloud 可达，装上后连不通就装回上一份，并记住这份目标不再重装；只有集合成员变化（域名解析结果、地址增减、转发增删改、默认路由换网卡）时在一个事务里替换成员，不换表也不探测。转发成员每次应用都先同步，不受“失败不再重装”卡住；转发改目标或删掉后，经 netlink 删掉还走旧目标的连接跟踪记录。连接跟踪上限与 IPv4 转发开关经一次性 root 单元调整（本模块仅有的高权限动作，程序与参数固定）。每分钟上报 `firewall.status`：实际模式、sshd 端口、监听端口、连接跟踪用量、命中记录、域名解析结果与本机其他表的名字。进程外留下的是这张表、调高的连接跟踪上限、打开的转发开关和 `StateDir/firewall/state.json`：正常停止、更新换进程和崩溃时都原样保留（Agent 每次发布和改配置都会重启，照限速“启动即清理”会让落地机每次发布都暴露、转发线路每次都断），新进程见表在就不动，机器重启后（转发开关随重启关闭）先开转发开关再按状态文件装回，控制连接等这一步做完才建立（模块实现 `module.Starter`）；模块关闭后，下一个进程按记录关回自己打开的转发开关、删表、清理转发的旧连接、删状态目录；卸载在删除程序前删表并关回自己打开的转发开关。转发开关只在状态文件记着“这次开机由本 Agent 打开”时才关，Docker 这类本来就开着转发的机器从不关。连接跟踪上限保留到机器重启（Cloud ADR 0109 接受的残留）。
+- `internal/modules/metrics`：每分钟读一次 `/proc`、`/sys` 和 `/etc/os-release`，上报 `metrics.sample`（运行状态、带硬件设备的网卡的开机累计计数、基本信息）；`systemd-detect-virt` 每个进程只运行一次。上一份 CPU 读数只在内存里，流量增量由 Cloud 按开机编号求差，本机不存状态。
 - `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport`：本地 Ed25519 身份和可重连的受控 WSS 通道。
 - `internal/install`：一次安装命令的全部收敛步骤（第 8 节）；安装时下载密封配置，以节点 UUID 作为 AAD 完成认证解密。

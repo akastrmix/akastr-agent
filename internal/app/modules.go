@@ -24,6 +24,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
 	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
+	"github.com/akastrmix/akastr-agent/internal/modules/metrics"
 	"github.com/akastrmix/akastr-agent/internal/modules/ratelimit"
 	"github.com/akastrmix/akastr-agent/internal/modules/routing"
 	"github.com/akastrmix/akastr-agent/internal/modules/socks5"
@@ -56,6 +57,7 @@ type modules struct {
 	routing     *routing.Config
 	diagnostics *diagnostics.Config
 	firewall    *firewall.Config
+	metrics     *metrics.Config
 	// controlEndpoint is where the firewall checks that Cloud stays reachable.
 	controlEndpoint string
 }
@@ -85,6 +87,8 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 			m.diagnostics, err = parseSection(diagnostics.ParseConfig, raw)
 		case firewall.Name:
 			m.firewall, err = parseSection(firewall.ParseConfig, raw)
+		case metrics.Name:
+			m.metrics, err = parseSection(metrics.ParseConfig, raw)
 		default:
 			return modules{}, fmt.Errorf("configuration module %q is unknown to this Agent", name)
 		}
@@ -213,6 +217,9 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		runtime.reporters = append(runtime.reporters, firewall.NewStatus(filter, panelPort))
 	} else {
 		runtime.workers = append(runtime.workers, firewall.Leftovers{StateDir: paths.StateDir})
+	}
+	if m.metrics != nil {
+		runtime.reporters = append(runtime.reporters, metrics.New())
 	}
 	sweeper := diagnostics.NewSweeper()
 	runtime.workers = append(runtime.workers, sweeper)

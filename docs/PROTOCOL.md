@@ -26,6 +26,7 @@ AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS
 | `routing` | 无字段（`{}`） | 按目标状态写入本机 Xray 的路由规则与出站；需要 `xui` |
 | `diagnostics` | 无字段（`{}`） | 回答 `diagnostics.run`：在只读沙盒里运行诊断脚本（见[诊断](#诊断)） |
 | `firewall` | 无字段（`{}`） | 按目标状态筛选发往本机的入站并做端口转发，上报 `firewall.status`；节点上须有 `/usr/sbin/nft`（见 [firewall](#firewall)） |
+| `metrics` | 无字段（`{}`） | 每分钟上报 `metrics.sample`：机器的运行状态与网卡流量计数（见[上报与回执](#上报与回执)） |
 
 `xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
 
@@ -274,6 +275,7 @@ Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量�
 | `connection_records.batch` | `records`、`dropped`，见下 |
 | `routing.outbound_health` | `outbounds`，见下 |
 | `firewall.status` | `mode`、`ssh_ports`、`panel_port`、`listening`、`conntrack`、`hits`、`domains`、`foreign_tables`，见下 |
+| `metrics.sample` | `boot_id`、`uptime_seconds`、`cpu`、`load`、`memory`、`swap`、`disk`、`connections`、`processes`、`interfaces`、`system`，见下 |
 
 `xui.snapshot` 每分钟读取一次面板并发送，内容没变也发（Cloud 用相邻两份快照的差算速度，闲着的一分钟也要报出来），每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照原样重发，内容变了才被新快照取代。
 
@@ -310,6 +312,21 @@ Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量�
 - `hits`：`final`、`ceiling`、`truncated`。`final` 每项为 `protocol`、`packets`，TCP/UDP 另带 `port`，`icmp`/`icmpv6` 另带 `type`，其他协议的 `protocol` 是十进制协议号；`ceiling` 每项为 `source`、`protocol`、`port`、`packets`。`truncated` 为 true 表示某个记录集合已满，有命中没记下。没有表时都为空。
 - `domains`：当前目标里每个域名的 `name`、`addresses`、`resolved_at`（最后一次成功解析，RFC 3339，从未成功为 null）、`failed`（最后一次解析失败或为空）。
 - `foreign_tables`：本机其他 nftables 表的“族 名字”，最多 32 个，只读名字，不读内容。
+
+`metrics.sample`（开了 `metrics` 模块的节点才发）每分钟一份，连接 ready 后立即发一份；只保留最新一份，未确认的被下一份取代，不排队。只读 `/proc`、`/sys` 与 `/etc/os-release`，另在进程启动后运行一次 `systemd-detect-virt`。网卡计数是开机以来的累计，由 Cloud 按 `boot_id` 求差算出流量（Cloud ADR 0113），Agent 不在本机存状态。data 必须且只能包含下列各项，字节一律是整数：
+
+- `boot_id`：`/proc/sys/kernel/random/boot_id`。
+- `uptime_seconds`：`/proc/uptime` 第一项，取整。
+- `cpu`：本进程相邻两次读 `/proc/stat` 第一行之间的忙碌占比：1 − Δ(idle + iowait) ÷ Δ(user + nice + system + idle + iowait + irq + softirq + steal)，乘 100，保留一位小数，限定在 0–100（有的内核 iowait 会倒退）；进程启动后的第一份为 null。
+- `load`：`/proc/loadavg` 前三项。
+- `memory`、`swap`：各为 `total` 与 `used`（`/proc/meminfo`）：内存已用 = MemTotal − MemAvailable，交换已用 = SwapTotal − SwapFree，与 `free` 相同。
+- `disk`：`total` 与 `used`。取 `/proc/self/mounts` 里来源以 `/dev/` 开头、且不是 `/dev/loop*` 的挂载，逐个 statfs，按挂载点所在的设备号去重（Agent 的沙盒和绑定挂载让同一文件系统出现在多处）；总量 Σ blocks × frsize，已用 Σ (blocks − bfree) × frsize，与 `df` 相同；一个都没有时两项为 0。
+- `connections`：`tcp` 为 `/proc/net/sockstat` 的 TCP inuse 加 `sockstat6` 的 TCP6 inuse，`udp` 同理取 UDP 与 UDP6；不含 TIME-WAIT，没有 `sockstat6`（IPv6 关闭）时按 0 算。
+- `processes`：`/proc` 下纯数字目录的个数。
+- `interfaces`：每项 `name`、`rx_bytes`、`tx_bytes`（`/sys/class/net/<名字>/statistics/`）。只算 `/sys/class/net/<名字>/device` 存在的网卡，包括虚拟化的 virtio 网卡；docker、veth、WireGuard、tun、网桥、bond 没有硬件设备，不算，免得同一份流量计两遍。一块都没有时（OpenVZ、LXC 这类容器 VPS）改算 IPv4 与 IPv6 默认路由所在的网卡。按名字排序，最多 16 块，可以为空数组。
+- `system`：`os`（`/etc/os-release` 的 PRETTY_NAME，读不到为 null）、`kernel`（`/proc/sys/kernel/osrelease`）、`arch`（uname 的 machine，例如 `x86_64`）、`cpu_model`（`/proc/cpuinfo` 第一个 `model name`，没有为 null）、`cpu_cores`（`/sys/devices/system/cpu/online` 列出的 CPU 个数）、`virtualization`（`systemd-detect-virt` 的输出，`none` 也照报：没有虚拟化时它输出 `none` 并以 1 退出；运行失败为 null）。
+
+除写明可为 null 的项以外，任何一项读不到，这一分钟就不发，只在开始读不到时记一次日志。
 
 ## IP 观察、ChangeIP 与 IPv4 核对
 

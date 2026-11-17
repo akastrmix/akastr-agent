@@ -24,6 +24,7 @@ Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久
 - 连接记录：把受管客户端在访问日志里的每次请求（时间、来源、目标、出站、是否被拦截）和连接结束时的流量上报给 Cloud 留作审计；
 - 路由：按 Cloud 下发的目标接管 3x-ui 所运行 Xray 的路由规则与出站（屏蔽、前置到落地、按客户分流），改动一般热更新、不断线，首次接管或默认出站变化（包括替换它的内容）时重启一次 Xray；
 - 防火墙：按 Cloud 下发的目标用一张自己的 nftables 表筛选发往本机的入站（封禁、入站访问来源、有序规则）并做端口转发（内核地址转换，把前置机的端口转到落地），改表前后都确认还连得上 Cloud，连不上就退回上一份；Agent 重启、更新或崩溃都不动这张表；
+- 监控：每分钟上报机器的 CPU、内存、硬盘、连接数和网卡流量计数，只读系统数据；Cloud 据此显示走势、算每日流量和流量额度；
 - IPQuality Runner：见下。
 
 Runner 使用主控随任务下发的目标 SOCKS5 登录，执行固定版本、经过摘要校验的官方 IPQuality 脚本，每台严格单并发，本身不保存代理密码。配置范围与固定版本入口见[安装教程](docs/INSTALLATION.md#ipquality-runner)。
@@ -42,6 +43,7 @@ Akastr Agent 只负责节点本地执行与观察：
 - 可选的 `connection_records` 模块上报受管客户端的连接记录，需要同时开启 `xui`。
 - 可选的 `routing` 模块按 Cloud 下发的目标写入本机 Xray 的路由规则与出站，需要同时开启 `xui`。
 - 可选的 `firewall` 模块按 Cloud 下发的目标筛选发往本机的入站、做端口转发，不依赖其他模块。
+- 可选的 `metrics` 模块每分钟上报机器的运行状态和网卡流量计数，不依赖其他模块。
 
 AkastrCloud 负责业务编排：
 
@@ -52,7 +54,7 @@ AkastrCloud 负责业务编排：
 
 IPQuality 的次数与缓存由 Cloud 管理，重装 Agent 不能绕过；具体规则见 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)。
 
-目标节点按动态公网 IPv4、触发 ChangeIP 后可能立即断网、恢复后可能换 IP 也可能保持原 IP 的网络模型运行；provider 结果只描述触发，不直接代表地址已经改变。完整假设与收敛流程见 [目标节点网络模型](docs/ARCHITECTURE.md#3-目标节点网络模型)，消息契约见 [WSS 协议](docs/PROTOCOL.md#ip-观察changeip-与-ipv4-核对)。ChangeIP 与同一目标的 IPQuality 逻辑互斥；每台 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、通用离线告警、通用主机监控、任意远程命令或浏览器 HTTP-flow ChangeIP。
+目标节点按动态公网 IPv4、触发 ChangeIP 后可能立即断网、恢复后可能换 IP 也可能保持原 IP 的网络模型运行；provider 结果只描述触发，不直接代表地址已经改变。完整假设与收敛流程见 [目标节点网络模型](docs/ARCHITECTURE.md#3-目标节点网络模型)，消息契约见 [WSS 协议](docs/PROTOCOL.md#ip-观察changeip-与-ipv4-核对)。ChangeIP 与同一目标的 IPQuality 逻辑互斥；每台 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、离线或资源告警、任意远程命令或浏览器 HTTP-flow ChangeIP。
 
 ## 文档
 

@@ -42,6 +42,7 @@ apt-get install --yes ca-certificates curl
 - 连接记录：需要同时开启 3x-ui，并按上文开启访问日志；没开时没有记录。上报内容见 [PROTOCOL.md](PROTOCOL.md#上报与回执)；
 - 路由接管：需要同时开启 3x-ui。开启前在 3x-ui 面板做一次数据库备份，并在 Cloud 节点详情的“路由”里核对最终规则表；首次开启会经面板重启一次 Xray，之后在面板里改路由和出站不会长久生效（DNS 等其余设置照常）。关闭后保留最后写入的配置，交还面板手动管理。规则见 [PROTOCOL.md](PROTOCOL.md#routing)；
 - 防火墙：筛选发往本机的入站，并为“经前置机”的入口做端口转发；规则在 Cloud 的“策略 → 防火墙”和节点详情的“防火墙”里管理，开启模块后默认是“关闭”模式，没有转发时不装任何规则。有转发时 Agent 在运行时打开 IPv4 转发开关（不写配置文件，重启后由 Agent 重新打开）；装了 Docker 的机器上 Docker 会把过路的包挡掉，做不了前置机。需要节点上的 `nft`（Debian 包 `nftables`，有的服务商镜像不带）：安装命令会补装；在已装好的节点上后来才开启时，若没有 `nft`，节点不接受新配置，后台显示“节点不接受当前配置”，在节点上重跑安装命令即可。机器上已有 fail2ban 等别的规则表时保留它们。规则见 [PROTOCOL.md](PROTOCOL.md#firewall)；
+- 监控：新建节点时默认开启。每分钟上报 CPU、内存、硬盘、连接数和网卡流量计数，在 Cloud 节点详情的“监控”里查看，并可设置每月流量额度；只读系统数据，不需要安装别的软件。统计哪些网卡见 [PROTOCOL.md](PROTOCOL.md#上报与回执)，开启后在“监控”的基本信息里核对一次；
 - IPQuality Runner：见下文，可以开多台。
 
 服务商接口方式直接粘贴完整命令，例如 `curl -X POST -H "Authorization: Bearer …" https://example.com/changeIP/`。后台只接受 HTTPS、POST、一个 Bearer header 和一个 URL，再解析成结构化配置；它不会执行这段文本，也不会把 token 拆成另一个输入框。该 secret 不进入安装命令，最终只存在于节点上 root-only 的配置文件。
