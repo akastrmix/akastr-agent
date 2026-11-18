@@ -87,7 +87,9 @@ func (s *Sampler) tick(ctx context.Context, publish module.Publish) {
 	if err != nil {
 		return
 	}
-	report := protocol.ReportBody{ReportID: protocol.NewUUID(), Kind: KindSample, Data: raw}
+	// Data is any: plain bytes would go out as a base64 string, which Cloud
+	// refuses by closing the connection.
+	report := protocol.ReportBody{ReportID: protocol.NewUUID(), Kind: KindSample, Data: json.RawMessage(raw)}
 	s.mu.Lock()
 	s.pending = report.ReportID
 	s.mu.Unlock()

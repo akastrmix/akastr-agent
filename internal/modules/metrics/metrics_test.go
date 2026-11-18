@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 // fakeHost builds a /proc and /sys tree under a temporary directory.
@@ -270,5 +272,29 @@ func TestCountCPUs(t *testing.T) {
 	}
 	if _, err := countCPUs("3-1"); err == nil {
 		t.Error("a backwards range was accepted")
+	}
+}
+
+// The report goes out with the sample as a JSON object. Cloud closes the
+// connection on anything else, so a node with metrics on would never stay
+// connected (v1.29.0 sent the bytes as a base64 string).
+func TestPublishedSampleIsAnObject(t *testing.T) {
+	f := newFakeHost(t)
+	s := &Sampler{host: f.host()}
+	var sent []protocol.ReportBody
+	s.tick(context.Background(), func(r protocol.ReportBody) error { sent = append(sent, r); return nil })
+	if len(sent) != 1 {
+		t.Fatalf("sent %d reports, want 1", len(sent))
+	}
+	wire, err := json.Marshal(sent[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Kind string         `json:"kind"`
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(wire, &got); err != nil || got.Kind != KindSample || got.Data["boot_id"] == nil {
+		t.Fatalf("report on the wire = %s (%v)", wire, err)
 	}
 }
