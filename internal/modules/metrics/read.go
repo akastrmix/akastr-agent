@@ -155,7 +155,8 @@ func (h host) memory() (memory, swap usage, err error) {
 }
 
 // disk adds up the filesystems on block devices, once per device: a sandbox
-// or a bind mount shows the same filesystem at several mount points.
+// or a bind mount shows the same filesystem at several mount points. Only
+// reading the mount table can fail it.
 func (h host) disk() (usage, error) {
 	data, err := os.ReadFile(filepath.Join(h.proc, "self", "mounts"))
 	if err != nil {
@@ -170,7 +171,9 @@ func (h host) disk() (usage, error) {
 		}
 		fs, err := h.filesystem(unescapeMount(fields[1]))
 		if err != nil {
-			return usage{}, err
+			// The sandbox hides mounts under /home, /root and /run/user;
+			// one that cannot be reached is left out, not the whole sample.
+			continue
 		}
 		if seen[fs.device] {
 			continue

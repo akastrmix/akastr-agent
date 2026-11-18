@@ -320,7 +320,7 @@ Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量�
 - `cpu`：本进程相邻两次读 `/proc/stat` 第一行之间的忙碌占比：1 − Δ(idle + iowait) ÷ Δ(user + nice + system + idle + iowait + irq + softirq + steal)，乘 100，保留一位小数，限定在 0–100（有的内核 iowait 会倒退）；进程启动后的第一份为 null。
 - `load`：`/proc/loadavg` 前三项。
 - `memory`、`swap`：各为 `total` 与 `used`（`/proc/meminfo`）：内存已用 = MemTotal − MemAvailable，交换已用 = SwapTotal − SwapFree，与 `free` 相同。
-- `disk`：`total` 与 `used`。取 `/proc/self/mounts` 里来源以 `/dev/` 开头、且不是 `/dev/loop*` 的挂载，逐个 statfs，按挂载点所在的设备号去重（Agent 的沙盒和绑定挂载让同一文件系统出现在多处）；总量 Σ blocks × frsize，已用 Σ (blocks − bfree) × frsize，与 `df` 相同；一个都没有时两项为 0。
+- `disk`：`total` 与 `used`。取 `/proc/self/mounts` 里来源以 `/dev/` 开头、且不是 `/dev/loop*` 的挂载，逐个 statfs，按挂载点所在的设备号去重（Agent 的沙盒和绑定挂载让同一文件系统出现在多处）；总量 Σ blocks × frsize，已用 Σ (blocks − bfree) × frsize，与 `df` 相同；沙盒遮住的挂载点（`/home`、`/root`、`/run/user` 下的）读不到，跳过，不影响整份；一个都没有时两项为 0。
 - `connections`：`tcp` 为 `/proc/net/sockstat` 的 TCP inuse 加 `sockstat6` 的 TCP6 inuse，`udp` 同理取 UDP 与 UDP6；不含 TIME-WAIT，没有 `sockstat6`（IPv6 关闭）时按 0 算。
 - `processes`：`/proc` 下纯数字目录的个数。
 - `interfaces`：每项 `name`、`rx_bytes`、`tx_bytes`（`/sys/class/net/<名字>/statistics/`）。只算 `/sys/class/net/<名字>/device` 存在的网卡，包括虚拟化的 virtio 网卡；docker、veth、WireGuard、tun、网桥、bond 没有硬件设备，不算，免得同一份流量计两遍。一块都没有时（OpenVZ、LXC 这类容器 VPS）改算 IPv4 与 IPv6 默认路由所在的网卡。按名字排序，最多 16 块，可以为空数组。
