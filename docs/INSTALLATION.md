@@ -207,7 +207,7 @@ curl -fsSL https://<AkastrCloud 主控>/agent/install.sh | sh -s -- --uninstall 
 | 安装提示 `another Agent node` / `has no identity` | 这台机器装着别的节点，或留有来源不明的执行状态；确认后用卸载命令清理再安装 |
 | `change_triggered` | HTTP provider 收到 `200`，或固定程序退出 `0`；只确认触发，主控继续等待公网 IP 事实 |
 | `change_trigger_unknown` | 换 IP 可能让响应、进程或 WSS 提前断开；Agent 不重发 provider，恢复后由常驻 IPv4 monitor 收敛 |
-| `http_status_not_200` / `exited_nonzero` | 服务商返回非 `200`，或固定程序非零退出；先修复 provider，Agent 不把它当成已触发 |
+| `http_status_not_200` / `exited_nonzero` | 服务商返回非 `200`，或固定程序非零退出；先修复 provider，Agent 不把它当成已触发。前者会附上服务商的回复，管理员在节点任务记录里可以看到 |
 | IPQuality 脚本校验失败 | 停止安装；不要更改 checksum 或使用浮动在线脚本 |
 | `proxy_preflight_failed` / `proxy_postflight_failed` | 检查目标 SOCKS5 host、端口、凭据和代理稳定性，不要打印密码 |
 | `runner_busy` | Runner 单执行槽正忙，应由主控排队 |

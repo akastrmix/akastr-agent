@@ -14,9 +14,12 @@ const (
 )
 
 type Result struct {
-	State      TriggerState
-	Code       string
-	ExitCode   int
+	State    TriggerState
+	Code     string
+	ExitCode int
+	// Reply is what the provider answered when it refused, for an administrator
+	// to read; empty when there is nothing to show.
+	Reply      string
 	StartedAt  time.Time
 	FinishedAt time.Time
 }

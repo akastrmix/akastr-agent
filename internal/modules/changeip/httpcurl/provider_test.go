@@ -1,8 +1,15 @@
 package httpcurl
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
@@ -30,5 +37,45 @@ func TestClassifyRequiresExactHTTP200(t *testing.T) {
 				t.Fatalf("classify() = %q/%q, want %q/%q", state, code, test.state, test.code)
 			}
 		})
+	}
+}
+
+// Runs the real curl, so a change to its arguments that breaks telling success
+// from refusal, or that lets the token reach the reply, fails here.
+func TestRunReportsTheRefusalWithoutTheToken(t *testing.T) {
+	if _, err := os.Stat("/usr/bin/curl"); err != nil {
+		t.Skip("curl is not installed")
+	}
+	const token = "secret-token-123"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer "+token {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/ok" {
+			_, _ = w.Write([]byte(`{"ip":"changing"}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte("{\"error\":\"頻率限制中\",\n\t\"echo\":\"" + token + "\"}" + strings.Repeat("x", 5000)))
+	}))
+	defer server.Close()
+
+	run := func(path string) changeip.Result {
+		provider, err := New(Config{Program: "/usr/bin/curl", URL: server.URL + path, BearerToken: token, Timeout: 10 * time.Second})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return provider.Run(context.Background())
+	}
+	if result := run("/ok"); result.State != changeip.TriggerConfirmed || result.Code != CodeCompleted || result.Reply != "" {
+		t.Fatalf("200: %#v", result)
+	}
+	refused := run("/refuse")
+	wantStart := `HTTP 400 {"error":"頻率限制中", "echo":"<token>"}xxx`
+	if refused.State != changeip.TriggerFailed || refused.Code != CodeHTTPStatusNot200 ||
+		!strings.HasPrefix(refused.Reply, wantStart) || !strings.HasSuffix(refused.Reply, "x…") ||
+		strings.Contains(refused.Reply, token) || utf8.RuneCountInString(refused.Reply) != len("HTTP 400 ")+replyLimit+1 {
+		t.Fatalf("400: %#v", refused)
 	}
 }

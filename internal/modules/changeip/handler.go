@@ -82,7 +82,11 @@ func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protoc
 		if err := h.reconciler.CancelChange(offer.CommandID); err != nil {
 			return reconciliationPending(&before, providerResult.FinishedAt)
 		}
-		return failure(providerResult.Code, &before, providerResult.FinishedAt)
+		result := failure(providerResult.Code, &before, providerResult.FinishedAt)
+		if providerResult.Reply != "" {
+			result.Result["provider_reply"] = providerResult.Reply
+		}
+		return result
 	}
 	if providerResult.State == TriggerUnknown {
 		return reconciliationPending(&before, providerResult.FinishedAt)
