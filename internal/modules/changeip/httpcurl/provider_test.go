@@ -56,6 +56,12 @@ func TestRunReportsTheRefusalWithoutTheToken(t *testing.T) {
 			_, _ = w.Write([]byte(`{"ip":"changing"}`))
 			return
 		}
+		if r.URL.Path == "/echo-at-limit" {
+			// The echoed token starts 5 bytes before the end of what the Agent keeps.
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(strings.Repeat(" ", bodyLimit-5) + token))
+			return
+		}
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte("{\"error\":\"頻率限制中\",\n\t\"echo\":\"" + token + "\"}" + strings.Repeat("x", 5000)))
 	}))
@@ -77,5 +83,8 @@ func TestRunReportsTheRefusalWithoutTheToken(t *testing.T) {
 		!strings.HasPrefix(refused.Reply, wantStart) || !strings.HasSuffix(refused.Reply, "x…") ||
 		strings.Contains(refused.Reply, token) || utf8.RuneCountInString(refused.Reply) != len("HTTP 400 ")+replyLimit+1 {
 		t.Fatalf("400: %#v", refused)
+	}
+	if cut := run("/echo-at-limit"); cut.Code != CodeHTTPStatusNot200 || cut.Reply != "HTTP 400" {
+		t.Fatalf("token split by the cut: %#v", cut)
 	}
 }

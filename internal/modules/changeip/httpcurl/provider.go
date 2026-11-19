@@ -87,7 +87,7 @@ func (p *Provider) Run(ctx context.Context) changeip.Result {
 		state, code := classify(waitError, exitCode, status)
 		result := p.result(state, code, exitCode, startedAt)
 		if code == CodeHTTPStatusNot200 {
-			result.Reply = reply(status, body.String(), p.config.BearerToken)
+			result.Reply = reply(status, body, p.config.BearerToken)
 		}
 		return result
 	case <-runContext.Done():
@@ -119,8 +119,13 @@ func classify(waitError error, exitCode int, status string) (changeip.TriggerSta
 
 // reply is the refusal as an administrator reads it: the status and the start
 // of the body on one line, without the token or control characters.
-func reply(status, body, token string) string {
-	body = strings.ToValidUTF8(body, "\uFFFD")
+func reply(status string, head *headBuffer, token string) string {
+	data := head.data
+	if head.truncated && token != "" {
+		// The cut may have split an echoed token; its remains are in the last bytes.
+		data = data[:max(0, len(data)-(len(token)-1))]
+	}
+	body := strings.ToValidUTF8(string(data), "\uFFFD")
 	if token != "" {
 		body = strings.ReplaceAll(body, token, "<token>")
 	}
@@ -139,12 +144,17 @@ func reply(status, body, token string) string {
 // headBuffer keeps the first bytes written to it and drops the rest, so curl
 // never blocks on a long body.
 type headBuffer struct {
-	data  []byte
-	limit int
+	data      []byte
+	limit     int
+	truncated bool
 }
 
 func (b *headBuffer) Write(p []byte) (int, error) {
-	if room := b.limit - len(b.data); room > 0 {
+	room := b.limit - len(b.data)
+	if len(p) > room {
+		b.truncated = true
+	}
+	if room > 0 {
 		b.data = append(b.data, p[:min(room, len(p))]...)
 	}
 	return len(p), nil
