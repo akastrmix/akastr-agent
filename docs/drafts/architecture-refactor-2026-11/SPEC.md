@@ -1,215 +1,123 @@
 # AkastrAgent 内部规整重构方案（Spec）
 
-> **目录生命周期**：临时复核草稿；重构完成上线后删除整个 `docs/drafts/` 目录。
+> **目录生命周期**：临时草稿；执行并发布后删除整个 `docs/drafts/` 目录，不采纳清单随 Git 历史保留。
 >
-> **状态：待复核、未批准。** 本方案为纯 Agent 内部代码规整，不涉及协议或持久格式变更（不触发 Cloud ADR 0024）；文档内容不构成批准，经复核与主人确认后再执行。
+> **状态：Claude 改写稿（基于 agy 初稿 61d769b 复核），待 agy 复核、主人确认；未批准。** 文档里任何文字都不构成批准。
 
-## 1. 标题与背景定位
+- 基准代码：`a37e6ea`（v1.30.1 之后；`61d769b` 只加了本草稿）。协议 `2026-11-01.v12`，节点配置 `schema_version = 5`。
+- 性质：纯 Agent 内部整理。不改协议与共享夹具、不改本地持久文件路径与格式、不改 Cloud、无新增界面术语/存储名/协议名，不触发 Cloud ADR 0024；节点上看不出区别。
 
-- **基准仓库**：`/root/AkastrAgent`
-- **基准提交**：`a37e6ea`（紧随 `v1.30.1`）
-- **运行时基线**：Go `1.27.0`（toolchain `go1.27.4`）、WSS 协议版本 `2026-11-01.v12`、节点配置 `schema_version = 5`
+## 1. 判断
 
-**核心判断：不做推倒重来的底层大重构，只做一次纯内部的收敛规整。**
+底座（`daemon`、`transport`、`operation`、`desired`、`lifecycle`、`layout`、`install`、`update`、`state`、`protocol`，以及 `xray/*`、`panel`、`sockdiag`、`hostroute`）边界清楚，不动。凌乱集中在最近加功能时留下的 4 类问题：
 
-1. **底层底座稳固，无需伤筋动骨**：核心框架包（`daemon`、`transport`、`operation`、`desired`、`lifecycle`、`layout`、`install`、`update`、`state`）以及 Xray 读取底座（`xray/process`、`xray/accesslog`、`xray/ledger`、`panel`、`sockdiag`、`hostroute`）边界清晰、无业务泄漏，经受住了近期连续新增 6 个功能模块的考验。
-2. **凌乱感集中在上层模块与公共边角料**：近期功能迭代密集，在 4 个位置积累了结构性杂质——**跨模块直接引用、周期性最新状态上报样板重复（含边缘缺陷）、`firewall` 单包职责过度集中、装配层清理协程与周边小工具零散重复**。通过纯内部收敛即可让代码重新规整，同时保持零线上变更风险。
+1. **模块互相引用**：违反 AGENTS.md“模块之间互不引用”（R1）。
+2. **同一段“只报最新一份”的上报样板抄了多份**：已出过事故——v1.29.0 的 `metrics` 抄样板时漏了 `json.RawMessage`，`[]byte` 被编码成 base64 字符串，Cloud 解析失败断开连接，test 节点每次重连 1 秒内断线（a564a18）（R2）。
+3. **装配文件知道模块内部细节**：`internal/app/modules.go` 替 changeip 选触发方式并写死 curl 路径与时限、替 IPQuality 拼固定脚本参数、替限速和防火墙写 apt 包名、替防火墙解析面板端口（R3）。
+4. **小重复与到期兼容代码**（R4、R5）。
 
----
+## 2. 不变量（执行全程守住）
 
-## 2. 红线与明确不改范围（Non-Goals & Invariants）
+1. PROTOCOL.md 的消息类型、字段、错误码与 `kind`、上报周期、重发与 `report_id` 语义不变；`internal/protocol/testdata/agent-protocol-v12.json` 不改。
+2. `identity.json`、`state.json`、`update-attempt.json`、`changeip-reconciliation.json`、`xui/state.json`、`firewall/state.json` 的路径与 schema 不变。
+3. `transport`、`operation`、`desired`、`install`、`update` 的状态机、锁与租约不动；`xray/ledger` 的连接认领与计数算法不动；`firewall` 的 `apply` 顺序、规则渲染与摘要、`Started()` 先于控制连接的顺序不动。
+4. ChangeIP 与 IPQuality 的执行、恢复与结果码（`completed`、`timed_out`、`request_failed` 等字符串）逐字不变。
+5. `internal/modules/ipqualityrunner/script/pin.go` 中 `RunnerPackages = "..."`、`RunnerCommands = "..."` 两行的写法不变：`scripts/verify-debian-runtime-dependencies.sh` 用 sed 读取它们。
+6. 只搬代码不改行为。下文唯一声明的行为差异见 R2，Cloud 侧无可观察变化。
 
-> [!IMPORTANT]
-> 本次规整为 **纯 Agent 内部重构**：不修改任何线上通信协议、不修改任何本地持久化文件格式、不涉及 `/root/AkastrCloud` 联动修改，也不触发 Cloud ADR 0024 的高风险变更审批。
+## 3. 改动（每项一个提交，按序执行）
 
-1. **零协议与跨仓库变更**
-   - [PROTOCOL.md](../../PROTOCOL.md) 定义的全部消息类型、字段、错误码、上报 `kind`、周期、bootstrap/enrollment/maintenance 签名及 CLI 契约（`version`、`prepare`、`run`、`install`）保持完全不变。
-   - 不改动共享夹具 [agent-protocol-v12.json](../../../internal/protocol/testdata/agent-protocol-v12.json)，无需修改 `/root/AkastrCloud`。
-2. **零持久状态格式变更**
-   - `identity.json`（v3）、`/usr/local/lib/akastr-agent/{current,slots/{a,b},.maintenance.lock}`、`state.json`（v1）、`update-attempt.json`（v1）、`changeip-reconciliation.json`（v1）、`xui/state.json`（v1）、`firewall/state.json`（v1）的文件路径与 JSON schema 完全不变，确保已部署节点原地升级平滑交接。
-3. **不动核心状态机与一级风险算法**
-   - `transport`、`operation`、`desired`、`install`、`update` 的状态机与锁/租约逻辑不重构。
-   - [ledger.go](../../../internal/xray/ledger/ledger.go) 的 TCP/UDP 连接认领、争议置空与闭环计数算法不改动（防一级风险：避免将连接数、限速或审计流量错算到其他客户头上）。
-4. **拒绝过度工程与形式主义检查**（遵守 [AGENTS.md](../../../AGENTS.md) 第 25–29 行）
-   - 不新增检查源码文本或 AST/`go list` import 关系的测试；
-   - 不为 `firewall` 与 `metrics` 中各十余行且字段需求不同的 `/proc/meminfo`、`boot_id` 读取强行新建 `internal/procfs` 杂物包；
-   - 保留 [host.go](../../../internal/modules/firewall/host.go)（第 166–189 行）中检查 `nat_prerouting` 链是否存在的防御逻辑（既兼容早期无转发阶段的旧表，也防止外部残缺表导致 `nft list chain` 报错卡死 `apply`）。
+### R1 断开模块之间的引用
 
----
+现状（非测试代码）：
 
-## 3. 改动一：清零 `internal/modules/*` 跨模块引用（落实模块隔离规则）
+- `ratelimit`、`connectionrecords`、`routing` 只为调用 `xui.Owned(email)`（`^ak-[a-z0-9]{1,61}$`）而导入 `internal/modules/xui`。
+- `changeip/handler.go` 只为 `ipwatch.AddressObserver` 与 `ipwatch.IPv4` 导入 `internal/modules/ipwatch`（对 `Monitor` 已用消费方接口 `changeReconciler`）。
 
-### 3.1 现状证据
+做法：
 
-[AGENTS.md](../../../AGENTS.md)（第 26 行）明确要求“功能模块各自独立放在 `internal/modules/*`，模块之间互不引用（共用能力放 `internal/` 无业务底层包），只在 `internal/app/modules.go` 集中登记与接线”，但当前存在 **4 处直接跨模块导入**：
+1. 新建 `internal/xray` 根包（例如 `internal/xray/owned.go`），放“哪些 Xray 用户归 Cloud 管”的判断；`xui`、`ratelimit`、`connectionrecords`、`routing` 都改用它，删除 `xui.Owned`。
+   - `xui` 内部 `apply.go`、`snapshot.go` 对面板客户端用的 `strings.HasPrefix(email, "ak-")` 保持原样，不并入正则：两者覆盖范围不同，合并会改变哪些客户端被清理或计入流量。
+2. `changeip` 定义自己的观察函数类型（例如 `func(context.Context) (netip.Addr, time.Time, error)`），由 `internal/app` 用闭包包装 `observer.Observe(ctx, ipwatch.IPv4)` 传入；`changeip` 不再导入 `ipwatch`。
 
-1. [ratelimit.go](../../../internal/modules/ratelimit/ratelimit.go)（第 28–65 行）导入 `internal/modules/xui`，仅用于调用 `xui.Owned(email)`。
-2. [module.go](../../../internal/modules/connectionrecords/module.go)（`connectionrecords`，第 23–120 行）导入 `internal/modules/xui`，仅用于调用 `xui.Owned(line.Email)`。
-3. [routing.go](../../../internal/modules/routing/routing.go)（第 23–158 行）导入 `internal/modules/xui`，仅用于调用 `xui.Owned(user)`。
-4. [handler.go](../../../internal/modules/changeip/handler.go)（第 8–68 行）导入 `internal/modules/ipwatch`，仅使用了 `ipwatch.AddressObserver` 与 `ipwatch.IPv4`（而同文件第 19 行对 `Monitor` 已采用消费方窄接口 `changeReconciler` 解耦）。
+验收：`internal/modules/*` 的非测试代码之间零互相导入（模块自己的子包除外）。`internal/transport/connection_test.go` 用真实 `ipwatch.Reporter` 做连接测试，属测试代码，保留。
 
-### 3.2 目标设计
+### R2 三个“快照型”上报器共用一个实现
 
-1. **下沉 Xray 受管账号标识判定**
-   - 新建 `internal/xray/user.go`（`package xray`），定义 `OwnedUser(email string) bool`（正则 `^ak-[a-z0-9]{1,61}$`）。
-   - `xui`、`ratelimit`、`connectionrecords`、`routing` 四处统一调用 `xray.OwnedUser`，移除 `xui.Owned`。
-   - **细节约束**：保留 `xui` 内部在 [apply.go](../../../internal/modules/xui/apply.go)（第 277 行）与 [snapshot.go](../../../internal/modules/xui/snapshot.go)（第 177 行）中对面板存量客户端使用的 `strings.HasPrefix(..., ownedPrefix)`（`"ak-"`）前缀判定，确保面板中历史遗留或非规范命名的 `ak-` 客户端仍能被识别清理或统计。
-2. **解耦 `changeip` 与 `ipwatch`**
-   - 在 [handler.go](../../../internal/modules/changeip/handler.go) 定义消费方函数类型 `type ObserveIPv4 func(context.Context) (netip.Addr, time.Time, error)`（或单方法窄接口），删除对 `internal/modules/ipwatch` 的导入。
-   - 在唯一装配入口 [modules.go](../../../internal/app/modules.go)（第 255 行）中用闭包适配 `observer.Observe(ctx, ipwatch.IPv4)` 并传给 `changeip.New(...)`。
+现状：`xui.snapshot`、`firewall.status`、`metrics.sample` 各自手写同一套循环（启动先发、每分钟一次、连接 ready 立即重新采样）与 `wake`/`mu`/`pending`/`ControlReady`/`Acknowledge`/`UpdateSafe`。
 
-### 3.3 验收标准
+做法：在 `internal/module` 加一个共用上报器（名字执行者定，例如 `module.Latest`），参数为 `kind`、周期、`sample func(context.Context) ([]byte, error)`：
 
-`internal/modules/*` 下 11 个功能模块目录之间零互相导入（仅保留模块自有子包 `changeip/{command,httpcurl}` 与 `ipqualityrunner/script` 的内部引用）。
+- 启动时、每个周期、每次 `ControlReady` 各采样一次；采样失败什么也不发（与现状一致；日志由模块的 `sample` 自己记，`metrics` 的“只在开始失败时记一次”保留在 `metrics` 内）。
+- 采样成功：没有待确认报告，或内容与待确认报告逐字节不同，就生成新 `report_id`；否则沿用原报告原样重发。
+- 报告的 `data` 一律以 `json.RawMessage` 发出（杜绝 a564a18 那类事故）。
+- `Acknowledge` 只认当前待确认报告的 `report_id`；`UpdateSafe` 恒为 nil。
+- 各模块只保留采样逻辑：`xui` 的 30 秒读取时限、`metrics` 的上一份 CPU 读数与 `systemd-detect-virt` 结果都留在各自模块。
 
----
+唯一的行为差异：`metrics` 现在每份都换新 `report_id`；改后若一份未确认、下一份内容逐字节相同则沿用原 ID。实际几乎不会发生（`uptime_seconds` 每秒变化），且 Cloud 不按 `report_id` 处理监控样本，无可观察变化。
 
-## 4. 改动二：收敛周期性“最新状态上报器”与可选 `UpdateBlocker`
+**`routing.outbound_health` 不并入，保持现状。** 它与另外三个有两处本质不同：连接 ready 时只原样重发、不重新测试（每轮要拉起临时 Xray）；每一轮必须是新的 `report_id`——Cloud 按 `report_id` 区分轮次累计连续失败（`AkastrCloud backend/features/routing/health.ts` 的 `WHERE h.report_id<>EXCLUDED.report_id`）。若套用“内容相同沿用原 ID”，连续两轮相同的 down 结果在回执丢失时会被 Cloud 当成同一轮，推迟出站故障提醒。为一个上报器给共用件加两个开关不值得。
 
-### 4.1 现状证据
+测试：`TestPublishedSampleIsAnObject`（防断线事故）与 `TestSnapshotTellsEachMinute` 中的 ID 规则断言移到共用件的测试里；模块测试改为直接测各自的采样内容。不新增其他测试。
 
-在全部 6 个 `module.Reporter` 实现中，`ipwatch`（维护 `changeip-reconciliation.json` 持久换 IP 核对状态）和 `connectionrecords`（有界内存队列分批上报）各有独立状态语义，保持独立；其余 4 个均为“只保留最新一份、不排队”的周期性上报器，各自手写了一套重复的 `wake`、`mu`、`pending`、`ControlReady`、`Acknowledge`、`UpdateSafe` 样板代码：
+### R3 模块自己按配置组装自己
 
-| 上报器 | 代码位置 | 周期 | `ControlReady` 行为 |
-|---|---|---|---|
-| `xui.snapshot` | [snapshot.go](../../../internal/modules/xui/snapshot.go)（第 31–123 行） | 1 分钟 | 立即采样并发送 |
-| `firewall.status` | [status.go](../../../internal/modules/firewall/status.go)（第 86–151 行） | 1 分钟 | 立即采样并发送 |
-| `metrics.sample` | [metrics.go](../../../internal/modules/metrics/metrics.go)（第 38–97 行） | 1 分钟 | 立即采样并发送 |
-| `routing.outbound_health` | [health.go](../../../internal/modules/routing/health.go)（第 38–168 行） | 5 分钟 | **不重新测试**，只原样重发未确认报告 |
+现状：`internal/app/modules.go` 顶部的 `changeIPTimeout`、`changeIPObserveWindow`、`ipQualityTimeout`、`observationTimeout`，`build` 里的 `http_bearer` 判断与 `/usr/bin/curl`，IPQuality 的 `PinnedPath`/`PinnedVersion`/`PinnedSHA256` 拼装，`hostCommands` 里替 `ratelimit`（`iproute2`）和 `firewall`（`nftables kmod procps`）写的包名，以及 `urlPort`。changeip 的两个触发方式子包导入了父包，父包因此无法自己组装，只能放在 `app`。
 
-同时存在两处现存瑕疵：
+做法：
 
-1. **采样失败时漏发未确认的 `pending` 报告**：在 [snapshot.go](../../../internal/modules/xui/snapshot.go)（第 109–112 行）与 [metrics.go](../../../internal/modules/metrics/metrics.go)（第 74–80 行）中，如果上一份报告尚未收到 `report.ack`，而本次定时或重连触发的采样临时失败（例如 3x-ui 正在重启），`tick()` 直接提前返回，导致原本待确认的 `pending` 报告在本次重连或周期中漏发（`metrics` 甚至只存了 `pending string` 的 `ReportID` 而未保存报告体，导致读取失败时根本无法重发）。
-2. **强制的空 `UpdateSafe()` 样板**：[module.go](../../../internal/module/module.go)（第 65 行）将 `UpdateSafe() error` 放在 `Reporter` 必需接口中，导致 6 个实现里有 5 个写死 `return nil`，仅 [module.go](../../../internal/modules/ipwatch/module.go)（`ipwatch`，第 69 行）真正使用。
+1. **changeip**：把 `changeip/httpcurl` 与 `changeip/command` 并回 `changeip` 包（例如 `http.go`、`command.go`、`process_unix.go`，测试随之移动），由 `changeip` 按自己的配置选择触发方式；时限常量与 curl 路径移入 `changeip`。纯搬家，两份同值的结果码常量（`completed`、`timed_out`、`cancelled`）合为一份，字符串不变。
+2. **ipqualityrunner**：保留 `script` 子包（父包导入子包，没有环）。由 `ipqualityrunner` 用固定版本常量和时限构建 `script` 执行器，并对外提供准备与清理固定脚本的入口；`app` 不再导入 `script`。
+3. **宿主依赖**：`ratelimit`、`firewall`、`ipqualityrunner` 各自导出所需命令与 Debian 包；`app` 只按启用的模块收集。
+4. **其余**：面板端口解析移为 `xui` 配置的方法；`ipwatch` 观察器的时限与 User-Agent 移入 `ipwatch`。
 
-### 4.2 目标设计
+`app` 保留的只有跨模块连线与跨模块依赖校验：两份面板登录（`xui`/`routing` 共用一份、出站检测一份）、访问日志 → 连接账本 → 限速/连接记录/快照、给防火墙的控制地址与面板端口、诊断清理、模块关闭时的残留清理，以及“changeip 需要 ip_watch”等依赖检查。
 
-1. **拆出可选接口 `module.UpdateBlocker`**
-   - 在 [module.go](../../../internal/module/module.go) 将 `UpdateSafe() error` 从 `Reporter` 移出，定义为可选接口（与同文件第 76 行的 `Starter` 模式一致）：
-     ```go
-     type UpdateBlocker interface {
-         UpdateSafe() error
-     }
-     ```
-   - 在 [runtime.go](../../../internal/app/runtime.go)（第 167–173 行）中通过类型断言 `if blocker, ok := reporter.(module.UpdateBlocker); ok` 调用；保留 `ipwatch.Reporter.UpdateSafe()`，删除其余模块中写死 `return nil` 的空方法。
+### R4 核心里的小重复各留一份
 
-2. **新增 `internal/module/latest.go`（`LatestReporter`，约 80 行）**
-   - 构造参数：`kind string`、`interval time.Duration`、`sampleOnReady bool`、`sample func(context.Context) ([]byte, error)`。
-   - 采样、去重与重发规则（严格对齐 [PROTOCOL.md](../../PROTOCOL.md) 第 280–329 行）：
-     - **定时周期到期（含启动首次）**：调用 `sample(ctx)`：
-       - 若成功：当 `pending == nil`（上一份已确认——哪怕本次字节完全未变也生成新 `ReportID`，满足 `xui.snapshot`“内容没变也发”的要求）或 `!bytes.Equal(pendData, data)`（上一份未确认但内容已变化，取代旧报告）时，生成新 `protocol.ReportBody{ReportID: protocol.NewUUID(), Kind: kind, Data: json.RawMessage(data)}`；否则保留原 `pending` 与 `ReportID`。
-       - 若失败：保留原 `pending` 不清空。
-       - 最后只要 `pending != nil` 即调用 `publish(*pending)`（修复采样临时失败时漏发未确认旧报告的问题）。
-     - **`ControlReady()` 唤醒时**：
-       - `sampleOnReady == true`（`xui.snapshot`、`firewall.status`、`metrics.sample`）：立即执行上述采样与发送流程（不重置周期 `Ticker`）；
-       - `sampleOnReady == false`（`routing.outbound_health`）：不调用 `sample`，仅在 `pending != nil` 时原样调用 `publish(*pending)`（严格遵守“同一轮在连接 ready 时原样重发”，避免重连抖动时额外拉起临时 Xray 测试）。
+1. UUID 正则：`internal/config` 与 `internal/identity` 各自定义了与 `protocol` 相同的 `canonicalUUID`，改用 `protocol.ValidUUID`。
+2. 控制地址：`config`、`transport`、`identity`（enroll）、`update`（maintenance）各写了一遍“必须是 `wss://<host>/internal/agents/ws`、无用户/查询/片段”的检查，后两处还各自换算 HTTPS 地址。收成 `protocol` 里一个校验加一个换算函数；各处错误文案不变。
+3. SOCKS5 登录：`socks5` 与 `ipqualityrunner` 有逐字相同的 `validLogin`，移入 `protocol`。
 
----
+### R5 删除到期的兼容代码
 
-## 5. 改动三：`internal/modules/firewall` 包内职责拆解与宿主接口统一
+`internal/app/modules.go` 中删除 `ip-state.json` 的几行（协议 v8 以前的遗留，注释写明“没有节点再跑那种 Agent 就删”）。按记录，所有节点 2026-11-19 起都在 v1.30.1。即使某台离线很久的老节点以后直接升到新版：新 Agent 不读这个文件；安装时只在缺 identity 的情况下才检查状态目录，那时本来就会拒绝；卸载会删除整个目录。所以遗留的只是一个无人读取的小文件，属三级，**不需要再查生产**。`RemoveStaleAssets` 只剩清理旧版固定脚本，随 R3 归到 `ipqualityrunner`。
 
-### 5.1 现状证据
+### R6（可选，待主人决定）关模块后的残留清理共用一个 worker
 
-- `internal/modules/firewall` 目前有 8 个非测试文件，合计 2587 行，其中 [firewall.go](../../../internal/modules/firewall/firewall.go) 单文件达 623 行，混杂了三套正交逻辑：
-  1. ADR 0109 入站筛选探测、候选落盘、20 秒确认与失败回退状态机；
-  2. ADR 0110 端口转发同步、按 `boot_id` 开关 `net.ipv4.ip_forward`、`Forwards`/`Stale` 状态流转与 netlink 旧连接清理；
-  3. 每 2 分钟域名解析与集合成员热刷新。
-- [status.go](../../../internal/modules/firewall/status.go)（第 102 行）中的 `NewStatus` 绕开 `Firewall.host` 接口，私自调用 `newSystem("")` 创建第二个 `*system` 实例，并在第 171 行直接调用包级函数 `toolMissing()` 与 `nftablesLoaded()`，导致宿主访问边界分裂，且 `Status.read` 无法基于假宿主做纯内存单测。
+现状：`ratelimit.Leftovers`、`firewall.Leftovers`、`diagnostics.Sweeper` 各写了一遍“清理，失败隔一段时间重试，成功后空等到进程结束”。
 
-### 5.2 目标设计（纯包内拆解，不拆子包）
+做法：在 `internal/module` 加一个普通 `Worker` 实现（名字执行者定），参数为名字、重试间隔、清理函数，可选在成功时关闭一个通道（诊断用它放行脚本）。**不改 `Runtime`**：它仍是一个常驻 worker，“任一 worker 退出即进程退出”的规则不变。各模块的重试间隔（30 秒、30 秒、1 分钟）与日志意思不变。
 
-1. **拆出 `forwarding.go`**：将 [firewall.go](../../../internal/modules/firewall/firewall.go)（第 256–360 行）中的转发与旧连接清理逻辑（`placement`、`openForwarding`、`closeForwarding`、`placed`、`clean` 及启动时的 `ForwardingOpened` 跨重启核对）提取到同包 `forwarding.go`。
-2. **拆出 `domains.go`**：将 [firewall.go](../../../internal/modules/firewall/firewall.go)（第 527–623 行）中的域名解析与定时热刷逻辑（`refresh`、`resolveMissing`、`resolveOne`、`lookup`、`domains`）提取到同包 `domains.go`。`firewall.go` 精简至约 380 行，只保留模块入口、`start`、`apply`、`confirm`、`restore`、`raiseConntrack`。
-3. **统一宿主接口**：扩展包内宿主接口（或在 `status.go` 定义只读 `statusHost` 接口并由 `*system` 实现），让 `Firewall` 与 `Status` 共用同一个宿主实例（或测试桩），移除 `NewStatus` 内隐藏的第二个 `newSystem("")` 以及 `status.go` 对全局 `toolMissing()`、`nftablesLoaded()` 的直接调用。
+理由：AGENTS.md 要求在进程外留状态的模块都要处理“模块关闭”这种情况，以后的新模块会再抄一遍这个循环。
 
-### 5.3 必须死守的 4 条不变量
+## 4. 不采纳清单（防止执行或复核时再加回来）
 
-1. `/var/lib/akastr-agent/firewall/state.json` 字段与 `schema_version = 1` 零变化；
-2. `inet akastr_firewall` 规则渲染与 `akastr:<mode>:<digest>` 摘要计算零变化；
-3. `apply()` 执行顺序零变化：表已存在且带合法标记时，仍须**先执行 `syncForwarding()` 与 `placed()`**，再比较规则摘要与失败摘要（保证筛选规则失败锁定时，端口转发仍能跟随落地机变化）；
-4. `Started()` 阻塞控制连接建立的启动顺序零变化。
+| 提议（来源） | 不采纳理由 |
+|---|---|
+| 采样失败时也重发上一份未确认报告，并当作缺陷修复（agy §4.1） | 不是缺陷：只报最新一份的数据，失败的那一分钟不发没有后果。对 `metrics` 是改坏：PROTOCOL 写明“任何一项读不到，这一分钟就不发”，Cloud 按收到时间记录监控，重发旧样本会把几分钟前的 CPU、内存当成现在显示 |
+| 把出站检测并入共用上报器，用 `sampleOnReady` 开关区分（agy §4.2） | 见 R2：Cloud 按 `report_id` 计轮次，套用“内容相同沿用原 ID”会推迟出站故障提醒；为它加开关不值得 |
+| `UpdateSafe` 拆成可选接口 `UpdateBlocker`（agy §4.2） | R2 之后写死 `return nil` 的只剩共用件、出站检测和 `connectionrecords` 三处一行代码，为此改接口形状和文档不值 |
+| 把 `firewall.go` 拆出 `forwarding.go`、`domains.go`（agy §5） | 同包、同一把锁、同一份状态，只是按行数拆文件，不降低耦合；防火墙是最可能把节点关在门外的模块，无谓搬家增加审查负担 |
+| `firewall.Status` 与 `Firewall` 共用宿主对象，去掉第二个 `newSystem("")`（agy §5） | `system` 不保存状态，多建一个没有任何后果；理由只是“方便写纯内存单测”，不是实际问题 |
+| 残留清理改由 `Runtime` 用独立 `WaitGroup` 调度（agy §6.1） | 去重可以（R6），但没必要改核心运行时的退出语义；空等的协程只占几 KB |
+| 新建 `internal/subproc` 合并三个截断缓冲区与两份进程组文件（agy §6.2） | 三个缓冲区各十几行、附带功能各不相同；changeip 的那个是令牌遮盖的一环（0819e77 刚修过令牌在截断处泄露），为省约 40 行去动凭据相关代码不划算；进程组文件 15 行、从未改过 |
+| 加固 `install.sh` 卸载时读取 `forwarding_opened` 的 sed（agy §6.4） | 文件排版由 `internal/state` 固定（两空格缩进），与同版本二进制一起发布，不会变；属于为推测情况加代码，AGENTS.md 也不要求为安装脚本加防护 |
+| 扩展 `app_test.go` 的 `state.put` 解码分支、补两个依赖用例（agy §6.5） | 共享夹具里只有 `xui` 的 `state.put`，扩了分支什么也测不到；两个依赖用例防不住实际后果 |
+| 删除 `ip-state.json` 兼容代码前先跑 `npm run prod:sql`（agy §6.6） | 见 R5：遗留文件无害，不需要动生产 |
+| 为 `/proc/meminfo`、`boot_id` 读取新建 `procfs` 包；新增 import 结构检查测试（agy §2 已列为不做） | 同意不做 |
+| 删除防火墙“没有标记链的表按旧表替换”的判断（`host.go`） | 保留（同意 agy）：除了兼容转发上线前的旧表，也能让被手工改坏的表自动换掉 |
 
----
+## 5. 执行与验证
 
-## 6. 改动四：装配层一次性清理器、公共小工具去重与边角加固
+1. 开工前在 `/root/AkastrAgent` 执行 `git pull --ff-only`；按 R1 → R5（R6 若批准则放最后）一项一个提交。
+2. 文档只做现行描述的最小同步：README“改代码必查联动点”中宿主机包改为由模块自己声明；ARCHITECTURE.md 第 4 节更新 `internal/module`（共用上报器，及 R6 的清理 worker）、`internal/xray`（受管用户判断）、`internal/modules/changeip`（不再有子包）。PROTOCOL.md 与 INSTALLATION.md 不改。
+3. 验证（2 核 2 GB 机器，串行，不与 Cloud 重型测试并行）：`./scripts/verify-go.sh`、`sh -n scripts/*.sh`、`sh scripts/verify-ipquality-source.sh`。
+4. 执行者在本目录写 `REPORT.md`：每项的提交、与本 Spec 的偏差及原因、验证结果。不发布，发布由主人另行决定。
 
-### 6.1 一次性残留清理不再伪装成常驻协程
+## 6. 请 agy 复核的问题
 
-- **现状**：[runtime.go](../../../internal/app/runtime.go)（第 89–126 行）规定任一 `Worker.Run` 提前返回都会终止整个 Agent 进程，因此 [ratelimit.go](../../../internal/modules/ratelimit/ratelimit.go)（`Leftovers`，第 256–275 行）、[leftovers.go](../../../internal/modules/firewall/leftovers.go)（`firewall.Leftovers`，第 25–41 行）和 [module.go](../../../internal/modules/diagnostics/module.go)（`diagnostics.Sweeper`，第 292–311 行）三处各自手写了一套“失败按周期重试，成功后 `<-ctx.Done()` 挂起占住协程直到进程退出”的样板。
-- **目标设计**：在 [runtime.go](../../../internal/app/runtime.go) 增加一次性清理任务机制（例如 `addCleanup(retry time.Duration, fn func(context.Context) error)`），在 `Runtime.Run` 中用独立 `sync.WaitGroup` 运行：返回非 nil 错误时按 `retry` 间隔等待重试，返回 `nil` 后直接正常结束协程，既不触发进程退出，也不白占空挂协程；`diagnostics.Sweeper` 在清理函数成功返回 `nil` 时 `close(done)` 放行脚本执行。
-
-### 6.2 新建无业务底层小包 `internal/subproc`（约 55 行）消除重复子进程工具
-
-1. 合并三处逻辑完全相同的有界头截断 `io.Writer`：
-   - [module.go](../../../internal/modules/diagnostics/module.go)（`capped`，第 315–331 行）
-   - [provider.go](../../../internal/modules/changeip/httpcurl/provider.go)（`headBuffer`，第 146–163 行）
-   - [provider.go](../../../internal/modules/ipqualityrunner/script/provider.go)（`limitedBuffer`，第 253–272 行）
-   统一收口为 `subproc.HeadBuffer`（支持 `Bytes()` / `Text()` / `Truncated()`）。
-2. 合并两份逐字相同的进程组配置与终止文件：
-   - [process_unix.go](../../../internal/modules/changeip/command/process_unix.go)
-   - [process_unix.go](../../../internal/modules/ipqualityrunner/script/process_unix.go)
-   统一为 `subproc.SetProcessGroup(*exec.Cmd)` 与 `subproc.KillProcessGroup(*exec.Cmd)`，删除两处重复文件。
-
-### 6.3 收口 `internal/protocol` 重复校验与地址派生
-
-1. 合并 [module.go](../../../internal/modules/socks5/module.go)（`socks5`，第 39 行）与 [module.go](../../../internal/modules/ipqualityrunner/module.go)（`ipqualityrunner`，第 47 行）完全相同的 `validLogin` 为 `protocol.ValidSOCKS5Login`。
-2. 在 [config.go](../../../internal/config/config.go)（第 24 行）与 [identity.go](../../../internal/identity/identity.go)（第 29 行）中直接复用 [protocol.go](../../../internal/protocol/protocol.go)（第 188–190 行）的 `protocol.ValidUUID`，删除重复的 `canonicalUUID` 正则定义。
-3. 在 [protocol.go](../../../internal/protocol/protocol.go) 新增 `ValidateControlEndpoint(raw string) (*url.URL, error)` 与 `ControlHTTPSURL(controlEndpoint, path string) (string, error)`，收口以下 4 处重复的 `wss://<host>/internal/agents/ws` 校验及 HTTPS 路径派生逻辑：
-   - [config.go](../../../internal/config/config.go)（第 78–82 行）
-   - [client.go](../../../internal/transport/client.go)（`transport`，第 108–113 行）
-   - [identity.go](../../../internal/identity/identity.go)（第 138–143 行）
-   - [client.go](../../../internal/update/client.go)（`update`，第 114–119 行）
-
-### 6.4 加固卸载脚本 `install.sh`
-
-- **现状**：[install.sh](../../../scripts/install.sh)（第 78 行）在卸载清理 IPv4 转发开关时，依赖固定两空格行首缩进的正则 `sed -n 's/^  "forwarding_opened": "\([^"]*\)".*/\1/p'` 读取 `/var/lib/akastr-agent/firewall/state.json`，若 JSON 排版变化就会静默跳过关闭转发。
-- **目标**：改为不依赖缩进与换行格式的 POSIX `sh`/`sed` 匹配，同时保持零外部工具依赖（兼容未装 `jq` 的精简节点或二进制已损坏的卸载场景）。
-
-### 6.5 补齐 `app_test.go` 的模块覆盖
-
-- 在 [app_test.go](../../../internal/app/app_test.go)（第 140–149 行）的 `decodeCloudMessage` 中，`state.put` 分支目前写死仅识别 `xui`，补齐按 `put.Module` 分发至 `xui`、`rate_limit`、`routing`、`firewall` 四个 `Desired` 模块的 `Validate` 检查；
-- 在 [app_test.go](../../../internal/app/app_test.go)（第 34–53 行）的 `TestModuleConfigurationFailsClosed` 补齐 `rate_limit without xui` 与 `routing without xui` 两个依赖校验用例。
-
-### 6.6 按删除条件清理协议 v8 前遗留代码
-
-- [modules.go](../../../internal/app/modules.go)（第 145–150 行）中删除 `ip-state.json` 的兼容代码已明确写明删除条件：“`Delete these lines once no node runs such an Agent.`”。
-- **前置核验**：执行本次重构前，经 `AkastrCloud` 的正式只读入口 `npm run prod:sql` 核查线上节点版本；若确认所有节点已高于协议 v8，则一并删除这几行（若仍存在旧版待删/离线节点则保留并记录原因）。
-
----
-
-## 7. 文档同步、分步执行顺序与验证计划
-
-### 7.1 文档同步（最小变更）
-
-- 仅在 [README.md](../../../README.md)（第 31–43 行）的代码结构树与 [ARCHITECTURE.md](../../ARCHITECTURE.md)（第 39–70 行）第 4 节“包职责”对 `internal/subproc`、`module.UpdateBlocker`/`LatestReporter` 及清理任务机制做几行现行描述同步。
-- [PROTOCOL.md](../../PROTOCOL.md) 与 [INSTALLATION.md](../../INSTALLATION.md) 不改动。
-
-### 7.2 建议分步执行顺序（4 个原子阶段）
-
-1. **阶段一：底层原语收口与模块解耦**
-   - 新增 `internal/xray/user.go`（`OwnedUser`）、`internal/subproc`（`HeadBuffer`、`SetProcessGroup`、`KillProcessGroup`），收口 `internal/protocol` 公共校验与控制面地址派生；
-   - 切断 4 处 `internal/modules/*` 跨模块引用；
-   - 补齐 [app_test.go](../../../internal/app/app_test.go) 的模块校验覆盖。
-2. **阶段二：周期性上报器与一次性清理器收敛**
-   - 抽取 `module.UpdateBlocker` 与 `module.LatestReporter`，迁移 `xui.Snapshots`、`firewall.Status`、`routing.Health`、`metrics.Sampler`；
-   - 在 [runtime.go](../../../internal/app/runtime.go) 引入一次性清理任务执行器，迁移 `ratelimit.Leftovers`、`firewall.Leftovers` 与 `diagnostics.Sweeper`。
-3. **阶段三：`firewall` 包内拆解与周边收敛**
-   - 将 [firewall.go](../../../internal/modules/firewall/firewall.go) 拆出 `forwarding.go` 与 `domains.go`，统一 `Status` 与 `Firewall` 的宿主接口；
-   - 加固 [install.sh](../../../scripts/install.sh)（第 78 行）卸载提取；
-   - 经 `AkastrCloud` `npm run prod:sql` 确认线上无 v8 前旧节点后删除 `ip-state.json` 兼容清理；
-   - 最小同步 [README.md](../../../README.md) 与 [ARCHITECTURE.md](../../ARCHITECTURE.md)。
-4. **阶段四：低并发全量验证**
-   - 严格遵守 2 核 2 GB 开发机约束（`GOMAXPROCS=1`、`GOMEMLIMIT=256MiB`），不与 Cloud 重型测试并行，串行执行：
-     - `./scripts/verify-go.sh`
-     - `sh -n scripts/*.sh`
-     - `./scripts/verify-ipquality-source.sh`
-
----
-
-## 8. 附：供 Claude 复核的 5 个关键审查点
-
-1. **上报器语义等价性**：`LatestReporter` 的两种 `ControlReady` 模式（`sampleOnReady=true` 用于 `xui.snapshot`/`firewall.status`/`metrics.sample`；`sampleOnReady=false` 用于 `routing.outbound_health`），以及“已确认后哪怕内容未变也生成新 `ReportID`、未确认时仅内容变化才替换并换 ID、采样失败保留并继续重发 `pending`”的规则，是否与 [PROTOCOL.md](../../PROTOCOL.md)（第 280–329 行）的四项上报契约完全一致？
-2. **`metrics.Sampler` 在重连时的采样策略**：当前 [PROTOCOL.md](../../PROTOCOL.md)（第 316–320 行）明确写着 `metrics.sample`“连接 ready 后立即发一份”且 `cpu` 为“本进程相邻两次读 `/proc/stat` 第一行之间的忙碌占比”。维持现行“重连即采样”（仅修复读取失败时重发未确认报告）是否最为稳妥，还是有调整采样语义或修改协议的必要？
-3. **`firewall` 包内拆解与状态机顺序**：拆出 `forwarding.go`、`domains.go` 并统一 `Status` 的宿主接口时，是否有任何细节可能影响 ADR 0109/0110 的执行顺序不变量（例如转发成员先于摘要检查同步）、`f.mu` 锁粒度，或 `state.json` 的崩溃恢复原子性？
-4. **一次性清理协程的退出同步**：`Runtime` 改用独立清理任务（成功返回 `nil` 即退出 goroutine）后，与 `diagnostics.Sweeper` 的 `done` 同步通道配合，在进程快速取消退出或反复重试场景下是否存在竞态或 `close of closed channel` 风险？
-5. **底层小包收敛边界**：`internal/subproc` 与 `internal/protocol` 的收口粒度是否恰当？是否有隐含的多余抽象（例如合并 `SetProcessGroup`/`KillProcessGroup` 时是否需要考虑跨平台编译约束），或还有其他确属高价值的重复点被遗漏？
+1. R2 的 ID 规则与 PROTOCOL.md“上报与回执”中 `xui.snapshot`、`firewall.status`、`metrics.sample` 三段是否逐条一致？还有没有别的上报依赖 `report_id` 区分轮次（类似出站检测）？
+2. R3 把 changeip 两个子包并回父包，是否有比“并包”更省改动、同样能让 changeip 自己选择触发方式的做法？
+3. 还有没有没列出的跨模块耦合，或 `internal/app` 里仍属于单个模块的细节？
+4. 不采纳清单中，有没有你认为确有实际后果、应当恢复的？请给出具体后果和会不会在生产上发生。
