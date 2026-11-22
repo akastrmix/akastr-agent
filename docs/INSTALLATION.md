@@ -86,17 +86,19 @@ curl -fsSL 'https://origin.akastrmix.com/agent/install.sh?agent_id=节点UUID' |
 
 不要改写、拆分或公开这行命令。`/agent/install.sh` 只带节点编号、不接收安装码，以不缓存的 302 跳转到这台节点更新渠道（正式版或测试版，见 Cloud ADR 0101）当前批准版本的 GitHub Release installer；同一命令重跑会取得当时批准的版本，而非 GitHub latest，测试版节点重装也不会退回较旧的正式版。命令信任官方 HTTPS 入口及其固定版本 Release 跳转，发布流程验真 installer，installer 内部仍校验 Agent binary 的 SHA-256。
 
-安装码是 `节点UUID.机器token`，只用于 HTTPS bootstrap 领取密封配置；不会写入节点磁盘、也不含 ChangeIP/SOCKS5 凭据或用于日常 WSS 认证。
+安装码只是 `节点UUID.机器token` 的组合，不是新增凭据或短码兑换服务；脚本拆开后通过环境变量交给 Agent 程序，使用 HTTPS bootstrap `https://origin.akastrmix.com/internal/agents/bootstrap`。机器 token 是长期安装凭据，可能进入 shell history 和安装脚本参数，但不会写入节点磁盘，也不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
 
-需要修改配置时在后台同一表单保存（内容无变化不断开连接；真实变更后在线节点立即自动更新、离线节点重连后同步，不需重跑一键命令；怀疑泄露点“轮换密钥”立即作废原命令），后台编辑契约见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。
+需要修改配置时点击“修改配置”。后台回填完整配置，包括 ChangeIP curl 原文与 SOCKS5 登录，密码可按需显示；在同一表单修改后保存。内容没有变化时不会更新版本或断开连接；真实修改会保留节点 ID、机器 token 与 identity，递增 configuration revision，并在新配置应用完成前暂停业务派发。保存时会核对你打开表单时的配置版本；若另一页面已修改，保留当前草稿并提示读取最新配置后重新确认。具体编辑契约见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。在线 Agent 会立即取回新配置自动应用；离线 Agent 在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖另一个节点的机器，也拒绝接手没有 identity 的执行状态；同节点重装会生成新密钥，但保留执行日志与 IP 状态，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
 
-只有新增节点、人工修复或重装才运行一键命令。安装全程非交互、只管理唯一的 `akastr-agent.service`（拒绝跨节点覆盖或无 identity 状态；同节点重装保留执行日志与 IP 状态并重新生成身份密钥；注册失败不停止旧服务，中途失败修好后重跑同一命令 fix-forward；内部机制见 [架构说明](ARCHITECTURE.md#8-安装与自动更新)），完成后按第 5 节验收。
+安装过程完全非交互，自动校验程序与脚本、取得密封配置并注册节点。它只管理唯一的 `akastr-agent.service`，完成后仍须按第 5 节验收业务连接。内部安装与更新流程见[架构说明](ARCHITECTURE.md#8-安装与自动更新)。
 
 成功时最后显示：
 
 ```text
 Akastr Agent <release-version> installed successfully.
 ```
+
+下载、配置校验、依赖准备和注册都在停止现有 service 前完成；注册失败时旧 Agent 照常运行。注册成功后安装器才停止旧 service、切换到新部署并启动。中途失败不回滚，按报错修复后重跑同一命令。新节点、人工重装和残缺安装使用相同路径；普通配置变更使用第 7 节的自动更新。
 
 ## 4. 文件与权限
 
@@ -153,7 +155,7 @@ systemctl restart akastr-agent.service
 
 ## 7. 更新、状态与卸载
 
-普通配置修改或 Agent 版本发布均通过自更新自动收敛（节点每 60 秒及断线重连后检查；同目标连败 2 次后每 6 小时重试，修好后重保存或发新版可立即重触发，无需重跑一键命令，内部机制见 [ARCHITECTURE.md](ARCHITECTURE.md#8-安装与自动更新) 与 [PROTOCOL.md](PROTOCOL.md#更新检查)）：
+普通配置修改不需要重新运行安装命令。在 Cloud 的添加/编辑表单管理同一套完整参数，curl 原文、脚本路径/参数和 SOCKS5 登录会回填；Cloud 加密保存，管理员读取时解密，密码可显示。节点上的自定义程序由操作者准备。新增 Agent 功能由维护者发布新版本。两种变更都由主控保存为节点的目标版本与配置，再由 Agent 自动应用：
 
 ```mermaid
 flowchart TD
@@ -170,7 +172,7 @@ flowchart TD
     G -->|失败| I[systemd 自动回到旧版本]
 ```
 
-离线节点恢复连接后自动同步，正在执行任务时等待空闲；失败原因见后台节点详情或本机最近日志：
+节点每 60 秒也会检查一次，离线节点恢复连接后自动同步；正在执行任务时等待空闲。同一版本/配置最多连续试两次；两次都失败时后台节点详情显示失败原因，节点保留旧版本，六小时后自动再试一次。修复后发布新版本或保存新配置会立即重新尝试，也可以在节点上重跑后台一键命令。协议与提交顺序见 [PROTOCOL.md](PROTOCOL.md#更新检查)。
 
 ```bash
 journalctl -u akastr-agent.service -n 100 --no-pager
