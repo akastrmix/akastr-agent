@@ -1,40 +1,14 @@
 # Akastr Agent 协议 `2026-11-01.v12`
 
-AkastrCloud 提供 HTTPS enrollment endpoint 和仅供 Agent 主动连接的 WSS 控制路由。每个 JSON envelope 必须且只能包含 `protocol`、`message_id`、`type`、`sent_at` 和 `body`；text frame 最大 1 MiB。未知字段、未知 message type、未知上报 kind、binary frame、无效 UUID 和未来协议版本均会失败关闭；Agent 收到的消息、模块配置与目标中，必填字段为 null 视同缺失。
+AkastrCloud 提供 HTTPS enrollment 端点与供 Agent 主动连接的 WSS 控制路由。JSON envelope 必须且只能含 `protocol`、`message_id`、`type`、`sent_at`、`body`；text frame 上限 `1 MiB`。未知字段、未知 `type`/上报 `kind`、binary frame、无效 UUID、未知协议版本及必填字段为 `null` 一律失败关闭。
+
+> **分段读取索引**（单模块任务只用行范围按需读取对应小节）：
+> Enrollment与认证(L8) · 节点配置与模块(L24) · 更新检查(L44) · Operation(L62) · changeip(L68) · ipquality(L74) · 目标状态(L86) · xui(L99) · rate_limit(L117) · routing(L123) · firewall(L137) · 诊断(L157) · 上报与回执(L165) · IP观察与核对(L185) · 安全边界(L191)
 
 ## Enrollment 与身份认证
 
-管理员先在 AkastrCloud 后台创建持久节点并填写全部参数。后台签发 32-byte canonical base64url 机器 token，以 token 和节点 UUID 加密 `akastr-agent-bootstrap.v4` 信封中的节点配置（格式见下节），并生成版本化一键命令。Agent 以节点 UUID 和机器 token 从 `POST /internal/agents/bootstrap` 获取 nonce/ciphertext，在本机认证解密，并把这份明文原样保存为 root-only 的 slot 配置；Agent 没有第二种配置格式。
-
-`POST /internal/agents/enroll` 请求必须且只能包含 `machine_token`、raw 32-byte `public_key`、当前批准的语义化 `agent_version`、正整数 `configuration_revision`。版本必须精确等于 Cloud 当前批准 release，revision 必须精确等于节点的 desired revision，否则分别返回 `agent_release_required` 或 `agent_configuration_stale`。每次安装都生成新的 Ed25519 keypair；注册成功即以新公钥替换该节点原有公钥，把 applied revision 推进到 desired revision，并断开既有 WSS。Agent 只在注册成功后才写入新 identity 并切换本机部署，注册失败时原部署继续运行；重跑同一安装命令即可修复。主控在该节点存在 pending、offered 或 accepted command，或该节点仍有 active ChangeIP session 时，以 `agent_node_busy` 拒绝注册。
-
-机器 token 是长期安装凭据，不是 WSS bearer，Agent 不在磁盘上保存它。主控只保存 SHA-256 hash、认证加密的可恢复 token 和密封 bootstrap。HTTP ChangeIP 可含 `source_command`（最多 8192 字符），保存 Cloud 已解析校验的编辑原文，仅供回填，不作为 shell 执行；缺少该字段的既有配置仍有效。配置更新保持节点 ID、机器 token 和 identity 不变；Cloud 管理员添加/编辑共用完整配置，省略的模块即关闭，空字符串不表示保留；停用的节点不能修改配置。主控在一个事务中解封并比较完整配置，无变化不推进 revision、不打断连接；真实变更才递增 desired revision 并重新密封 bootstrap，随后断开业务连接；新 revision ready 前禁止 preflight、command 创建与 offer。管理员可审计地重新显示安装命令，也可轮换 token；轮换只接受当前 bootstrap v4，并在一个事务中更新 token hash、可恢复密文和 bootstrap 密文。删除节点会永久删除身份、bootstrap 和已完成 command 记录；存在未完成 command 或 active ChangeIP session 时拒绝删除。节点永久丢失且遗留 accepted command 时，管理员可显式将其记录为执行结果未知，并撤销旧 identity、终结同节点其他未接受 command 后把节点重置为 pending；机器 token 与密封 bootstrap 保留，供重装机器注册新 identity。主控不会自动超时放弃 accepted command。
-
-## 节点配置与模块
-
-节点配置是 UTF-8 JSON：`schema_version=5`、正整数 `configuration_revision`、`agent_id`、`name`、`control_endpoint` 与 `modules`。`modules` 的每个键是一个启用的模块，缺少的键就是关闭；Agent 拒绝未知模块、模块内的未知或缺失字段。当前模块：
-
-| 模块 | 字段 | 作用 |
-|---|---|---|
-| `ip_watch` | `interval_seconds`（10–300）、`ipv6` | 上报 `ip.address` 与 `changeip.unchanged` |
-| `changeip` | `provider=http_bearer` 加 `url`、`bearer_token`、可选 `source_command`；或 `provider=command` 加 `program`（不带参数运行） | 执行 `changeip.execute`；需要 `ip_watch` |
-| `socks5` | `port`、`username`、`password`（该代理的登录） | 只给 Cloud 用的配置段：Cloud 派发 IPQuality 时取出登录；Agent 不读取、不运行代理 |
-| `ipquality_runner` | 无字段（`{}`） | 执行 `ipquality.execute` |
-| `xui` | `panel_url`、`username`、`password` | 按目标状态管理本机 3x-ui 的受管客户端，上报 `xui.snapshot` |
-| `rate_limit` | 无字段（`{}`） | 按目标状态限制受管用户的下载；需要 `xui` |
-| `connection_records` | 无字段（`{}`） | 上报 `connection_records.batch`；需要 `xui` |
-| `routing` | 无字段（`{}`） | 按目标状态写入本机 Xray 的路由规则与出站；需要 `xui` |
-| `diagnostics` | 无字段（`{}`） | 回答 `diagnostics.run`：在只读沙盒里运行诊断脚本（见[诊断](#诊断)） |
-| `firewall` | 无字段（`{}`） | 按目标状态筛选发往本机的入站并做端口转发，上报 `firewall.status`；节点上须有 `/usr/sbin/nft`（见 [firewall](#firewall)） |
-| `metrics` | 无字段（`{}`） | 每分钟上报 `metrics.sample`：机器的运行状态与网卡流量计数（见[上报与回执](#上报与回执)） |
-
-`xui` 的 `panel_url` 只允许 literal loopback IP 的 HTTP(S)，包含面板 base path，不含查询、fragment 或 URL 凭据，拒绝重定向；只对回环 HTTPS 允许自签名证书。3x-ui 自带的订阅服务应关闭：链接由 Cloud 生成。
-
-Agent 只检查模块自身与技术依赖（`changeip` 需要 `ip_watch`，`rate_limit`、`connection_records` 与 `routing` 需要 `xui`）；除此之外模块可任意组合；Runner 可以有多台，由 Cloud 分配检测，每台同时只派一条。节点做什么由 Cloud 自己保存的配置决定，Agent 不再回报能力清单：Cloud 只向已按包含该模块的配置完成 hello 的节点派发它的命令。新增能力只增加一个模块键，以及它的命令类型、目标状态、上报 kind 或查询消息；配置与程序总是一起更新，旧节点收不到新模块的配置，所以不需要改协议版本；改变已有消息的含义才需要新协议版本。
-
-enrollment HTTPS 地址由 WSS 地址确定：`wss://<host>/internal/agents/ws` 对应 `https://<host>/internal/agents/enroll`。客户端不提供关闭 TLS 校验或绕过主机名校验的选项。
-
-WSS 连接 query 中包含 `agent_id`。AkastrCloud 发送 `auth.challenge`，其中 nonce 为 32 bytes、有效期为 15 秒；有效期只由主控用自己的时钟判断，Agent 不用本机时钟复核，两边时钟相差不影响认证。Agent 对下面这些 UTF-8 行签名，末尾没有换行：
+- **Bootstrap 与注册**：`POST /internal/agents/bootstrap` 使用节点 UUID 与 32-byte canonical base64url 机器 token 取得以 `akastr-agent-bootstrap.v4` 密封的配置（含 `source_command` 可选编辑原文 ≤8192 字符），解密明文即 root-only slot 配置。`POST /internal/agents/enroll` 必须且只能含 `machine_token`、raw 32-byte `public_key`、批准版本 `agent_version` 与正整数 `configuration_revision`；不匹配批准版本/desired revision 分别返回 `agent_release_required` / `agent_configuration_stale`，存在未终结 command 或 active ChangeIP session 时返回 `agent_node_busy`。成功即替换公钥、推进 applied revision、断开旧 WSS；同事务在 Cloud 轮换 token、删除或永久丢失强制重置详见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。
+- **WSS 握手**：`wss://<host>/internal/agents/ws?agent_id=<UUID>` 对应 `https://<host>/internal/agents/enroll`，禁止跳过 TLS/主机名校验。`auth.challenge` 下发 32-byte nonce（有效期 15 秒，只由主控时钟判定），Agent 签名下列无末尾换行的 UTF-8 行后回 `auth.response`：
 
 ```text
 akastr-agent-auth-v1
@@ -45,11 +19,31 @@ akastr-agent-auth-v1
 <expires_at exactly as received>
 ```
 
-Agent 发送 `auth.response` 并收到 `auth.accepted` 后发送 `agent.hello`；hello 必须且只能包含语义化 `agent_version` 与本地正整数 `configuration_revision`。版本不得低于密封 bootstrap 的最低版本，也不得高于 Cloud 当前批准 release，并须精确匹配 desired revision。校验后 Cloud 原子推进尚未收敛的 applied revision 与版本，按自己保存的该 revision 配置记下节点运行的模块，再返回 `hello.accepted` 并使连接进入 ready。不满足时 Cloud 以 close code `4001`（reason `agent update required`）关闭连接，Agent 随即检查更新。相同节点的新认证连接会替换既有连接。
+- **Hello**：收到 `auth.accepted` 后发 `agent.hello`（仅含 `agent_version`、`configuration_revision`）。version 须介于密封 bootstrap 最低版本与当前批准 release 之间且精确匹配 desired revision；不满足以 close `4001`（`agent update required`）断开触发更新检查。新认证连接替换旧连接。
+
+## 节点配置与模块
+
+节点配置为 UTF-8 JSON：`schema_version=5`、正整数 `configuration_revision`、`agent_id`、`name`、`control_endpoint`、`modules`（省略即关闭；拒绝未知模块及未知/缺失字段）：
+
+| 模块 | 字段 | 作用与约束 |
+|---|---|---|
+| `ip_watch` | `interval_seconds`（10–300）、`ipv6` | 上报 `ip.address` 与 `changeip.unchanged` |
+| `changeip` | `provider=http_bearer`（`url`、`bearer_token`、可选 `source_command`）；或 `provider=command`（`program`） | 执行 `changeip.execute`；依赖 `ip_watch`；无参固定程序 |
+| `socks5` | `port`、`username`、`password` | 纯 Cloud 凭据段（Agent 不读、不运行代理） |
+| `ipquality_runner` | `{}` | 执行 `ipquality.execute` |
+| `xui` | `panel_url`、`username`、`password` | 管理 `ak-` 客户端并报 `xui.snapshot`（`panel_url` 须 literal loopback HTTP(S)+base path，无 query/fragment/URL 凭据、禁重定向，仅回环 HTTPS 允自签） |
+| `rate_limit` | `{}` | 限制受管用户下载；依赖 `xui` |
+| `connection_records` | `{}` | 报 `connection_records.batch`；依赖 `xui` |
+| `routing` | `{}` | 管理 Xray 路由与出站；依赖 `xui` |
+| `diagnostics` | `{}` | 只读 systemd 沙盒回答 `diagnostics.run` |
+| `firewall` | `{}` | 管理 `inet akastr_firewall` 与转发，报 `firewall.status`（须 `/usr/sbin/nft`） |
+| `metrics` | `{}` | 每分钟报 `metrics.sample` |
+
+Agent 只校验自身字段与技术依赖，不回报能力清单；新增能力只增模块键与消息，不改已有消息语义时不升协议版本。
 
 ## 更新检查
 
-`POST /internal/agents/maintenance` 是唯一的更新通道。它独立于 WSS 业务协议，因此业务协议升级后，旧 Agent 仍能取得新版本。请求必须且只能包含 `agent_id`、`agent_version`、正整数 `configuration_revision`、`error_code`（空字符串，或 1–64 位小写稳定错误码）、32-byte `nonce`、`sent_at` 与 64-byte Ed25519 `signature`；只接受 active identity，时间与主控相差超过五分钟即拒绝。签名文本为以下 UTF-8 行，末尾没有换行，时间保持 Agent 发送的原文：
+`POST /internal/agents/maintenance` 独立于 WSS 业务协议。请求只含 `agent_id`、`agent_version`、正整数 `configuration_revision`、`error_code`（空串或 1–64 位小写稳定错误码）、32-byte `nonce`、`sent_at`（偏差 >5 分钟拒绝）与 64-byte Ed25519 `signature`，签名原文为无末尾换行的 UTF-8 行：
 
 ```text
 akastr-agent-maintenance-v2
@@ -61,293 +55,144 @@ akastr-agent-maintenance-v2
 <sent_at>
 ```
 
-响应严格为 `akastr-agent-maintenance.v2`，必须且只能包含 `schema`、`status`（`current|busy|update_available`）、批准的 `version`、固定 GitHub release 地址 `binary_url` 与 `binary_sha256`、desired `configuration_revision` 和 `configuration`。版本与 revision 都和请求相同时为 `current`；否则节点已开始的工作未结束时为 `busy`，即存在已 accepted 的 command，或其 command 已被接受或已终结、仍在等待 IP 核对的 active ChangeIP session；尚未送达或未被接受的 command 不阻止更新，因为节点更新完成前它们本就无法送达，更新后重新下发。其余为 `update_available`。只有 `update_available` 且 revision 变化时，`configuration` 才是完整的节点配置（与 bootstrap 明文相同），其他情况为 `null`。主控不返回更低版本或更低 revision；Agent 版本高于批准版本时返回 409 `agent_release_required`。`error_code` 是本节点上一次未能应用目标的原因，主控把它记为节点的最近更新状态。签名与响应样例由双方测试共用，见 `internal/protocol/testdata/agent-protocol-v12.json`。
+响应严格为 `akastr-agent-maintenance.v2`：`schema`、`status`（`current|busy|update_available`）、批准 `version`、`binary_url`、`binary_sha256`、`configuration_revision`、`configuration`。版本与 revision 都相同回 `current`；否则存在 accepted command 或等待 IP 核对的 active ChangeIP session 时回 `busy`（未送达或未接受的 command 不阻塞）；其余回 `update_available`（仅 revision 变化时携带完整 `configuration`，否则 `null`）。版本高于批准值回 409 `agent_release_required`；双端测试共用 `internal/protocol/testdata/agent-protocol-v12.json`。
 
-Agent 每 60 秒检查一次，并在业务连接每次结束或进入 ready 时立即检查。发布新版本会重启 Cloud 后端，所有连接断开重连，节点因此立即发现新版本；保存配置后主控断开该节点，节点重连时 hello 被拒绝，同样立即检查。
-
-发现 `update_available` 后，Agent 把目标程序（复用 SHA-256 一致的本地文件，否则从 `binary_url` 下载并核对）与配置写入非活动 slot，再调用候选程序：`version` 必须输出目标版本，`prepare --config <slot>/config.json --agent-id <id> --revision <n>` 必须成功（Runner 在此取得固定版本的 IPQuality 脚本）。本地没有进行中的 operation 或 ChangeIP 核对时，Agent 先持久记录一次尝试，再以 `run --config <slot>/config.json` 原地替换进程。候选程序按普通流程连接，收到 `hello.accepted` 后先取得与安装器共用的锁，把 `current` 原子切到自己的 slot，再处理任何业务消息；重装正在进行时取锁失败，候选按切换失败退出；45 秒内未被接受、启动失败或切换失败时记录原因并退出，systemd 重新启动仍指向旧 slot 的 `current`。同一目标连续失败两次后暂停，六小时后自动再试一次；新版本、新配置或重跑安装命令都重新开始计数。
-
-本节请求、响应与 `version`、`prepare`、`run` 三个 CLI 是跨版本稳定契约：旧 Agent 依靠它们升级到新 Agent。修改它们须按 Cloud ADR 0024 单独批准，并说明已部署节点的迁移方式。
+Agent 每 60 秒及连接断开/ready 时检查；下载核对写入非活动 slot 并执行 `version` / `prepare` 后原地 `run` 切换（细节与失败退避见 [ARCHITECTURE.md](ARCHITECTURE.md#8-安装与自动更新)）。本节请求/响应与 `version`、`prepare`、`run` 三个 CLI 属跨版本稳定契约，修改须按 Cloud ADR 0024 批准并给出迁移方案。
 
 ## Operation
 
-`operation.offer` 包含：
+`operation.offer` 含 `command_id`（幂等/journal 键）、`command_type`、`payload_version=1`、`payload`、`not_before`、`expires_at`（只由 Cloud 判断）。非更新重启中回 `operation.accepted`；Cloud 已接单即使过原窗也回 `operation.accepted_ack accepted=true`（未接单过期回 `false`），收到 `true` 才执行。终态先写本地 journal（最多 64 条、单条 result ≤8 KiB，不存敏感凭据）再发 `operation.result` 等 `operation.result_ack`。重连及每 30 秒重发未终结 offer；重启对 active ChangeIP 判 `change_trigger_unknown`，recent 直接重放不重执行。
 
-- `command_id`：稳定 UUID，也是执行幂等键与本地 journal key；
-- `command_type`：runtime 只接受启用模块已登记的 `changeip.execute`、`ipquality.execute`；
-- `payload_version=1` 与对应类型的严格 payload；
-- `not_before` 和 `expires_at`。
-
-Agent 在进程没有准备替换为更新候选时发送 `operation.accepted`；Cloud 只在 `not_before` 到达后才 offer 并自行判断过期，Agent 不用本机时钟复核这两个时间，但该消息只发起持久化握手，不代表本地已经获得执行权。主控只会在未过 `expires_at` 的 offered command 上首次建立 accepted；已经 accepted 的 command 即使原窗口已过仍返回 `operation.accepted_ack accepted=true`，从未 accepted 的过期 command 返回 `false`。Agent 只有收到 `true` 才调用本地已配置 provider，此后不再用本地时钟复核原 offer 截止时间。终态先持久化，再释放 operation lease 并通过 `operation.result` 发送；AkastrCloud 只接受数据库状态已经是 `accepted` 的首个终态，在数据库事务和下游事件接纳成功后发送 `operation.result_ack`。
-
-已被主控接受的 command 不因原 `expires_at` 自动终结。节点重连时以及连接期间每 30 秒，主控继续发送相同 offer，并以 accepted ack 恢复执行权；这覆盖主控已提交 acceptance、但 ack 尚未到达节点便断线的窗口，也让节点已完成却未送达的结果在一个周期内重放。active ChangeIP journal 一律收敛为 `change_trigger_unknown`，recent 记录重放原终态，两者都不会再次执行 provider；首次 accepted ack 后尚无 journal 的 command 才开始一次本地执行。主控从未 accepted 的过期 command 不会获得执行权。
-
-offer 和 result 都可能重复。相同 `command_id` 的本地终态只会重放，不会再次执行。
-
-每种 command 属于一个本地 exclusive group（`changeip.execute` 为 `target-network`，`ipquality.execute` 为 `ipquality-runner`）。组内已有另一条 command 在执行时，新的一条不执行、不写入本地 journal，直接以 `failed`、code `operation_busy` 和该类型的结果字段回复；连接与进程照常，Cloud 按普通失败处理。Cloud 正常不会这样派发，只在管理员放弃已接单的 command 后可能出现。payload 不得选择 program、argv、shell fragment、文件或任意 URL。凭据只允许下面列出的 IPQuality 临时登录，不得将面板账号密码放入 offer。
+exclusive group 互斥（`changeip.execute` → `target-network`，`ipquality.execute` → `ipquality-runner`）：组内忙直接回 `failed` + `operation_busy`（不写 journal）。payload 禁传 program/argv/shell/文件/URL/面板密码。
 
 ### `changeip.execute`
 
-payload 只包含 `expected_ipv4`。Agent 在调用 provider 前观察当前公网 IPv4：不匹配时返回 `stale_expected_ipv4`，不执行 provider。Agent 先持久化 command 与该旧 IP 的核对状态，再调用本机固定 provider；固定程序的 stdout/stderr 不进入协议或日志。
+payload 只含 `expected_ipv4`；调用前先测公网 IPv4，不符回 `stale_expected_ipv4` 不执行。执行前写核对文件；固定程序 stdout/stderr 不进协议或日志。
 
-HTTP API provider 只把状态码 `200` 作为明确成功；真实非 `200` 或请求建立前失败是明确失败。固定程序 provider 以退出码 `0` 为明确成功、程序自己返回的非零退出码为明确失败；被信号终止视为结果未知。明确成功返回 `change_triggered`；请求可能已送达但响应、进程或 WSS 因断网中断时返回 `change_trigger_unknown`。两种成功终态都只包含触发前 IPv4，不宣称地址已经变化，也不会重发 provider。`http_status_not_200` 的结果另含 `provider_reply`：`HTTP <状态码>` 加服务商回复正文的前 300 个字符（去掉 bearer token，控制字符与连续空白合成一个空格，截断时以 `…` 结尾，正文为空时只有状态码），供管理员排查；其他结果没有这个字段。其他对外稳定 code 包括 `http_status_not_200`、`request_failed`、`stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero` 和 `reconciliation_state_failed`。
+HTTP `200` 或固定程序退出 `0` 回 `change_triggered`；被信号终止或断网/中断回 `change_trigger_unknown`（都不代表地址已变且不重发）。其他错误码：`http_status_not_200`、`request_failed`、`stale_expected_ipv4`、`ipv4_observe_failed`、`start_failed`、`exited_nonzero`、`reconciliation_state_failed`。其中 **`http_status_not_200` 另附 `provider_reply`**：`HTTP <状态码>` 加回复正文前 300 字符（脱敏 bearer token，控制字符与连续空白合为空格，截断尾缀 `…`，空正文只带状态码）；其余结果无此字段。
 
 ### `ipquality.execute`
 
-payload 只包含 `expected_ipv4`、`proxy_port`、`proxy_username` 和 `proxy_password`；结果中的 `script_version` 由 Runner 报告实际执行的固定脚本版本。Runner 直接把 `expected_ipv4` 作为 SOCKS5 地址，不存在另一个 hostname/IP 或目标 ID 字段。登录来自目标节点的 `socks5` 模块，由 Cloud 在 offer 时解密放入；Runner 只在本次执行的内存中使用，不写入配置、操作日志或普通日志，Cloud 也不把 payload 存入数据库。
-Runner 同一时间只执行一个 command，Cloud 只把检测派给空闲的 Runner：派出 60 秒仍未接单，Cloud 把这条 command 记为过期，另派给下一台；接单后 20 分钟仍无结果，Cloud 判这次检测失败，此后送达的结果仍返回 `persisted=true` 的 ack，只结束这条 command。每次执行前都重新校验脚本 SHA-256，通过 SOCKS5 做 IPv4 preflight，随后以固定参数执行：
+payload 含 `expected_ipv4`、`proxy_port`、`proxy_username`、`proxy_password`（内存专用不落盘），result 含 `script_version`。Cloud 派发 60 秒未接单过期、接单 20 分钟超时（晚到 result 仍回 `persisted=true` ack）。
+
+Runner 单并发，执行前校验固定脚本 SHA-256 与 SOCKS5 IPv4 preflight，按固定命令执行：
 
 ```text
 /bin/bash <script_path> -4 -n -x <local_socks5_relay_url>
 ```
 
-本地 relay 只监听 `127.0.0.1` 的随机端口，并使用 payload 中的登录连接上游 SOCKS5。脚本结束后 Runner 再做 postflight；代理地址改变、预期 IPv4 过期或 checksum 不一致都会失败。
-
-只有精确来源 `https://report.check.place/...`、无用户信息和显式端口的 URL 加成功 postflight 才是 `report_ready`，即使官方 IPv4-only Bash 进程返回非零；非零且无报告 URL 是 `script_failed`。输出上限为 2 MiB，超限返回 `script_output_too_large`。
+本地 relay 只听 `127.0.0.1` 随机端口连上游 SOCKS5；脚本后做 postflight（地址/预期 IP/checksum 不符即失败）。精确来源 `https://report.check.place/...`（无 userinfo 和显式端口）且 postflight 成功即 `report_ready`（哪怕 IPv4-only 脚本非零退出）；否则 `script_failed`。输出上限 `2 MiB`（`script_output_too_large`）。
 
 ## 目标状态
 
-Operation 只用于不能重复执行的一次性动作。Cloud 拥有、经常变化、可以反复应用的设置（3x-ui 受管客户端、防火墙规则等）用目标状态：Cloud 按 `(module, key)` 下发完整目标，Agent 反复对齐。
+经常变化且可幂等应用的配置按 `(module, key)` 全量对齐：
 
 | 方向 | type | body |
 |---|---|---|
-| Cloud → Agent | `state.put` | `module`、`key`（1–128 位 `[A-Za-z0-9_.-]`）、`version`（1 到 2^53−1，同一节点的同一 `(module, key)` 永不重复使用，即使该 key 曾退役后重新出现）、`state`（JSON object） |
-| Cloud → Agent | `state.keys` | `module`、`keys`（该模块当前完整的 key 列表，不重复） |
-| Agent → Cloud | `state.status` | `module`、`key`、`version`、`error_code`（空串表示节点已处于该版本的目标；否则为稳定错误码） |
+| Cloud → Agent | `state.put` | `module`、`key`（1–128 位 `[A-Za-z0-9_.-]`）、`version`（1..`2^53−1`，同 node 同 `(module, key)` 永不复用）、`state`（JSON object） |
+| Cloud → Agent | `state.keys` | `module`、`keys`（完整不重复 key 列表） |
+| Agent → Cloud | `state.status` | `module`、`key`、`version`、`error_code`（空串表一致） |
 
-- 每次连接进入 ready，Cloud 先为每个 key 发送当前 `state.put`，再发送 `state.keys`；之后目标变化即发 `state.put`，key 集合变化时再发 `state.keys`。同一连接上的消息有序，后到的 `state.put` 取代先前的。
-- Agent 只在内存中保存目标。进程启动后，在收到某模块的第一条 `state.keys` 之前不应用该模块，避免用不完整的集合删除仍被需要的东西；`state.keys` 未列出的 key 立即退役，模块应移除它拥有、却没有任何目标指名的东西。
-- Cloud 退役一个 key 时，先下发该 key 的“空”目标（xui 为 `clients: []`），收到该版本无错误的 `state.status` 后才把它移出 `state.keys`，因此 Cloud 能确认节点上的东西已清理。
-- 未启用模块的 state 消息、格式错误的消息结束连接。模块拒绝的目标不取代该 key 原有的目标，并以 `target_invalid` 回报；该 key 此前没有可用目标时，它覆盖的东西保持原样，不当作已退役而清理。
-- Agent 在变化后约 2 秒、此后每 5 分钟以及失败后（某个 key 失败，或不属于任何 key 的清理失败）按 30 秒起、最多 5 分钟的退避重新应用，并在 `(version, error_code)` 与本会话上次发送的不同时发送 `state.status`；Cloud 只记录 version 等于当前版本的状态；version 不重复使用，所以退役前仍在途中的旧状态不会被当成新目标的结果。Agent 不为已退役的 key 发送状态。`state.*` 没有回执：丢失的消息由下一次 ready 时的全量重发补上。
-- 目标状态不阻止 Agent 更新：重复应用同一目标不改变结果。
+- **握手与退役**：每次 ready 先逐 key 发 `state.put`，再发 `state.keys`；Agent 仅内存持有，收到模块首条 `state.keys` 前不应用，未列出的 key 立即清理。退役先发“空”目标，收到无错 `state.status` 再移出 `state.keys`。格式错或未启用模块消息即断连；拒绝的目标回 `target_invalid` 且保留旧可用目标（无旧目标时不清理）。
+- **重试与上报**：Agent 在变化后 ~2 秒、每 5 分钟及失败退避（30 秒起至 5 分钟）重算，`(version, error_code)` 变更时发 `state.status`（Cloud 仅认当前版本，已退役不发；丢失靠下次 ready 重发；不阻断自更新）。
 
 ### `xui`
 
-本模块适配原版 3x-ui **2.9.4**，Xray 固定为 **26.7.28**，不自动升级，不维护多版本兼容层；更换这些版本须先实测接口与真实连接行为。
-
-key 是面板入站 ID（十进制正整数）。state 必须且只能包含 `clients`，每项必须且只能包含：
+适配原版 3x-ui **2.9.4** / Xray **26.7.28**。key 为面板入站 ID（正整数），`state` 仅含 `clients`，每项 7 字段均必填非 `null` 且同目标内 `email`/`credential` 不重复：
 
 | 字段 | 含义 |
 |---|---|
-| `email` | `ak-` 加 1–61 位小写字母或数字；Cloud 以这一前缀拥有客户端 |
-| `credential` | VLESS 为 UUID；Shadowsocks 2022 为按 method 的 16 或 32 字节标准 Base64；Hysteria2 为 16–256 字节文本 |
-| `flow` | 空，或仅 VLESS 的 `xtls-rprx-vision` |
-| `enable` | Cloud 的业务启停（到期、额度、手动停用等都在 Cloud 计算） |
-| `total_bytes` | 写入 `totalGB` 的流量上限，0 为不限 |
-| `reset_seq` | 每当 Cloud 要求清零一次流量就增加 |
-| `comment` | 面板中显示的备注（客户与套餐），可为空，最多 200 个字符、不含控制字符；不进入 Xray |
+| `email` | `ak-` 加 1–61 位小写字母/数字 |
+| `credential` | VLESS UUID；SS2022 16/32B 标准 Base64；Hysteria2 16–256B 文本 |
+| `flow` | 空串或 `xtls-rprx-vision` |
+| `enable` | 业务启停 |
+| `total_bytes` | 写 `totalGB` 字节上限，0 为不限 |
+| `reset_seq` | 流量清零递增序号 |
+| `comment` | 面板备注，可为空，≤200 字符不含控制符 |
 
-七个字段都必须出现且不为 null；同一目标内 email 与 credential 都不重复。对齐规则：
-
-- 只管理 email 以 `ak-` 开头的客户端，绝不改动其他客户端。面板按凭据（Shadowsocks 按 email）定位客户端，并作用于所有匹配项，所以受管客户端或目标的凭据与非受管客户端相同时，该入站返回 `xui_client_conflict`，不做任何写入；也不创建或修改入站。目标中缺少的受管客户端新建，字段不一致的合并更新（保留未托管字段），多余的删除；任何 key 都未指名的入站中的受管客户端也删除。面板拒绝删除入站的最后一个客户端，此时改为停用，视为一致。`expiryTime` 固定为 0。
-- 已有上限且已用流量达到上限的客户端，即使目标 `enable=true` 也保持停用：面板会在流量耗尽时同时停用流量记录与客户端配置，写回启用只会被面板再次停用。提高上限或重置后自动恢复启用。
-- 目标先与入站核对（协议、method、凭据与冲突），通过后才执行重置。`reset_seq` 大于本机已执行的序号时，先调用面板的重置流量，再记录序号（`/var/lib/akastr-agent/xui/state.json`）；写盘失败时记录留在内存，后续每轮先补写，不再重复重置；面板的重置只恢复流量记录的启用，客户端配置的启用随后按目标写入。重置与记录之间进程中断会再重置一次，最多丢失这一瞬间的计数。不存在的客户端只记录序号。
-- 写入任何 Shadowsocks 2022 入站（只改 `comment` 也算：面板仍会先从 Xray 删除该用户再加回，而加回会失败）前先在 `state.json` 记下“待重启”，本轮最后经面板原生 `restartXrayService` 重启一次 Xray，成功后清除：该组合的动态写入可能报告成功却不可用。重启失败或进程在重启前停止时，下一轮即使面板已一致也会补做重启。重启会使同机所有连接短暂中断。
-- 目标为空时，面板中已不存在的入站视为一致（不报 `xui_inbound_missing`），使已删除入站的 key 也能完成退役。
-- 有写入时重新读取面板核对，不一致返回 `xui_unconfirmed`。其他错误码：面板请求类（`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`）、`xui_inbound_missing`、`xui_inbound_changed`（入站协议、method 与目标凭据不再匹配）、`xui_inbound_invalid`、`xui_client_conflict`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`。
-
-**访问日志与连接账本**：开启 `xui` 后，Agent 跟读 3x-ui 所运行 Xray 的访问日志，按行中的入站标签对照 3x-ui 面板的入站清单（面板新增或改端口的入站直接加进运行中的 Xray，不改它启动时的配置，所以以面板为准）：每 5 分钟读一次，遇到清单中没有的标签时立即重读，读到清单前不跟读日志；每行得到“入站端口 + 来源地址:端口 → email”。经过中转时，来源是中转机的地址，每条用户连接对应一条中转连接。Agent 每 0.25 秒读一次日志新行，同时每 0.5 秒向内核读一次本机 TCP 连接，并接收内核的连接关闭通知，把日志行对到连接上：一行只认领在它写下时已经建立、尚未关闭、也还没有主人的连接，恰好一条时绑定，绑定后直到连接关闭都不改。唯一的例外是 Agent 启动时已开着的连接（同时收 TCP 和 UDP 的入站除外，见下）：同一地址同一时刻只有一条 TCP 连接，所以它属于启动前写下的、同一地址的最新一行，日志尾里更早的行是已经断开的连接（常见于中转复用端口，换了用户）；开始读日志后 10 秒内（读到面板入站清单前不读日志，所以可能晚于启动）读到更晚的这种行，就改认这一行；这段时间里若另一个用户启动后写下的行指向这样一条连接的地址，又没有别的连接认领它（可能是启动前一刻新开的连接日志晚到、旧连接悄悄断开后的新连接，或 UDP 流，分不清），这条连接直到关闭都不归任何人，不计、不限、没有结束记录，也不再被别的行认领；引起争议的那一行既不再认领别的 TCP 连接，也不算 UDP 流。日志不含本机地址，所以同一来源地址:端口同时连到本机两个地址的同一端口时，两条都不绑定，不计也不限，不会算到别人头上。可走 UDP 的入站（Hysteria、mKCP、QUIC、开了 UDP 的 Shadowsocks）上没有被 TCP 连接认领的行，算作该用户的 UDP 流，行写下后 2 小时内有效（同时收 TCP 的入站上，要等读到这行之后的下一次内核读数也没有连接认领它，才开始算）；只走 UDP 的入站（Hysteria、mKCP、QUIC）的行只算 UDP 流，从不认领、也不争议 TCP 连接，即使同一端口号上另有 TCP 入站。同时收 TCP 和 UDP 的入站（开了 UDP 的 Shadowsocks）上，日志分不出一行是 TCP 还是 UDP：打开日志时读到的旧行直接丢弃（当 TCP 用，可能把启动时已开着的连接认给经同一中转地址:端口走 UDP 的别的用户；当 UDP 流，又会被限好几个小时），之后写下的行也不认领启动时已开着的连接，所以这种入站上启动时已开着的连接直到关闭都不归任何人，不计、不限、没有结束记录。启动后新开的连接，开着期间若有两个不同用户在它建立后写下的行指向它的地址（哪一行都可能是它自己的，另一行是经同一中转地址:端口的 UDP 流），同样按上面的争议处理，不管两行与内核谁先谁后到；这条连接开着期间，之后指向它地址的行（可能是它上面的后续请求，也可能是 UDP 流）也都不算。3x-ui 截断日志前会把它追加到副本（`/var/log/x-ui/3xipl-ap.log`），Agent 从副本补读截断前没读到的行；打开日志时先读副本末尾，以认出启动前就在的连接。行时间按本机时区解析；跟读时与本机时间相差超过 1 分钟的行，按读到的时间算。连接与日志行只在内存，不写盘；离开节点的只有 `xui.snapshot` 里的连接数，以及开启 `connection_records` 时的连接记录。日志须由运营者在面板开启且不掩码地址（`log.access` 不为 `none`，`maskAddress` 为空）；路径按 Xray 进程的工作目录解析。没开时 Agent 只是认不出连接，不影响面板对齐与快照。
+- **对齐规则**：只管理 `ak-` 前缀客户端；凭据/email 与非受管项冲突整入站返回 `xui_client_conflict` 且不写入；不建改入站，`expiryTime` 固定 0；面板拒删最后一项时改停用并视同一致；超额耗尽客户端即使 `enable=true` 也保持停用直到提额或重置；目标为空时已删入站视同一致（不报 `xui_inbound_missing`）。
+- **重置与 SS2022**：通过入站核对后，若 `reset_seq` 大于本机 `StateDir/xui/state.json` 记录，先调重置再落盘序号；写入任何 SS2022 入站（哪怕只改 `comment`）前先写盘待重启标记，本轮末经面板 `restartXrayService` 重启 Xray。写后回读核对，异常错误码：`xui_login_failed`、`xui_request_invalid`、`xui_request_unknown`、`xui_http_failed`、`xui_response_invalid`、`xui_business_failed`、`xui_inbound_missing`、`xui_inbound_changed`、`xui_inbound_invalid`、`xui_client_conflict`、`xui_write_failed`、`xui_restart_failed`、`xui_state_failed`、`xui_unconfirmed`。
+- **访问日志与连接账本契约**：须开启访问日志（`log.access` 非 `none` 且 `maskAddress` 为空）。Agent 仅在内存中把行 1 对 1 归属至 TCP 连接或 UDP 流：凡涉及进程启动前沿续、同时收 TCP+UDP 的入站、多用户争议或同 `来源地址:端口` 连同本机双监听导致的归属歧义，一律保持**不归属**（宁漏不误算或混算给他人）；可走 UDP 入站未被 TCP 认领的行作 2 小时 UDP 流（内核与日志跟读、副本补读细节见 [ARCHITECTURE.md](ARCHITECTURE.md#4-包职责)）。未开日志只影响连接认领，不影响面板对齐与快照。
 
 ### `rate_limit`
 
-key 是 Cloud 的一个下载限速：自动限速的单位（一份订阅在一个策略组下的账号），或手动限速（`manual.` 开头，一份订阅取到同一条手动设置的账号，见 Cloud ADR 0108）。Agent 不区分两者。state 必须且只能包含两项：
+key 为自动限速单位或 `manual.` 手动限速（Cloud ADR 0108），`state` 仅含 `down_mbps`（0–10000 整数，0 为不限，退役发 `{"down_mbps":0,"emails":[]}`）与 `emails`（不重复 `ak-` 列表）。同用户跨组取较低 `down_mbps`。
 
-- `down_mbps`：0–10000 的整数，单位 Mbps；
-- `emails`：这一组的受管客户端，不重复，格式与 `xui` 相同的 `ak-`。
-
-组内所有客户端在本机所有入站上的连接共享这一个限速，只限下载（节点发往客户端的方向）。`down_mbps` 为 0 表示不限，Cloud 退役 key 前下发的空目标是 `{"down_mbps":0,"emails":[]}`。同一客户端出现在两个组里时，按较低的限速执行。
-
-- **认人**：取 `xui` 连接账本（见上文）中被限用户的 TCP 连接与 UDP 流。
-- **执行**：
-  - 在有默认路由的网卡上挂 clsact egress。
-  - 每条 TCP 连接一条 flower 过滤，按本机地址:端口与客户端地址:端口精确匹配；每条 UDP 流一条，按入站端口与客户端地址:端口匹配（日志不含本机地址）。IPv4 优先级 49001，IPv6 优先级 49002；同一组的过滤共用一个 police 动作（编号 `0xAC000001` 起）。
-  - police 速率为 `down_mbps`，突发约 100 毫秒、至少 64 KiB，超出即丢弃；不超出时继续后续过滤。
-  - 根 qdisc 与他人的过滤不动。
-  - 每 0.5 秒按账本增删过滤：TCP 连接关闭即删，UDP 流过期即删。新连接从建立到受限通常不到 1 秒（日志、内核读数与过滤更新三段间隔相加），这段时间不受限。
-  - 过滤总数有上限，超出的连接不限。
-- **状态**：已装好的目标回报空错误码。访问日志或内核连接信息不可用时，继续限制已知连接，并回报 `rate_limit_log_unavailable`。tc 失败时，撤掉本模块的全部规则，回报 `rate_limit_apply_failed`；连撤除也失败时，本次全部 key（包括解除用的零目标）都回报 `rate_limit_apply_failed` 并重试，不确认任何版本。
-- **清理**：启动时先清掉此前进程留下的规则（更新换进程与崩溃都不会先停模块），进程正常停止时清理，模块关闭后的进程启动时也清理，失败则每 30 秒重试。清理只删上述优先级的过滤和编号段内的动作；clsact 上已没有任何过滤时才删除它。
+- 从 `xui` 账本取 TCP 连接与 UDP 流，在默认路由网卡 `clsact egress` 挂 `flower`（TCP 匹配 `本机:端口 + 客户端:端口`，UDP 匹配 `入站端口 + 客户端:端口`；IPv4 优先级 49001、IPv6 49002，同组共用 `police` `0xAC000001+`，突发 ~100 ms / ≥64 KiB），每 0.5 秒同步，仅限下载；新连接收敛约 <1 秒，超过滤上限不限。日志/连接信息不可用继续限已知连接并报 `rate_limit_log_unavailable`；`tc` 失败全撤本模块规则并报 `rate_limit_apply_failed`。
 
 ### `routing`
 
-只有一个 key：`node`，即整台节点的路由。state 必须且只能包含三项：
+仅 key `node`（空目标 `{"default_outbound":"direct","outbounds":[],"rules":[]}`，开模块时不退役），`state` 含：
 
 | 字段 | 含义 |
 |---|---|
-| `default_outbound` | 没有规则命中时的出站：`direct` 或 `outbounds` 里的某个标签 |
-| `outbounds` | Cloud 拥有的出站，每项必须且只能包含 `tag`（`ak-o-` 加 1–100 位小写字母、数字或 `-`，不重复）与 `config`（一个 Xray 出站对象，必须有 `protocol`，不得有 `tag`）。Cloud 让标签随内容变化，标签相同即内容相同 |
-| `rules` | 按生效顺序的规则。条件字段 `inbounds`（面板入站 ID）、`users`（`ak-` 受管客户端）、`sources`（客户端的来源地址，写成 Xray 规则的 `sourceIP`：3x-ui 2.9.4 的路由页只认这个名字，旧名 `source` 在面板里显示不出来）、`domains`、`ips`（目标地址）、`protocols`（数组）与 `ports`、`networks`（Xray 的字符串写法），可省略但至少有一项；不认识的字段让整份目标被拒；`outbound` 必填，只能是 `direct`、`blocked`、`outbounds` 里的标签，或节点 Xray 自己就有的出站标签（1–100 位字母、数字、`.`、`_`、`-`，不以 `ak-` 开头、不是 `api`；例如 VLESS 反向隧道的客户端连上时 Xray 才建出的出站）。后者模块不写也不删；Xray 还没有这个标签时，命中的连接直接断开，不改走默认出站（Xray 26.7.28 实测；Cloud ADR 0111） |
+| `default_outbound` | 无命中兜底：`direct` 或 `outbounds` 中标签 |
+| `outbounds` | 受管出站（`tag` `ak-o-`+1..100 小写字母/数字/`-` 不重复；`config` 含 `protocol` 不含 `tag`） |
+| `rules` | 有序规则：`inbounds`、`users`、`sources`（写为 Xray 2.9.4 的 `sourceIP`）、`domains`、`ips`、`protocols`、`ports`、`networks` 至少其一（未知字段拒整份）；必填 `outbound` 为 `direct`/`blocked`/受管标签或节点自有出站（1–100 `[A-Za-z0-9._-]`、非 `ak-`/api，不存在时命中直接断开，Xray 26.7.28 / Cloud ADR 0111） |
 
-空目标是 `{"default_outbound":"direct","outbounds":[],"rules":[]}`；模块开着时 key 不退役。条件的内容（geosite 类别、端口写法等）由 Xray 判断：写入前就会被拒绝。
-
-- **写到哪里**：3x-ui 每次启动 Xray 都按面板的“Xray 模板”重建配置，所以 Agent 先写模板，再热更新正在运行的 Xray。模板里只替换三处：`outbounds` 整体换成 `[default_outbound, direct, blocked, 其余受管出站]`（`direct` 为 freedom、`blocked` 为 blackhole，写法与 3x-ui 默认模板一致，两者始终存在）；`routing.rules` 换成“面板自己的 api 规则 + 目标规则”，并删除 `routing.balancers`；`api.services` 补上 `RoutingService`。`routing.domainStrategy` 与模板其余字段原样保留，保存时原样回传面板的出站测试地址（缺省会被面板重置）。规则像 3x-ui 一样带 `"type": "field"`，`ruleTag` 由 Agent 按序号写成 `ak-r-N`，`inbounds` 换成面板入站当前的标签。
-- **每一轮**：读面板入站与模板，模板受管部分与目标不同时，先把“运行配置 + 新的受管部分”（去掉入站与日志设置：模块不改它们、Xray 已在运行它们，而 Agent 的 systemd 沙箱看不到 `/root` 下的证书、也不能写日志文件）交给同一个 Xray 程序的 `run -test`，不通过就什么都不写；通过后存模板并读回核对。随后：运行中的 Xray 还没有 `RoutingService`（首次接管）、第一个出站不是 `default_outbound`，或运行中的 `direct`、`blocked` 与模板不一致（有人在面板改过它们并重启了 Xray）时，经面板重启一次 Xray（同机所有连接短暂中断），等新进程的 api 应答；否则用 Xray 自带的 `api` 命令热更新：补上缺少的受管出站，不追加地替换整张规则表，再删掉不在目标里的 `ak-o-` 出站。热更新不断开已有连接，删掉正承载连接的出站也不会（在 Xray 26.7.28 上实测）。每轮都重新替换整张规则表，不因“看起来一样”跳过。
-- **只碰自己的**：只删除 `ak-o-` 开头的出站，规则指向的节点自有出站不动；面板 api 规则始终在第一条。接管前留在模板里的出站在接管时被替换，首次接管那次重启后消失。接管后在面板里改路由和出站不会长久生效，下一轮（最多 5 分钟）就改回来；改 DNS 等其余模板字段照常有效。
-- **失败**：Xray 替换规则表时先清空旧表再逐条构建，中途出错会留下空表，连 api 规则也没了。此时若 api 不再应答、且仍是同一个 Xray 进程，Agent 经面板重启一次 Xray（模板已是验证过的新配置）再回报失败。
-- **关闭与卸载**：保留最后一次写入的模板和运行配置，交还面板手动管理，不恢复接管前的样子（Cloud ADR 0099）。
-- **错误码**：`routing_inbound_missing`（规则引用的面板入站不存在）、`routing_config_invalid`（`run -test` 不通过）、`routing_panel_failed`（读或存模板失败）、`routing_xray_unavailable`（找不到 3x-ui 运行的唯一 Xray、它的程序或回环上的 api 入站）、`routing_apply_failed`（热更新没完成）、`routing_restart_failed`（经面板重启失败，或重启后没有恢复）。命令输出可能含出站密码，只在本机解析，不上报、不写日志。
+- 先写 3x-ui 模板中 `outbounds`（`[default_outbound, direct, blocked, ...]`）、`routing.rules`（面板 `api` 规则 + 目标规则，删 `balancers`）与 `api.services`（加 `RoutingService`），保留 `domainStrategy` 等其余字段；写入前经 `xray run -test`（剥离入站与日志字段）校验并写回核对。
+- 无 `RoutingService`、首出站变更或 `direct`/`blocked` 偏离时经面板重启 Xray；否则 `xray api` 热更新（不断连）。规则更新中途清空失败且 api 失联时按已校验模板重启一次 Xray。关闭或卸载保留最后配置交还面板（Cloud ADR 0099）。
+- 错误码：`routing_inbound_missing`、`routing_config_invalid`、`routing_panel_failed`、`routing_xray_unavailable`、`routing_apply_failed`、`routing_restart_failed`（输出不上报、不写日志）。
 
 ### `firewall`
 
-只有一个 key：`node`，即整台节点的入站筛选与端口转发（Cloud ADR 0109、0110）。Cloud 只下发带类型的事实，不下发规则文本；规则、骨架与顺序由 Agent 生成。state 必须且只能包含八项：
+仅 key `node`（开模块时不退役；空目标 `{"mode":"off","retry":0,"sets":{},"blocked":null,"exempt":null,"ceilings":[],"rules":[],"forwards":[]}`；最大目标 ~220 KiB），`state` 仅含 8 项：
 
-| 字段 | 含义 |
+| 字段 | 含义与上限 |
 |---|---|
-| `mode` | `off`（不筛选：没有 `forwards` 时不装表，有时只装转发）、`observe`（封禁与 `rules` 照常执行，入站上限与兜底只记录不丢）、`enforce` |
-| `retry` | 0 到 2^53−1；主人在后台点“重试”时加一，只用于让目标内容变得不同 |
-| `sets` | 命名的地址集合，最多 64 个，名字 `[a-z0-9_]{1,32}`。每个必须且只能包含 `addresses`（IPv4/IPv6 地址或网段，按规范写法：主机位为零，不带 zone，不用 IPv4 映射地址）与 `domains`（完整小写域名，由节点解析）。所有集合合计最多 4096 个地址、64 个域名。空集合不匹配任何来源 |
-| `blocked` | 封禁用的集合名，或 null |
-| `exempt` | 命中即跳过封禁的集合名（自有节点），或 null |
-| `ceilings` | 入站上限，最多 256 条，每条必须且只能包含 `protocol`（`tcp`/`udp`）、`ports`、`sources`（1–64 个集合名）：目的端口在 `ports`、来源不在任何一个 `sources` 集合里的包被挡 |
-| `rules` | 按生效顺序排好的规则，最多 512 条，每条必须且只能包含 `action`（`allow`/`drop`）、`sources`（字符串 `"any"`，或 1–64 个集合名；空数组是格式错误，“没有来源”不会被当成所有人）、`protocol`（`tcp`/`udp`/`ping`/`any`）、`ports` |
-| `forwards` | 端口转发，最多 256 条，每条必须且只能包含 `protocol`（`tcp`/`udp`）、`port`（本机对外端口）、`to`（规范写法的 IPv4 单个地址，不能是 0.0.0.0、回环、组播或广播）、`to_port`；同一 `protocol` + `port` 只能出现一次。只转 IPv4 |
+| `mode` | `off`（有转发只装转发三链，无转发删表）、`observe`（封禁与 `rules` 生效，`ceilings`/兜底只记不丢）、`enforce` |
+| `retry` | `0..2^53−1`（后台点重试递增以强制重装失败目标） |
+| `sets` | ≤64 个命名集合 `[a-z0-9_]{1,32}`，含规范 `addresses` 与小写 `domains`；总计 ≤4096 地址、≤64 域名；空集不匹配 |
+| `blocked` / `exempt` | 封禁集合名 / 豁免封禁集合名（或 `null`） |
+| `ceilings` | ≤256 条入站上限：`protocol`（`tcp`/`udp`）、`ports`、1–64 `sources` 集合名（目的端口在内且来源不在任一集合则拦） |
+| `rules` | ≤512 条有序规则：`action`（`allow`/`drop`）、`sources`（`"any"` 或 1–64 集合名，非空）、`protocol`（`tcp`/`udp`/`ping`/`any`）、`ports` |
+| `forwards` | ≤256 条 IPv4 转发：`protocol`（`tcp`/`udp`）、`port`、`to`（规范单 IPv4，非 `0.0.0.0`/回环/组播/广播）、`to_port`（同协议+端口唯一） |
 
-`ports` 是 1–64 段 `[起, 止]`（1–65535，起不大于止）；规则的 `protocol` 为 `ping`、`any` 时 `ports` 必须是空数组。TCP 和 UDP 都要的规则或转发由 Cloud 拆成两条；`ping` 是 IPv4 与 IPv6 的回显请求。空目标是 `{"mode":"off","retry":0,"sets":{},"blocked":null,"exempt":null,"ceilings":[],"rules":[],"forwards":[]}`；模块开着时 key 不退役。最大的目标约 220 KiB，远在消息上限之内。
+`ports` 为 1–64 段 `[起, 止]`（`ping`/`any` 须为空数组）。
 
-- **表**：只有一张 `inet akastr_firewall`，IPv4 与 IPv6 共用一套规则，不按本机地址匹配（有的节点公网地址不在网卡上）。别的表、`/etc/nftables.conf`、`/etc/sysctl*` 与 sshd 配置不读不改。
-- **链**（`observe`、`enforce` 都有全部五条；`off` 且有转发时只有中间三条，不封禁、不筛选、不记录）：
-  1. prerouting 过滤（优先级在连接跟踪之后、地址转换之前，有 `blocked` 时才有）：回环放行；来源在 `blocked`、不在 `exempt`、且属于连接跟踪原始方向（对方发起）的包丢弃。所以封禁同时管到本机服务和转发，被封来源的已有连接立即断开，本机连出去的回包不受影响。
-  2. 地址转换（nat prerouting）：只对 IPv4、只对发给本机地址的包（`fib daddr type local`，与 Docker 的 `addrtype LOCAL` 相同：容器或虚拟机经本机发往别处同一端口的包不被改走），按“协议 + 目的端口”查转发映射，命中的改成 `to:to_port`。这条规则的注释记着模式与规则摘要 `akastr:<mode>:<digest>`；没有这条链的表（转发之前的骨架）按未标记处理、整表替换。
-  3. 来源伪装（nat postrouting）：只对做过目的地址转换、且原始协议与端口是本模块某条转发的连接做 masquerade；别的程序（Docker 等）做的转换不碰。不用 mark。
-  4. 过路包检查（forward）：从默认路由所在的网卡进、又从同一网卡出、且没做过任何地址转换的包丢弃（IPv4、IPv6 各按自己的默认路由网卡），防止同网段的人把节点当路由器用。默认路由网卡是网桥时不检查它：加载了 br_netfilter 的机器上，网桥里机器之间的包也是同一网卡进出。其余不管，策略放行。别的表在 forward 上默认丢弃的（例如 Docker 的 FORWARD 链），本模块管不到，转发在这样的机器上走不通。
-  5. input 过滤（挂 input 钩子，filter 优先级），固定顺序：
-     1. 回环放行。
-     2. 保底放行：已建立及相关连接；RFC 4890 4.4.1 要求主机不丢的 ICMPv6（差错报文、组播侦听、邻居发现与路由通告、反向邻居发现、SEND 与组播路由通告）；IPv4 的不可达、超时与参数错误；来自 `fe80::/10`、源端口 547 到目的端口 546 的 DHCPv6 回包。不含 ping。
-     3. `ceilings`：命中就记录；`enforce` 丢弃，`observe` 继续往下走。
-     4. `rules`：逐条，命中第一条即停（放行或丢弃）。
-     5. 兜底：记录；`enforce` 丢弃，`observe` 放行。
-  
-  转发流量只受封禁和过路包检查约束，不经过入站上限、规则组和兜底。
-- **转发是成员**：转发映射、各协议的转发端口集合和过路包检查的网卡都是集合成员，不进摘要。加、删、改转发和默认路由换网卡都只换成员，不整表替换、不探测、不进失败摘要。
-- **命中记录**：入站上限与兜底命中的包记在表里有界、一小时内没有新命中即过期的集合中：兜底按“协议 + 端口”（最多 512 条）、ICMP 与 ICMPv6 按报文类型、其他协议按协议号（各 64 条），入站上限按“来源 + 协议 + 端口”（IPv4、IPv6 各 512 条），每条带包数。TCP 只记发起连接的包，开启时已经存在的连接不会被当成新来源。兜底的 TCP、UDP 只在本机有套接字会收这个包时才记（`socket` 匹配）：扫描器逐个试的空端口不记，否则公网节点上一小时内就会填满集合，而要看的是规则漏放的服务。记录与丢弃是两条规则，集合满了只是少记，不会少丢。整张表替换时记录清零。
-- **应用**（每次变化后、每 5 分钟、失败退避后，按下列顺序）：
-  1. `off` 且没有 `forwards`：有表就删，按下文清理全部转发的旧连接、关回转发开关，清掉状态文件里确认可用的目标，不探测。
-  2. 目标有转发而 `net.ipv4.ip_forward` 为 0 时，打开转发开关（见下）；打不开回 `firewall_forwarding_failed`，转发成员保持上一份（没有上一份就为空），其余照常应用。
-  3. 节点上装着本模块的表时，先在一个事务里换掉转发成员与过路包检查的网卡，再清理旧连接。这一步不受下面的摘要与失败摘要影响，所以规则一直失败的节点上，转发也跟着落地换 IP。
-  4. 渲染规则，对不含成员的部分算摘要；表上的摘要相同就只在一个事务里替换各地址集合的成员（域名解析结果或地址变化），结束。表被外部清空、Agent 更新改了骨架，摘要都对不上，按下面各步重新安装。
-  5. 摘要（连同 `retry`）等于记下的失败目标：回 `firewall_unconfirmed`，不装（`off` 不检查）。
-  6. 连接跟踪上限低于本机目标值（每 GiB 内存 131072 条，向上取整，只升不降）时，经 `systemd-run` 起两个一次性 root 单元，依次运行 `/usr/sbin/modprobe nf_conntrack` 与 `/usr/sbin/sysctl -w net.netfilter.nf_conntrack_max=<N>`（Agent 自己的单元不能加载模块、不能写内核参数）；没调上去回 `firewall_conntrack_failed`，不装。任何模式要装表都先做这一步：地址转换离不开连接跟踪。不改超时。
-  7. `off`（有转发）：直接整表替换，不探测，也不记失败；结束。
-  8. 新开一条到控制地址的连接（解析域名、TCP、TLS 握手，不复用已有连接）；不通回 `firewall_probe_unavailable`，不装。
-  9. 把“未确认”的这份目标连同上一份确认可用的目标写进状态文件，写不进去回 `firewall_state_failed`，不装。
-  10. 规则经标准输入交给 `nft`，先检查再在一个事务里整表替换；被拒回 `firewall_apply_failed`。
-  11. 再探测，约 20 秒内多次尝试：通了把这份记为确认可用；不通则装回上一份（连同当前的转发；没有上一份就只装转发，没有转发就删表；这次应用到了时限也装完），记下这份目标，回 `firewall_unconfirmed`，之后不再安装相同内容，直到内容变化或 `retry` 增加。进程在探测中被停掉时不做决定：表与“未确认”的记录留给下一个进程。
-- **转发开关**：目标里有转发、而 `net.ipv4.ip_forward` 为 0 时，经一次性 root 临时单元运行 `/usr/sbin/sysctl -w net.ipv4.ip_forward=1`（程序与参数写死），并在状态文件里记下这次开机的 `boot_id`。最后一条转发没了、模块关闭或卸载时，只在记下的 `boot_id` 就是这次开机时运行 `sysctl -w net.ipv4.ip_forward=0` 并清掉记录；本来就开着（Docker 等）的机器上从不关，机器重启后的记录作废。不写 sysctl 配置文件，从不碰 IPv6。
-- **旧连接**：已建立的转发连接按连接跟踪里的记录走，改目标或删转发后仍去旧目标，直到超时（UDP 约 2 分钟，TCP 默认 5 天）。所以每次转发成员换上之后，对每条删掉的转发、每条 `to` 或 `to_port` 变了的转发，经 netlink（只用标准库）删掉“协议相同、原始目的端口等于 `port`、回程来源等于旧的 `to:to_port`、且做过目的地址转换”的连接跟踪记录；本机自己连到同一地址端口的连接没做过转换，不删。删掉后旧连接的下一个包按新映射走。不清整张表。旧目标取自状态文件里上一份已应用的转发，先写进状态文件再清，所以进程重启也不漏；删除失败的留待下一轮（最迟 5 分钟），写错误日志，不影响目标是否生效；又被用回的目标不删。
-- **进程启动**（控制连接等这一步做完才建立：机器刚重启时连接跟踪还没加载，先建的连接在装表后没有跟踪记录，对端发来的包会被丢，直到本机再发数据）：状态文件读不出来时不装表、写错误日志，等 Cloud 的目标（应用时重写这个文件）；表不在而有确认可用的目标或转发（机器重启过）时依次调连接跟踪上限、打开转发开关（有转发时）、按状态文件装回，不探测；表在且有未确认的目标时：表上的摘要仍是上一份确认可用的（上一进程没来得及装）就丢掉这条记录；否则先探测，通了而表上正是这份才把它记为确认可用（更新改了摘要、认不出表上是哪份时只丢掉记录，由 Cloud 的下一份目标重装），不通就装回上一份并记下失败；表在且没有未确认的目标时不动。收到第一份完整 key 列表之前不删表。
-- **域名**：每两分钟解析一次（新出现的域名在应用时立即解析）；失败或结果为空时保留上一次的地址并标出失败，任何情况下都不会变成所有人；每个域名最多取 32 个地址。地址变化只替换集合成员。
-- **进程外状态**：表在 Agent 正常停止、更新换进程和崩溃时都原样保留，打开的转发开关也一样；模块关闭后，下一个进程按记录关回转发开关、删掉表、清理转发的旧连接，再删 `StateDir/firewall`；卸载在删除程序之前删表并按记录关回转发开关，机器上没有 `nft` 或没有加载 nf_tables 时跳过删表。调高的连接跟踪上限保留到机器重启。
-- **状态文件** `StateDir/firewall/state.json`（带 schema 标记、原子写）：最后一份确认可用的目标、未确认的目标、失败目标的摘要、各域名最后一次解析结果、表上现在的转发、待清理的旧转发目标（最多 512 条，超出时放弃最早的，由超时收尾）和打开转发开关时的 `boot_id`。
-- **错误码**：`firewall_tool_missing`（运行中找不到 `/usr/sbin/nft`；配置开启模块而节点没有 `nft` 时，候选程序拒绝该配置，节点保留旧配置）、`firewall_conntrack_failed`、`firewall_forwarding_failed`、`firewall_probe_unavailable`、`firewall_unconfirmed`、`firewall_apply_failed`、`firewall_state_failed`。
-- **内核模块**：规则用到 nf_tables、连接跟踪及其 netlink、地址转换（`nft_chain_nat`、`nft_nat`、`nft_masq`）、`nft_ct`、`nft_socket` 与 `nft_fib`（`nft_fib_inet`、`nft_fib_ipv4`、`nft_fib_ipv6`），由 nft 和 netlink 按需自动加载；缺任何一个，整张表被拒。
+- **表与五链（`inet akastr_firewall`，不读改他表/`sysctl`/ssh）**：1) `prerouting filter`（有 `blocked` 时：放行回环，来自 `blocked` 且不在 `exempt` 的原始方向丢弃）；2) `nat prerouting`（IPv4 且 `fib daddr type local`，注释带 `akastr:<mode>:<digest>`，按映射改 DNAT）；3) `nat postrouting`（仅对本模块转发连接做 masquerade）；4) `forward`（非网桥默认路由网卡同进同出且未 NAT 的过路包丢弃）；5) `input filter`（回环放行 → 保底 ICMP/ICMPv6 RFC4890/已建立/DHCPv6，不含 ping → `ceilings` → `rules` 首条命中 → 兜底）。转发只受 1、4 约束。
+- **命中集合**：`ceilings`（IPv4/v6 各 ≤512）与兜底（TCP/UDP `socket` 匹配后 ≤512、ICMP/v6 与其他协议各 ≤64）1 小时无命中过期，整表重装清零。
+- **应用顺序与误差边界**：`off`+无转发即删表清状态；需转发且 `ip_forward=0` 时经一次性 root 单元开并按 `boot_id` 记入 `StateDir/firewall/state.json`；成员（域名每 2 分钟解析最多取 32 IP、失败保留旧址并标 `failed`；转发映射与默认网卡）只在表已存在时原子替换且优先执行；骨架/模式变化时对比表摘要与失败摘要，不足 `131072 × GiB` 先调高 `nf_conntrack_max`；有筛选模式新开探测连接（pre/post 20 秒确认，不通回退并记失败摘要直到变更或 `retry` 增加）；转发改删后经 netlink 清旧 DNAT conntrack（待删最多留 512 条）。错误码：`firewall_tool_missing`、`firewall_conntrack_failed`、`firewall_forwarding_failed`、`firewall_probe_unavailable`、`firewall_unconfirmed`、`firewall_apply_failed`、`firewall_state_failed`；内核依赖 `nf_tables`、`nf_conntrack`、`nft_chain_nat`、`nft_nat`、`nft_masq`、`nft_ct`、`nft_socket`、`nft_fib_*`。重启装回、关闭与卸载清理见 [ARCHITECTURE.md](ARCHITECTURE.md#4-包职责)。
 
 ## 诊断
 
-开了 `diagnostics` 模块的节点回答 Cloud 转来的诊断脚本。这是协议里唯一由 Cloud 提供脚本内容的能力，模块默认关闭，只在该节点的配置开启它时才存在（Cloud ADR 0102）。它不走 Operation：不握手、不写 journal、不重放；回答随会话丢失时由操作者重新请求，脚本只读，重跑没有副作用。
+默认关闭（Cloud ADR 0102），不走 Operation；脚本只读且无重放，丢了重问。`diagnostics.run` 只含 `request_id`（UUID）与 `script`（非空 ≤65536 字节无 NUL bash）；格式错或未开模块均断连。
 
-`diagnostics.run`（Cloud → Agent）的 body 必须且只能包含 `request_id`（UUID）与 `script`（非空、最多 65536 字节、不含 NUL 的 bash 脚本，可以多行）。格式错误时 Agent 结束会话，与其他畸形消息相同；未开模块的节点收到它同样结束会话，Cloud 不会这样发送。
+Agent 用 `systemd-run` 跑 `akastr-diagnostics-<request_id>.service`：`DynamicUser=yes` + `CAP_DAC_READ_SEARCH`、`NoNewPrivileges`、`ProtectSystem=strict`、`ProtectHome=read-only`、屏蔽 `/tmp`/`/var/tmp` 用 `/dev/shm` `TMPDIR`（`UMask=0077`）、`PrivateDevices`、屏蔽 journal 写入 socket、`IPAddressDeny=localhost`（放行 `127.0.0.53`）+ 执行前 1 秒连本机临时端口预检防失效、上限 256M RAM / 50% CPU / 64 任务 / 5 分钟超时（`RuntimeMaxSec` +30 秒）、空 stdin、单并发。
 
-Agent 以固定参数调用 `systemd-run` 运行脚本：脚本经环境变量交给 `/bin/bash`，不拼进命令行；单元名为 `akastr-diagnostics-<request_id>.service`，`DynamicUser=yes`，只保留 `CAP_DAC_READ_SEARCH`（能读任何文件），`NoNewPrivileges`，`ProtectSystem=strict`、`ProtectHome=read-only`，`/tmp` 与 `/var/tmp` 不可访问，临时文件经 `TMPDIR` 写到内存里的 `/dev/shm`（与宿主共用，`UMask=0077` 使别的用户读不到），随该临时用户的 IPC 一起清除（systemd 257 之前，`DynamicUser` 带来的私有临时目录在磁盘上，同路径的 tmpfs 盖不过它），`PrivateDevices`，journal 的写入 socket 不可访问（日志仍可读），`IPAddressDeny=localhost`（只放行 systemd-resolved 的 `127.0.0.53`），内存 256M、CPU 50%、64 个任务，标准输入为空。不支持 cgroup BPF 的环境里 systemd 会静默忽略 `IPAddressDeny`，所以每次运行前，沙盒先用 1 秒去连 Agent 临时监听的一个本机端口：连上了就不运行脚本。脚本最长运行 5 分钟，停止时 5 秒内强制结束；单元的 `RuntimeMaxSec` 再多 30 秒，Agent 不在时由它结束。会话结束时 Agent 停掉正在运行的单元且不回答；Agent 每次启动时停掉所有 `akastr-diagnostics-*` 单元。同一节点一次只运行一个脚本。
-
-`diagnostics.result`（Agent → Cloud）的 body 必须且只能包含：
-
-| 字段 | 含义 |
-|---|---|
-| `request_id` | 与请求相同 |
-| `code` | `completed`（脚本已结束，见 `exit_code`）、`timed_out`（到 5 分钟被停掉）、`busy`（已有脚本在运行）、`sandbox_unavailable`（沙盒连上了本机端口，或上一进程的单元尚未停掉；脚本没有运行）、`start_failed`（`systemd-run` 无法启动或探测端口无法监听） |
-| `exit_code` | `completed` 时为 bash 的退出码（被信号终止为 null），其他为 null |
-| `stdout`、`stderr` | UTF-8 文本，无效字节替换为 U+FFFD；各取前 256 KiB，整条消息超过 1 MiB 时继续截短较长的一个 |
-| `stdout_truncated`、`stderr_truncated` | 对应输出是否被截短 |
-| `duration_ms` | 脚本运行时长，未运行为 0 |
-
-输出可能包含脚本读到的任何内容：Agent 只在内存中回答一次，不写盘、不写日志；Agent 日志只记请求编号、脚本原文、`code`、退出码、时长与输出字节数。
+`diagnostics.result` 只含：`request_id`、`code`（`completed|timed_out|busy|sandbox_unavailable|start_failed`）、`exit_code`（仅 `completed` 含整数或信号 `null`）、`stdout`/`stderr`（UTF-8，非法字节换 `U+FFFD`，各上限 256 KiB 且总包超 1 MiB 时裁剪较长者）、`stdout_truncated`/`stderr_truncated`、`duration_ms`。输出不写盘、不写日志（日志只记请求号、脚本、code、退出码、时长与字节数）。
 
 ## 上报与回执
 
-节点主动告知的事实统一用 `report` 消息，body 必须且只能包含 `report_id`（UUID）、`kind` 与 `data`；Cloud 持久接纳后回 `report.ack`，body 只包含相同 `report_id`。Agent 在收到回执前重发同一上报；重复或过期回执是无副作用的确认。Cloud 对格式正确但无法使用的上报（节点已停用、IPv6 未开启、`changeip.unchanged` 指向主控没有的 command 等）记录日志并照常回执，不断开连接；只有数据库故障等暂时性失败才结束连接，由 Agent 重连重试。新增的上报能力只增加一种 `kind`。当前 kind：
+Agent 主动报 `report`（`report_id` UUID、`kind`、`data`），Cloud 持久化后回 `report.ack`（`report_id`）。格式对但当前不可用的上报照常 ack 并记日志（不为此断连；临时库错才断连重试）。
 
-| kind | data |
-|---|---|
-| `ip.address` | `family`（`ipv4`/`ipv6`）、`address`、`observed_at`、`command_id`（UUID 或 null） |
-| `changeip.unchanged` | `command_id`、`address`、`observed_at` |
-| `xui.snapshot` | `inbounds`、`traffic`、`splice`、`connections`，见下 |
-| `connection_records.batch` | `records`、`dropped`，见下 |
-| `routing.outbound_health` | `outbounds`，见下 |
-| `firewall.status` | `mode`、`ssh_ports`、`panel_port`、`listening`、`conntrack`、`hits`、`domains`、`foreign_tables`，见下 |
-| `metrics.sample` | `boot_id`、`uptime_seconds`、`cpu`、`load`、`memory`、`swap`、`disk`、`connections`、`processes`、`interfaces`、`system`，见下 |
+| kind | data 字段 | 保留与重发 |
+|---|---|---|
+| `ip.address` | `family`、`address`、`observed_at`、`command_id` | 仅留未确认最新态；详见下一节 |
+| `changeip.unchanged` | `command_id`、`address`、`observed_at` | 写核对文件直到 ack |
+| `xui.snapshot` | `inbounds`、`traffic`、`splice`、`connections` | 每分+ready 全量覆盖旧未确认 |
+| `connection_records.batch` | `records`（≤1000）、`dropped` | 10 秒/千条，内存上限 20000 条 |
+| `routing.outbound_health` | `outbounds`（`tag`、`up`、`delay_ms`） | 每 5 分+启动，只留最新未确认 |
+| `firewall.status` | `mode`、`ssh_ports`、`panel_port`、`listening`、`conntrack`、`hits`、`domains`、`foreign_tables` | 每分+ready，只留最新未确认 |
+| `metrics.sample` | `boot_id`、`uptime_seconds`、`cpu`、`load`、`memory`、`swap`、`disk`、`connections`、`processes`、`interfaces`、`system` | 每分+ready，只留最新未确认 |
 
-`xui.snapshot` 每分钟读取一次面板并发送，内容没变也发（Cloud 用相邻两份快照的差算速度，闲着的一分钟也要报出来），每次连接 ready 后立即发送；只保留最新一份，未确认的旧快照原样重发，内容变了才被新快照取代。
-
-- `inbounds` 每项为 `id`、`remark`、`protocol`、`listen`、`port`、`enable`、`settings`、`stream_settings`（后两者为 JSON object）。
-- `traffic` 每项为受管客户端的 `email`、`up`、`down`（bytes）与本机已执行的 `reset_seq`，Cloud 只采用与其当前序号相同的计数。这是 Xray 自己按用户的计数，是客户用量与公平使用判定的唯一来源。
-- `splice`：`off` 表示 Xray 不走内核直传，Vision 下载随传随计；`on` 表示走直传，Vision 连接的字节要到连接结束才一次计入；`null` 表示读不到 3x-ui 所运行的 Xray 进程。按 Xray 启动时的环境变量判断，与 Xray 的读法一致：`xray.buf.splice` 或 `XRAY_BUF_SPLICE` 设为 `auto`、`enable` 以外的值（包括空值）即关闭。只读出这一项，其他环境变量不读出也不上报。关闭方法见 [INSTALLATION.md](INSTALLATION.md)。
-- `connections`：`error_code` 与 `clients`。`clients` 每项为 `email` 与 `connections`（下文连接账本当前绑定到它的 TCP 连接数，不含 UDP），只列有连接的受管客户端；`error_code` 为 null 时，没列出的即没有连接。`xui_log_unavailable` 表示读不到访问日志，新连接认不出、已认出的照常计；`xui_connections_unavailable` 表示读不到内核连接信息。非 null 时连接数可能偏少。
-
-秘密集中的部分按白名单复制，3x-ui 以后新增的字段也不会带出：settings 只保留 VLESS 的 `encryption`，Shadowsocks 的 `method`、`password`、`network`，Hysteria 的 `version`；stream_settings 的 `tlsSettings` 只保留 `serverName`、`alpn` 和 `settings` 中的 `fingerprint`、`allowInsecure`、`echConfigList`，`realitySettings` 只保留 `serverNames`、`shortIds` 和 `settings` 中的 `publicKey`、`fingerprint`、`serverName`、`spiderX`、`mldsa65Verify`；其余传输字段只保留 `externalProxy`、`finalmask`（客户端也须使用的混淆设置）和 `tcpSettings.header.type`，其他（例如服务端的 `hysteriaSettings.auth`）都不上报。其他协议的 settings 为空对象，stream_settings 只有 `network` 与 `security`。其他用户的凭据、服务端私钥与密码、ECH 服务端密钥、Reality 种子与证书不离开节点。
-
-`connection_records.batch` 把访问日志里受管客户端的每一行（一次请求）作为一条记录上报，供 Cloud 留作审计。`records` 最多 1000 条，`dropped` 为上一批以来因积压丢弃的条数。
-
-- **开始记录**：每条新读到、带可读时间和可读目标的受管客户端日志行立即产生一条，必须且只能包含：`at`（行上写的时间，按本机时区解析，以 UTC、RFC 3339、6 位小数表示）、`email`、`source`（来源 `IP:端口`，IPv6 带方括号；经中转时是中转机）、`network`（目标的 `tcp`/`udp`；行上没写时为空串，Shadowsocks 2022 的行从不写）、`host`（目标域名或 IP，只含字母、数字与 `.-_:`，最长 255）、`port`、`outbound`（出站标签，最长 128）、`blocked`（该出站在 Xray 正在运行的配置里协议为 `blackhole`，与名字无关）。
-- **结束记录**：某行绑定的 TCP 连接按上文账本确认关闭并再保留 30 秒后，同一行再发一条，另带 `ended_at`、`up`、`down`（这条连接建立以来的全部字节，认出主人之前的也算：账本每 0.5 秒读一次它的 `tcp_info`，`bytes_acked` 为下行、`bytes_received` 为上行，都含协议开销，关闭时按内核的关闭通知补上最后一段，通知丢失时少计最后不到 0.5 秒）与 `requests`（日志在这条连接上记下的请求数，含绑定的那一行；多路复用时大于 1，流量属于整条连接而不是第一个目标）。这四个字段同时出现或同时缺失；结束记录的 `network` 与开始记录相同，行上没写时为 `tcp`（这样的行是它那条 TCP 连接上的 TCP 请求）。没有绑定 TCP 连接的行（UDP 流、未认出的连接）只有开始记录；Agent 启动时已开着的连接也没有结束记录：启动前它上面有过哪些请求已不可知，流量分不到具体目标。
-- Cloud 以节点、`at` 与 `source` 识别一条记录：开始记录重复到达不改变任何东西，结束记录补上结束字段，先到也可以。所以重发和 Agent 重启后补发都没有副作用。
-- 打开日志时读到的旧行（Agent 启动或日志重新打开）不产生开始记录，上一个进程已经发过；它们照常用来认出仍开着的连接（同时收 TCP 和 UDP 的入站除外），但 Agent 启动时就开着的连接没有结束记录（见上文结束记录）。Agent 停止期间写下的行因此没有记录；停止前 30 秒内关闭的连接（账本还为晚到的行留着它）没有结束记录。
-- 每 10 秒或攒满 1000 条时发一批；同一时间只有一批等待回执，未确认的批次在下一次定时或连接 ready 时以同一 `report_id` 重发。内存里最多积压 20000 条，超出时丢最旧的。记录不写盘，更新或重启时未发出的会丢失。Cloud 写入一批失败时记错误日志并照常回执，这批丢失，不为此断开节点连接（记录是允许丢的数据，见 Cloud ADR 0098）。
-
-`routing.outbound_health`（出站检测，开了 `routing` 模块的节点才发）每 5 分钟一轮，Agent 启动后先测一轮：读面板的 Xray 模板，对其中每个 `ak-o-` 出站依次调用 3x-ui 2.9.4 的出站测试（`POST panel/xray/testOutbound`，表单 `outbound` 为这个出站，`allOutbounds` 为模板的全部出站，与面板自己的测试页相同）。面板为此临时起一个 Xray，经这个出站访问面板设置里的出站测试地址，不碰正在运行的 Xray；面板同一时间只做一个测试。出站检测用自己的面板会话，测试的几秒不挡住其他模块的面板调用。`outbounds` 按模板顺序列出每个 `ak-o-` 出站，每项必须且只能包含 `tag`、`up`、`delay_ms`：
-
-- 测通：`up` 为 true，`delay_ms` 为面板测得的毫秒数（第二次请求的耗时）；
-- 经出站的请求失败（面板错误以 `Request failed` 开头）：`up` 为 false，`delay_ms` 为 null；
-- 面板没能测（已有测试在运行、临时 Xray 没起来、面板调用失败）：两者都为 null，不代表出站好坏。
-
-模板里没有 `ak-o-` 出站时 `outbounds` 为空数组；读不到模板的一轮不发。面板的错误原文可能含出站服务器地址，不上报、不写日志。只保留最新一轮，未确认的上一轮被新一轮取代，同一轮在连接 ready 时原样重发。
-
-`firewall.status`（开了 `firewall` 模块的节点才发，模式为 `off` 时也发）每分钟一次，连接 ready 后立即发；只保留最新一份，未确认的旧一份原样重发，内容变了才被取代。data 必须且只能包含：
-
-- `mode`：节点此刻实际装着的模式（`off`/`observe`/`enforce`）。
-- `ssh_ports`：sshd 进程实际在监听、且不只在回环或链路本地地址上的 TCP 端口，升序，最多 16 个；认不出（例如 sshd 由 socket 单元启动）时为空数组。
-- `panel_port`：开了 `xui` 时面板地址里的端口，否则 null。
-- `listening`：不只监听回环或链路本地地址的 TCP 监听端口和未连接的 UDP 端口，每项 `protocol`、`port`，按协议、端口排序，最多 256 项。DHCP 客户端收回答的 UDP 68、546 不列：它们的回包已由保底或已建立连接放行，不是要决定放不放的服务。
-- `conntrack`：`count` 与 `max`；连接跟踪没加载时为 null。
-- `hits`：`final`、`ceiling`、`truncated`。`final` 每项为 `protocol`、`packets`，TCP/UDP 另带 `port`，`icmp`/`icmpv6` 另带 `type`，其他协议的 `protocol` 是十进制协议号；`ceiling` 每项为 `source`、`protocol`、`port`、`packets`。`truncated` 为 true 表示某个记录集合已满，有命中没记下。没有表时都为空。
-- `domains`：当前目标里每个域名的 `name`、`addresses`、`resolved_at`（最后一次成功解析，RFC 3339，从未成功为 null）、`failed`（最后一次解析失败或为空）。
-- `foreign_tables`：本机其他 nftables 表的“族 名字”，最多 32 个，只读名字，不读内容。
-
-`metrics.sample`（开了 `metrics` 模块的节点才发）每分钟一份，连接 ready 后立即发一份；只保留最新一份，未确认的被下一份取代，不排队。只读 `/proc`、`/sys` 与 `/etc/os-release`，另在进程启动后运行一次 `systemd-detect-virt`。网卡计数是开机以来的累计，由 Cloud 按 `boot_id` 求差算出流量（Cloud ADR 0113），Agent 不在本机存状态。data 必须且只能包含下列各项，字节一律是整数：
-
-- `boot_id`：`/proc/sys/kernel/random/boot_id`。
-- `uptime_seconds`：`/proc/uptime` 第一项，取整。
-- `cpu`：本进程相邻两次读 `/proc/stat` 第一行之间的忙碌占比：1 − Δ(idle + iowait) ÷ Δ(user + nice + system + idle + iowait + irq + softirq + steal)，乘 100，保留一位小数，限定在 0–100（有的内核 iowait 会倒退）；进程启动后的第一份为 null。
-- `load`：`/proc/loadavg` 前三项。
-- `memory`、`swap`：各为 `total` 与 `used`（`/proc/meminfo`）：内存已用 = MemTotal − MemAvailable，交换已用 = SwapTotal − SwapFree，与 `free` 相同。
-- `disk`：`total` 与 `used`。取 `/proc/self/mounts` 里来源以 `/dev/` 开头、且不是 `/dev/loop*` 的挂载，逐个 statfs，按挂载点所在的设备号去重（Agent 的沙盒和绑定挂载让同一文件系统出现在多处）；总量 Σ blocks × frsize，已用 Σ (blocks − bfree) × frsize，与 `df` 相同；沙盒遮住的挂载点（`/home`、`/root`、`/run/user` 下的）读不到，跳过，不影响整份；一个都没有时两项为 0。
-- `connections`：`tcp` 为 `/proc/net/sockstat` 的 TCP inuse 加 `sockstat6` 的 TCP6 inuse，`udp` 同理取 UDP 与 UDP6；不含 TIME-WAIT，没有 `sockstat6`（IPv6 关闭）时按 0 算。
-- `processes`：`/proc` 下纯数字目录的个数。
-- `interfaces`：每项 `name`、`rx_bytes`、`tx_bytes`（`/sys/class/net/<名字>/statistics/`）。只算 `/sys/class/net/<名字>/device` 存在的网卡，包括虚拟化的 virtio 网卡；docker、veth、WireGuard、tun、网桥、bond 没有硬件设备，不算，免得同一份流量计两遍。一块都没有时（OpenVZ、LXC 这类容器 VPS）改算 IPv4 与 IPv6 默认路由所在的网卡。按名字排序，最多 16 块，可以为空数组。
-- `system`：`os`（`/etc/os-release` 的 PRETTY_NAME，读不到为 null）、`kernel`（`/proc/sys/kernel/osrelease`）、`arch`（uname 的 machine，例如 `x86_64`）、`cpu_model`（`/proc/cpuinfo` 第一个 `model name`，没有为 null）、`cpu_cores`（`/sys/devices/system/cpu/online` 列出的 CPU 个数）、`virtualization`（`systemd-detect-virt` 的输出，`none` 也照报：没有虚拟化时它输出 `none` 并以 1 退出；运行失败为 null）。
-
-除写明可为 null 的项以外，任何一项读不到，这一分钟就不发，只在开始读不到时记一次日志。
+- **`xui.snapshot`**：`inbounds` 含 `id`、`remark`、`protocol`、`listen`、`port`、`enable`、`settings`、`stream_settings`（秘密按白名单提取：settings 仅 VLESS `encryption`、SS `method/password/network`、Hysteria `version`；tlsSettings 仅 `serverName/alpn/settings.{fingerprint,allowInsecure,echConfigList}`；realitySettings 仅 `serverNames/shortIds/settings.{publicKey,fingerprint,serverName,spiderX,mldsa65Verify}`；其余只含 `externalProxy`、`finalmask`、`tcpSettings.header.type` 等公开传输项，拒绝带出服务端私钥/密码/auth）。`traffic` 含 `email`、`up`、`down`、`reset_seq`（仅同序号才 adopt）。`splice` 为 `off`/`on`/`null`（按 Xray env `xray.buf.splice`/`XRAY_BUF_SPLICE` 判，关闭见 [INSTALLATION.md](INSTALLATION.md)）。`connections` 含 `error_code`（`xui_log_unavailable` / `xui_connections_unavailable`）与有连接的 `clients`（`email`、`connections`）。
+- **`connection_records.batch`**：Cloud 按 `(节点, at, source)` 幂等识别（先结束再开始或重发均无副作用；落盘失败照常 ack 允许丢失，Cloud ADR 0098）。**开始记录**必含 `at`（本机时区解析转 UTC RFC3339 6 位小数）、`email`、`source`、`network`（`tcp`/`udp` 或空串）、`host`（≤255）、`port`、`outbound`（≤128）、`blocked`。**结束记录**对已绑定且关闭后保留 30 秒的 TCP 连接再补 `ended_at`、`up`、`down`（内核 `bytes_received`/`bytes_acked` 含开销）、`requests`（4 项同现或同缺；行无 `network` 的结束记录补 `tcp`）。启动前旧行、停机期间与停机前 30 秒内关闭的连接无开始/结束记录；不写盘，重启清空。
+- **`routing.outbound_health`**：对模板内 `ak-o-` 出站依次调 `POST panel/xray/testOutbound`（独立面板会话）；通 `up=true`+`delay_ms`，面板报 `Request failed` 为 `false`+`null`，测不了（忙/未起/错）双 `null`。空 `ak-o-` 发空数组；读不到模板不发；面板错误不外泄。
+- **`firewall.status`**：`mode`（实际加载）；`ssh_ports`（非回环/链路本地监听 TCP ≤16）；`panel_port`；`listening`（非回环/链路本地 TCP+未连 UDP ≤256，不含 DHCP 68/546）；`conntrack`（`count`/`max` 或 `null`）；`hits`（`final`、`ceiling`、`truncated`）；`domains`（`name`、`addresses`、`resolved_at`、`failed`）；`foreign_tables`（`族 名` ≤32 只读名）。
+- **`metrics.sample`**：字节均为整数。`boot_id`；`uptime_seconds`（`/proc/uptime` 取整）；`cpu`（两轮 `/proc/stat` 忙碌占比 0–100 保留 1 位小数，首轮 `null`）；`load`（`/proc/loadavg` 前 3 项）；`memory`/`swap`（`MemTotal-MemAvailable`、`SwapTotal-SwapFree`）；`disk`（`/proc/self/mounts` `/dev/` 非 loop 按设备号去重跳过沙盒遮挡目录，全无为 0）；`connections`（`sockstat`+`sockstat6` inuse 不含 TIME-WAIT）；`processes`；`interfaces`（有 `/device` 硬件网卡统计按名排序 ≤16 块；容器无硬件设备退化为默认路由网卡）；`system`（`os`、`kernel`、`arch`、`cpu_model`、`cpu_cores`、`virtualization`——`systemd-detect-virt` 输出 `none` 时照报）。除标明可 `null` 项外任一读取失败本轮不发且记一次日志。
 
 ## IP 观察、ChangeIP 与 IPv4 核对
 
-节点是自身地址的权威，Cloud 保存地址历史。`ip.address` 表示“节点现在的地址”：Cloud 采用它，与自己所持地址不同时以 Cloud 所持地址为 previous 记录一次变化；不因地址不一致或时间而拒绝。地址必须与 family 匹配且为对应协议族的公网地址；IPv6 在比较和持久化前规范化文本，并按固定 IANA special-purpose policy 拒绝非 globally reachable 地址，Cloud 还要求节点配置开启了 IPv6 观察。节点时间（`observed_at`、`checked_at`，包括 `operation.result` 中的）只用于同一节点事实的排序与展示，超前主控或不晚于上一条事实时改用主控时间。
+节点是自身公网地址权威，Cloud 存历史。`ip.address` 必须匹配 `family` 且为公网地址（IPv6 规范化文本并按 IANA special-purpose 拒非 globally reachable，Cloud 亦要求开启 IPv6 观察）；`observed_at`/`checked_at` 仅同节点排序展示，超前或倒退由主控校正。每次重启或 WSS ready 先报当前地址，此后仅变化时上报（本地不留历史）。**当前会话 IPv4 确认前不接 ChangeIP**；IPv6 独立不触发 `changeip.unchanged`、不重置缓存、不挡业务。
 
-每个 Agent 进程与每次业务连接进入 ready 后，Agent 都先重新观察并上报当前地址，此后只在地址变化时上报。Agent 不在本地保存地址；未确认的上报被新会话的上报取代。IPv4 地址上报在当前会话被确认前，Agent 不接受新的 ChangeIP，Cloud 收到 IPv4 上报后立即重新下发待执行 command。IPv4 与 IPv6 各自独立；IPv6 无地址、探测失败或暂时不可达不发送消失事件，也不影响 IPv4、ChangeIP、IPQuality 或 SOCKS5。
-
-`command_id` 只用于 IPv4：节点为某次 `changeip.execute` 触发 provider 后，核对期间看到的地址变化带上该 command，Cloud 在该次换 IP 仍进行且起始地址就是自己所持地址时把它记为这次换 IP 的结果；消息可以先于 `operation.result` 到达。不带 `command_id` 的变化都是自然变化，即使同时有换 IP 在进行；带了但对不上的变化也按自然变化记录并记日志。
-
-核对期间 Agent 每 10 秒观察一次；若触发两分钟后连续两次成功观察仍是触发前 IP，Agent 发送 `changeip.unchanged`。网络失败不计确认次数。核对状态持久保存在节点上，直到它的结果（带 `command_id` 的 `ip.address` 或 `changeip.unchanged`）被确认；进程重启后重发同一结果，不会变成自然变化。AkastrCloud 对已成功或未变化的换 IP 只投影一次终态；没有 Agent 结果时，业务换 IP 仍在 45 分钟到期时收敛，并同步终结尚未 accepted 的 command。
-
-## 自然 IP 变化
-
-自然 IPv4 变化按既有私聊订阅条件通知；IPQuality 缓存以 IP 变化记录为界自然失效；协议没有 Telegram channel delivery。IPv6 变化始终是自然变化，不重置 IPQuality，只写入 `/iplog` 数据源，不发送主动通知。
+核对期间 Agent 每 10 秒测一次，触发 2 分钟后连续 2 次仍为原 IP 发 `changeip.unchanged`（网络报错不计次）。带 `command_id` 且起始相符的变化收敛对应换 IP（可先于 `operation.result` 到）；核对状态持久保存在节点直到结果被 ack。无 `command_id` 的变化（及所有 IPv6 变化）均按自然 IP 变化处理。
 
 ## 安全边界
 
-- 协议固定为 `2026-11-01.v12`，不自动降级，也不接受协议之外的字段。
-- bootstrap/enrollment 使用机器 token，WSS 与更新检查只使用本地 Ed25519 private key；机器 token 不进入 WSS query、frame、更新请求或服务端日志。
-- 后台安装命令可以包含长期机器 token，但不得包含 SOCKS5 password 或 ChangeIP bearer；token 不得写入 URL。
-- 上报和普通日志不得含密码、原始链接或脚本输出。受管客户端凭据只出现在 Cloud 下发的 `state.put` 中，Agent 不写入磁盘或日志。
-- 公网 IPv4 字段拒绝 private、loopback、link-local、CGNAT、文档/基准测试、组播和保留网段。
-- Agent 不实现任意命令、远程 shell 或 HTTP 控制端点；唯一例外是默认关闭的 `diagnostics` 模块，它只在[诊断](#诊断)所述的只读沙盒里运行脚本。
-- 修改认证、消息字段、持久 payload 或发布边界时，仍须按 Cloud ADR 0024 在实施前批准；共享契约变化核对双方实现，仅修改实际受影响的一侧或双方。跨仓库验证范围见 Cloud `docs/AGENT_INTEGRATION.md`。
+- 协议固定 `2026-11-01.v12`，不自动降级、不收协议外字段。
+- 机器 token 只用于 bootstrap/enrollment 且不进 URL/WSS/更新/日志；日常认证全用本地 Ed25519 私钥。
+- 安装命令不含 SOCKS5 密码或 ChangeIP bearer；普通日志与上报不含密码、原始链接、Xray 秘钥或脚本输出；受管客户端凭据只在下发 `state.put` 中存在，不落盘不记日志。
+- 公网 IP 字段拒绝 private、loopback、link-local、CGNAT、文档/基准、组播与保留段。
+- 除默认关闭且按 [诊断](#诊断) 沙盒运行的 `diagnostics` 外，不实现任意命令、远程 shell 或 HTTP 控制端。
+- 认证、字段、持久 payload 或升级边界变更须按 Cloud ADR 0024 审批；跨仓库验证范围见 Cloud `docs/AGENT_INTEGRATION.md`。

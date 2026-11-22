@@ -1,10 +1,13 @@
 # Akastr Agent 架构
 
+> **分段读取索引**（单模块任务只用行范围按需读取对应小节）：
+> §1 进程模型(L6) · §2 主控边界(L14) · §3 目标节点网络模型(L27) · §4 包职责(L42) · §5 本地操作状态(L81) · §6 公网IP观察(L89) · §7 SOCKS5与IPQuality(L101) · §8 安装与自动更新(L111) · §9 节点接入边界(L131)
+
 ## 1. 进程模型
 
 每个安装实例只存在一个 `akastr-agent.service` 和一个 Go 主进程。主进程主动连接 AkastrCloud 的 WSS 控制端点，并在内部检查主控批准的更新（见第 8 节）；节点没有额外 updater service、timer 或常驻辅助进程，也不开放通用管理 HTTP 服务。实例只公布配置中明确启用的能力。
 
-每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、3x-ui 客户端管理、限速、连接记录、路由、诊断、防火墙、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点，模块可以任意组合，只受技术依赖约束（ChangeIP 需要公网 IP 观察，限速与连接记录需要 3x-ui 客户端管理）；Runner 可以有多台，由 Cloud 分配检测。
+每项能力是一个可单独开关的模块：公网 IP 观察、ChangeIP、SOCKS5 端点描述、3x-ui 客户端管理、限速、连接记录、路由、诊断、防火墙、监控、IPQuality Runner。节点配置里出现哪个模块就启用哪个（格式见 [PROTOCOL.md](PROTOCOL.md#节点配置与模块)）。同一个二进制服务所有节点，模块可以任意组合，只受技术依赖约束（ChangeIP 需要公网 IP 观察；限速、连接记录与路由需要 3x-ui 客户端管理）；Runner 可以有多台，由 Cloud 分配检测。
 
 项目只发布 Debian 12/13 amd64 binary 和版本专用的 `install.sh`。节点由后台先创建，得到节点 UUID 与长期机器 token；provider secret 只在以机器 token 加密的持久 bootstrap 里，不以明文进入 PostgreSQL。节点上的配置就是 Cloud 下发的 bootstrap 明文，Agent 不再转写成第二种格式。配置有单调的 desired/applied revision，两者不等时 Cloud 不派发操作；配置更新由主进程自动取回收敛，不需要重跑安装命令。
 
@@ -48,16 +51,21 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/lifecycle`：command execution 与自动更新共用的进程级 lease；不保存持久业务状态。
 - `internal/modules/ipwatch`：通过固定 HTTPS 来源独立观察公网 IPv4/IPv6，并持久保存各自尚未确认的事实及活动 ChangeIP 核对状态。
 - `internal/modules/changeip`：换 IP 模块；统一描述明确触发、结果未知和明确失败，子包 `httpcurl` 只接受固定 curl 配置与 HTTP `200`，`command` 不经 shell、不带参数运行配置指定的本机程序。
-- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端，每分钟上报快照：入站、受管客户端的流量（Xray 自己的计数，客户用量的唯一来源）、连接账本里它们的 TCP 连接数，以及 Xray 是否走内核直传（直传时 Vision 下载要到连接结束才计入）。
-- `internal/xray`：本机 Xray 的共用读取，不认识任何模块，同一份日志只读一次，由 `internal/app` 分给账本和连接记录。`process` 找到 3x-ui 所运行的唯一 Xray 进程（面板读版本号、出站检测临时起的 `xray_test_*.json` 与 Agent 自己运行的不算），读出它的程序、配置文件路径、geo 文件位置和是否直传（环境变量只读这两项）；`accesslog` 跟读 3x-ui 所运行 Xray 的访问日志（截断时从 3x-ui 的副本补读），逐行交出“入站端口 + 来源地址:端口 → 用户”以及原始时间、目标、出站和是否进了 `blackhole` 出站（读 Xray 正在运行的配置得知），不保存连接；`ledger` 是唯一的连接账本：把这些行绑定到内核的 TCP 连接上，数出每个用户当前的连接，把每个用户的连接与 UDP 流交给限速，并在绑定的连接确认关闭后告诉连接记录它的那一行、按内核计数的流量和承载的请求数。它不汇总用户流量。
-- `internal/panel`：本机 3x-ui 面板的客户端，`xui` 与 `routing` 模块共用一个登录：列入站、增删改客户端、重置流量、读写 Xray 模板、经面板重启 Xray。路径和请求体都固定在这里，Cloud 不能指定。
-- `internal/modules/routing`：把 Cloud 算好的整台节点路由（默认出站、`ak-o-` 受管出站和规则表）先写进 3x-ui 的 Xray 模板，再用运行中那个 Xray 程序的 `api` 子命令热更新；什么时候经面板重启 Xray 见 [PROTOCOL.md](PROTOCOL.md#routing)。配置经标准输入交给 Xray，不落盘。它在进程外留下的状态是模板和运行配置，关闭或卸载时保留（Cloud ADR 0099）。每 5 分钟还用面板自带的出站测试把每个 `ak-o-` 出站测一遍并上报（`routing.outbound_health`，Cloud ADR 0106），测试用面板临时起的 Xray，不碰运行中的那个。
-- `internal/modules/diagnostics`：在一次性 systemd 沙盒里运行 Cloud 转来的诊断脚本（Cloud ADR 0102）：临时用户、只多给读取任何文件的权限、整个文件系统只读（临时目录在内存里）、写不进 journal、连不上本机端口（每次运行前先探测，挡不住就不跑）、有时间与资源上限，脚本结束时单元连同它启动的进程一起消失。一次只跑一个；输出只回答一次，不落盘、不进日志。进程外留下的是运行中的单元：会话结束或到时限时停掉，更新换进程或崩溃后由下一个进程启动时停掉（模块关闭时也停），没有 Agent 时由单元自己的时限结束；卸载先停服务，同样停掉。
-- `internal/modules/connectionrecords`：把受管客户端的日志行和连接结束事件变成记录，在内存里有界排队、分批上报；不写盘。
-- `internal/hostroute`：读本机各路由表里 IPv4、IPv6 默认路由所在的网卡，限速、防火墙与监控共用；不认识任何模块。
-- `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
-- `internal/modules/ratelimit`：按目标把指定用户的下载限速。按连接账本中的连接与 UDP 流，在默认路由网卡的 clsact egress 上加 flower 过滤，同一组共用一个 police；失败时撤掉自己的全部规则（宁可不限）。
-- `internal/modules/firewall`：把 Cloud 算好的入站筛选与端口转发目标渲染成一张 nftables 表 `inet akastr_firewall`（骨架与顺序在 Agent，Cloud 只给带类型的事实，见 [PROTOCOL.md](PROTOCOL.md#firewall)），规则经标准输入交给固定路径的 `nft`。改表前后各新开一条到控制地址的连接确认 Cloud 可达，装上后连不通就装回上一份，并记住这份目标不再重装；只有集合成员变化（域名解析结果、地址增减、转发增删改、默认路由换网卡）时在一个事务里替换成员，不换表也不探测。转发成员每次应用都先同步，不受“失败不再重装”卡住；转发改目标或删掉后，经 netlink 删掉还走旧目标的连接跟踪记录。连接跟踪上限与 IPv4 转发开关经一次性 root 单元调整（本模块仅有的高权限动作，程序与参数固定）。每分钟上报 `firewall.status`：实际模式、sshd 端口、监听端口、连接跟踪用量、命中记录、域名解析结果与本机其他表的名字。进程外留下的是这张表、调高的连接跟踪上限、打开的转发开关和 `StateDir/firewall/state.json`：正常停止、更新换进程和崩溃时都原样保留（Agent 每次发布和改配置都会重启，照限速“启动即清理”会让落地机每次发布都暴露、转发线路每次都断），新进程见表在就不动，机器重启后（转发开关随重启关闭）先开转发开关再按状态文件装回，控制连接等这一步做完才建立（模块实现 `module.Starter`）；模块关闭后，下一个进程按记录关回自己打开的转发开关、删表、清理转发的旧连接、删状态目录；卸载在删除程序前删表并关回自己打开的转发开关。转发开关只在状态文件记着“这次开机由本 Agent 打开”时才关，Docker 这类本来就开着转发的机器从不关。连接跟踪上限保留到机器重启（Cloud ADR 0109 接受的残留）。
+- `internal/modules/xui`：按目标对齐本机 3x-ui 中 `ak-` 前缀的受管客户端（不接管其他客户端，也不生成链接），每分钟上报入站、Xray 流量计数、TCP 连接数与是否走内核直传。唯一持久文件为 `StateDir/xui/state.json`：记录已执行的流量重置序号（写盘失败时留内存并于下一轮补写，避免重复清零）以及 Shadowsocks 2022 写入后的待重启标记（先写盘再改面板）；文件缺失视为空状态，损坏或残缺拒绝启动。
+- `internal/xray`：本机 Xray 共用读取，不认识任何模块，由 `internal/app` 分给账本与连接记录：
+  - `process`：定位 3x-ui 所运行的唯一 Xray 进程（排除面板测版本、临时 `xray_test_*.json` 与 Agent 自起进程），读取程序路径、配置路径、geo 目录与是否关闭直传（环境变量只读这两项）。
+  - `accesslog`：每 0.25 秒跟读访问日志新行（截断时从 `/var/log/x-ui/3xipl-ap.log` 补读，首次打开先读副本尾），每 5 分钟及遇到未知入站标签时重读面板入站清单；日志时间按本机时区解析（偏差超 1 分钟按读取时刻算）。
+  - `ledger`：唯一内存连接账本，每 0.5 秒经 `sockdiag` 读内核 TCP 连接并监听关闭通知，将日志行 1 对 1 绑定至连接，统计活跃连接数及连接关闭后的字节与请求数。模糊不归属、宁漏不误算：打开日志后 10 秒内纯 TCP 入站启动前已有连接按同地址最新行归属，出现多用户争议则该连接直至关闭不归任何人；同时开启 TCP+UDP 的入站启动时丢弃旧行且启动前连接不归属，启动后遇两用户同地址争议即弃权；同 `来源地址:端口` 同时连入本机不同地址同一端口时双双不绑定；UDP 入站或未绑定 TCP 的可走 UDP 入站行计为 UDP 流，2 小时过期。
+- `internal/panel`：本机 3x-ui 面板客户端，`xui` 与 `routing` 共用一套面板路径与请求体；`routing` 的出站测试使用独立面板会话。
+- `internal/modules/routing`：将 Cloud 下发的路由模板（默认出站、`ak-o-` 受管出站与规则表）写回 3x-ui Xray 模板，并用运行中 Xray 的 `api` 子命令热更新（重启条件见 [PROTOCOL.md](PROTOCOL.md#routing)）；配置经 stdin 传递不落盘，每 5 分钟测一次 `ak-o-` 出站并上报 `routing.outbound_health`（临时测试不碰主进程）。关闭或卸载时保留最后写入的配置交还面板（Cloud ADR 0099）。
+- `internal/modules/diagnostics`：在一次性 systemd 沙盒里运行 Cloud 转来的诊断脚本（Cloud ADR 0102，动态用户、只读文件+内存 TMPDIR、禁写 journal、先探测后禁本机端口、有时间资源上限）。一次仅一条，结果只内存中返回一次；会话结束、超时、模块关闭、崩溃重启或卸载时停掉 `akastr-diagnostics-*` 单元。
+- `internal/modules/connectionrecords`：将受管客户端日志行与连接结束事件转为记录，内存有界排队（最多 20000 条）分批上报，不写盘。
+- `internal/hostroute`、`internal/sockdiag`、`internal/netpolicy`：分别为默认路由网卡发现、`netlink sock_diag` TCP 统计/关闭订阅、以及 IPv4/IPv6 公网可达地址校验（供 `ipwatch`、`ipqualityrunner/script` 与 `protocol` 共用）。
+- `internal/modules/ratelimit`：按连接账本在默认路由网卡 `clsact egress` 上为目标用户的 TCP 连接与 UDP 流挂 `flower` + 共用 `police` 限速；失败即撤回全部本模块规则（宁可不限），重启或关闭由 `Leftovers` 清理标记优先级与句柄。
+- `internal/modules/firewall`：按 Cloud 事实渲染单张 `inet akastr_firewall` 表，经 stdin 交固定路径 `nft`：
+  - 地址集/转发/默认路由网卡变化只在一个事务内替换成员；规则骨架或模式变化时整表替换，替换前后新开控制地址探测（20 秒内失败则自动回退并记失败摘要直到内容变化或 `retry` 递增）。
+  - 通过 `systemd-run` 一次性 root 单元调高 `nf_conntrack_max` 与开 `net.ipv4.ip_forward`（按 `boot_id` 记在 `StateDir/firewall/state.json`，仅由本 Agent 当次开机开启才在最后一条转发移除/关闭/卸载时关回），并用 netlink 删掉改删转发后的旧 DNAT conntrack 记录。
+  - **进程外状态**：正常停止、原地更新与崩溃均保留表、状态与开关；机器重启后进程实现 `module.Starter` 在建 WSS 前装回已确认表；模块关闭或卸载由 `Leftovers`/卸载器清表、清旧转发 conntrack、按 `boot_id` 关回开关并删状态目录（conntrack 上限保留至下次重启，Cloud ADR 0109）。
 - `internal/modules/metrics`：每分钟读一次 `/proc`、`/sys` 和 `/etc/os-release`，上报 `metrics.sample`（运行状态、带硬件设备的网卡的开机累计计数、基本信息）；`systemd-detect-virt` 每个进程只运行一次。上一份 CPU 读数只在内存里，流量增量由 Cloud 按开机编号求差，本机不存状态。
 - `internal/modules/ipqualityrunner/script`：用任务带来的 SOCKS5 登录执行 checksum 固定的 Bash 脚本；执行前后验证代理 IPv4，并有界解析输出。
 - `internal/identity`、`internal/protocol`、`internal/transport`：本地 Ed25519 身份和可重连的受控 WSS 通道。
@@ -119,8 +127,6 @@ Agent 程序内固定官方 IPQuality 脚本的 commit 与 SHA-256（`internal/m
 **进程与 service。** 唯一主 service 为 `Type=notify`、`ProtectSystem=strict`，只可写状态目录与 `/usr/local/lib/akastr-agent`。本地依赖损坏导致运行时构建失败时记录 `runtime_initialization_failed`，只保留更新检查，以便接收修复版本或配置。不提供手工 `--update` 或本地回退 CLI；身份或部署损坏时用后台一键命令修复。
 
 更新检查的请求/响应与 `version`、`prepare`、`run` 三个 CLI 是旧版本升级到新版本所依赖的稳定契约，改变它们须单独设计迁移方案。
-
-本机 3x-ui HTTP 适配集中在 `internal/modules/xui`，不新增监听端口。Cloud 计算每个受管客户端的业务目标（启停、上限、重置），Agent 只对齐 `ak-` 前缀的客户端，不接管其他客户端，也不生成链接。xui 唯一的持久文件是 `StateDir/xui/state.json`：每个客户端已执行的流量重置序号（防止重复清零），以及 Shadowsocks 2022 写入后尚未完成的 Xray 重启。待重启标记先写盘再写面板；重置记录在写盘失败时留在内存并在下一轮补写，因此不会重复重置。文件缺失视为空状态，内容不完整则拒绝启动。
 
 ## 9. 节点接入边界
 

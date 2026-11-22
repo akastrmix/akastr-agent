@@ -41,6 +41,7 @@ apt-get install --yes ca-certificates curl
 - 限速：需要同时开启 3x-ui，并按上一条开启访问日志；没开时后台显示“访问日志不可用”。限速规则见 [PROTOCOL.md](PROTOCOL.md#rate_limit)；
 - 连接记录：需要同时开启 3x-ui，并按上文开启访问日志；没开时没有记录。上报内容见 [PROTOCOL.md](PROTOCOL.md#上报与回执)；
 - 路由接管：需要同时开启 3x-ui。开启前在 3x-ui 面板做一次数据库备份，并在 Cloud 节点详情的“路由”里核对最终规则表；首次开启会经面板重启一次 Xray，之后在面板里改路由和出站不会长久生效（DNS 等其余设置照常）。关闭后保留最后写入的配置，交还面板手动管理。规则见 [PROTOCOL.md](PROTOCOL.md#routing)；
+- 诊断：默认关闭；开启后仅在主控打开 AI 授权期间接受一次性只读 systemd 沙盒脚本，输出不落盘、不进日志，规则见 [PROTOCOL.md](PROTOCOL.md#诊断)；
 - 防火墙：筛选发往本机的入站，并为“经前置机”的入口做端口转发；规则在 Cloud 的“策略 → 防火墙”和节点详情的“防火墙”里管理，开启模块后默认是“关闭”模式，没有转发时不装任何规则。有转发时 Agent 在运行时打开 IPv4 转发开关（不写配置文件，重启后由 Agent 重新打开）；装了 Docker 的机器上 Docker 会把过路的包挡掉，做不了前置机。需要节点上的 `nft`（Debian 包 `nftables`，有的服务商镜像不带）：安装命令会补装；在已装好的节点上后来才开启时，若没有 `nft`，节点不接受新配置，后台显示“节点不接受当前配置”，在节点上重跑安装命令即可。机器上已有 fail2ban 等别的规则表时保留它们。规则见 [PROTOCOL.md](PROTOCOL.md#firewall)；
 - 监控：新建节点时默认开启。每分钟上报 CPU、内存、硬盘、连接数和网卡流量计数，在 Cloud 节点详情的“监控”里查看，并可设置每月流量额度；只读系统数据，不需要安装别的软件。统计哪些网卡见 [PROTOCOL.md](PROTOCOL.md#上报与回执)，开启后在“监控”的基本信息里核对一次；
 - IPQuality Runner：见下文，可以开多台。
@@ -85,19 +86,17 @@ curl -fsSL 'https://origin.akastrmix.com/agent/install.sh?agent_id=节点UUID' |
 
 不要改写、拆分或公开这行命令。`/agent/install.sh` 只带节点编号、不接收安装码，以不缓存的 302 跳转到这台节点更新渠道（正式版或测试版，见 Cloud ADR 0101）当前批准版本的 GitHub Release installer；同一命令重跑会取得当时批准的版本，而非 GitHub latest，测试版节点重装也不会退回较旧的正式版。命令信任官方 HTTPS 入口及其固定版本 Release 跳转，发布流程验真 installer，installer 内部仍校验 Agent binary 的 SHA-256。
 
-安装码只是 `节点UUID.机器token` 的组合，不是新增凭据或短码兑换服务；脚本拆开后通过环境变量交给 Agent 程序，使用 HTTPS bootstrap `https://origin.akastrmix.com/internal/agents/bootstrap`。机器 token 是长期安装凭据，可能进入 shell history 和安装脚本参数，但不会写入节点磁盘，也不会用于 WSS 日常认证。命令不包含 ChangeIP Bearer、SOCKS5 密码或其他 provider secret。
+安装码是 `节点UUID.机器token`，只用于 HTTPS bootstrap 领取密封配置；不会写入节点磁盘、也不含 ChangeIP/SOCKS5 凭据或用于日常 WSS 认证。
 
-需要修改配置时点击“修改配置”。后台回填完整配置，包括 ChangeIP curl 原文与 SOCKS5 登录，密码可按需显示；在同一表单修改后保存。内容没有变化时不会更新版本或断开连接；真实修改会保留节点 ID、机器 token 与 identity，递增 configuration revision，并在新配置应用完成前暂停业务派发。保存时会核对你打开表单时的配置版本；若另一页面已修改，保留当前草稿并提示读取最新配置后重新确认。具体编辑契约见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。在线 Agent 会立即取回新配置自动应用；离线 Agent 在恢复连接后自动同步，不需要重新执行安装命令。只有人工修复或重装才再次获取同一条一键命令。安装器拒绝覆盖另一个节点的机器，也拒绝接手没有 identity 的执行状态；同节点重装会生成新密钥，但保留执行日志与 IP 状态，残缺状态通过重跑同一命令 fix-forward 收敛。怀疑命令泄露时点击“轮换密钥”，原命令立即失效。
+需要修改配置时在后台同一表单保存（内容无变化不断开连接；真实变更后在线节点立即自动更新、离线节点重连后同步，不需重跑一键命令；怀疑泄露点“轮换密钥”立即作废原命令），后台编辑契约见 [Cloud API](https://github.com/akastrmix/AkastrCloud/blob/main/docs/API.md#agent-控制通道)。
 
-安装过程完全非交互，自动校验程序与脚本、取得密封配置并注册节点。它只管理唯一的 `akastr-agent.service`，完成后仍须按第 5 节验收业务连接。内部安装与更新流程见[架构说明](ARCHITECTURE.md#8-安装与自动更新)。
+只有新增节点、人工修复或重装才运行一键命令。安装全程非交互、只管理唯一的 `akastr-agent.service`（拒绝跨节点覆盖或无 identity 状态；同节点重装保留执行日志与 IP 状态并重新生成身份密钥；注册失败不停止旧服务，中途失败修好后重跑同一命令 fix-forward；内部机制见 [架构说明](ARCHITECTURE.md#8-安装与自动更新)），完成后按第 5 节验收。
 
 成功时最后显示：
 
 ```text
 Akastr Agent <release-version> installed successfully.
 ```
-
-下载、配置校验、依赖准备和注册都在停止现有 service 前完成；注册失败时旧 Agent 照常运行。注册成功后安装器才停止旧 service、切换到新部署并启动。中途失败不回滚，按报错修复后重跑同一命令。新节点、人工重装和残缺安装使用相同路径；普通配置变更使用第 7 节的自动更新。
 
 ## 4. 文件与权限
 
@@ -108,6 +107,7 @@ Akastr Agent <release-version> installed successfully.
 /var/lib/akastr-agent/state.json
 /var/lib/akastr-agent/changeip-reconciliation.json（仅在换 IP 核对期间存在内容）
 /var/lib/akastr-agent/update-attempt.json（仅在更新失败后出现）
+/var/lib/akastr-agent/xui/state.json（仅在开了 3x-ui 模块时存在）
 /var/lib/akastr-agent/firewall/state.json（仅在开了防火墙模块时存在）
 /usr/local/lib/akastr-agent/current -> slots/a 或 slots/b
 /usr/local/lib/akastr-agent/slots/{a,b}/{akastr-agent,config.json}
@@ -153,7 +153,7 @@ systemctl restart akastr-agent.service
 
 ## 7. 更新、状态与卸载
 
-普通配置修改不需要重新运行安装命令。在 Cloud 的添加/编辑表单管理同一套完整参数，curl 原文、脚本路径/参数和 SOCKS5 登录会回填；Cloud 加密保存，管理员读取时解密，密码可显示。节点上的自定义程序由操作者准备。新增 Agent 功能由维护者发布新版本。两种变更都由主控保存为节点的目标版本与配置，再由 Agent 自动应用：
+普通配置修改或 Agent 版本发布均通过自更新自动收敛（节点每 60 秒及断线重连后检查；同目标连败 2 次后每 6 小时重试，修好后重保存或发新版可立即重触发，无需重跑一键命令，内部机制见 [ARCHITECTURE.md](ARCHITECTURE.md#8-安装与自动更新) 与 [PROTOCOL.md](PROTOCOL.md#更新检查)）：
 
 ```mermaid
 flowchart TD
@@ -170,7 +170,7 @@ flowchart TD
     G -->|失败| I[systemd 自动回到旧版本]
 ```
 
-节点每 60 秒也会检查一次，离线节点恢复连接后自动同步；正在执行任务时等待空闲。同一版本/配置最多连续试两次；两次都失败时后台节点详情显示失败原因，节点保留旧版本，六小时后自动再试一次。修复后发布新版本或保存新配置会立即重新尝试，也可以在节点上重跑后台一键命令。协议与提交顺序见 [PROTOCOL.md](PROTOCOL.md#更新检查)。
+离线节点恢复连接后自动同步，正在执行任务时等待空闲；失败原因见后台节点详情或本机最近日志：
 
 ```bash
 journalctl -u akastr-agent.service -n 100 --no-pager
@@ -223,6 +223,6 @@ curl -fsSL https://<AkastrCloud 主控>/agent/install.sh | sh -s -- --uninstall 
 
 ## 9. 维护者发布版本
 
-正式发布的命令、前置条件、CI 验真与重跑流程统一见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围与操作者配置)。节点在同协议或破坏性业务协议发布后都通过更新检查自动更新，不要求逐节点重装。若更新检查、下载目标或候选程序 CLI 本身不兼容，须另行批准迁移方案。不要绕过同步发布器手工打标签或修改 Cloud pin。
+正式发布的命令、前置条件、CI 验真与重跑流程统一见 [Cloud Agent 发布指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#7-agent-发布)。节点在同协议或破坏性业务协议发布后都通过更新检查自动更新，不要求逐节点重装。若更新检查、下载目标或候选程序 CLI 本身不兼容，须另行批准迁移方案。不要绕过同步发布器手工打标签或修改 Cloud pin。
 
 每个版本使用独立的 `releases/download/vX.Y.Z/...` 地址。只有同步流程中的 Cloud backend 激活成功，节点的更新检查才会收到 `update_available`；系统不跟随 GitHub `latest`。发布动作不会创建节点或触发 ChangeIP/IPQuality。

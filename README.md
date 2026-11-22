@@ -1,116 +1,76 @@
 # Akastr Agent
 
-Akastr Agent 是 AkastrCloud 服务节点上的轻量被控程序。它以单个 Go 进程运行，由节点主动建立出站 WSS 连接；主控只能调用节点本地预先配置、带类型的能力，不能打开远程终端；唯一能运行任意脚本的是默认关闭的诊断模块，它在只读的一次性沙盒里执行，改不了节点上的文件；但它读得到凭据、能联网，经网络登录面板这条路没有堵（Cloud ADR 0102）。
+Akastr Agent 是 AkastrCloud 服务节点上的轻量被控程序。它以单个 Go 进程（`akastr-agent.service`）主动建立出站 WSS 连接，只执行本机预配置、协议允许的 typed operation，不提供 HTTP 控制面或远程终端；唯一例外是默认关闭的 `diagnostics` 模块，只在一次性只读 systemd 沙盒里运行诊断脚本（读得到凭据且可联网，输出不落盘、不进日志，见 Cloud ADR 0102）。
 
 > 节点操作只走 Akastr Agent；未接入、离线或暂停的节点会被主控安全拒绝操作。
 
-## 使用模型
+## 职责与模块
 
-Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台为持久节点生成的一行安装命令：
+Debian 12/13 amd64 节点的唯一推荐入口，是 AkastrCloud 后台生成的一行非交互安装命令（同节点重装和修复可重跑，跨节点覆盖与降级会被拒绝，信任边界与验收见 [安装教程](docs/INSTALLATION.md#3-添加节点并执行一键命令) 与 [安装后验收](docs/INSTALLATION.md#5-安装后验收)）。
 
-1. 管理员在后台添加节点，按需打开模块并填写参数；
-2. 操作者完整复制后台的一键命令到节点执行；
-3. 按[安装教程](docs/INSTALLATION.md#5-安装后验收)检查服务与业务连接。
+节点配置共 11 个可按需组合的模块（完整字段与消息契约见 [PROTOCOL.md](docs/PROTOCOL.md#节点配置与模块)）：
 
-安装全程非交互，不需要 Git、Go 或手写配置。命令含长期节点凭据，不要公开；同节点重装和修复可重跑，跨节点覆盖及降级会被拒绝。命令的信任边界、凭据轮换与修复方式见[安装教程](docs/INSTALLATION.md#3-添加节点并执行一键命令)。
+| 模块键 | 职责 | 前置依赖 / 说明 |
+|---|---|---|
+| `ip_watch` | 定时观测公网 IPv4 与可选 IPv6 并主动上报 | 无（ChangeIP 启用时强制锁定开启） |
+| `changeip` | 调用 HTTP `POST`（仅 `200` 为明确触发）或固定无参本机程序触发换 IP | 需要 `ip_watch` |
+| `socks5` | 公布已有 SOCKS5 代理端口与登录供主控派发 IPQuality（使用观测到的公网 IPv4） | Agent 不运行代理 |
+| `ipquality_runner` | 执行固定 commit 与 SHA-256 的官方 IPQuality 脚本（单并发，凭据随任务下发不落盘） | 见 [IPQuality Runner](docs/INSTALLATION.md#ipquality-runner) |
+| `xui` | 按目标管理本机 3x-ui 的 `ak-` 受管客户端，每分钟上报入站、流量、直传状态与 TCP 连接数 | 适配 3x-ui 2.9.4 / Xray 26.7.28 |
+| `rate_limit` | 按连接账本在默认路由网卡 `clsact egress` 用 `flower` + `police` 限制下载速率 | 需要 `xui` 与 Xray 访问日志 |
+| `connection_records` | 把受管客户端访问日志与连接关闭时的内核字节/请求数分批上报供审计 | 需要 `xui` 与 Xray 访问日志 |
+| `routing` | 接管 3x-ui 的 Xray 模板路由与出站、热更新运行中的 Xray 并每 5 分钟测试受管出站 | 需要 `xui` |
+| `diagnostics` | 默认关闭；在一次性只读 systemd 沙盒内运行主控转来的 bash 诊断脚本 | 仅在主控开启 AI 授权时执行 |
+| `firewall` | 用 `inet akastr_firewall` 筛选本机入站并做端口转发，改表前后端到端探测并保留或回退 | 仅开启转发时按 `boot_id` 开 IPv4 转发 |
+| `metrics` | 每分钟只读 `/proc`、`/sys` 与网卡硬件统计上报机器状态与累计流量计数 | 无 |
 
-每台节点按需组合下列模块；ChangeIP 需要同时开启 IP 观察。Runner 可以有多台，由 Cloud 分配检测：
+AkastrCloud 持有所有持久业务决策（Telegram 通知与权限、ChangeIP 计划与 45 分钟会话、IPQuality 每日配额与缓存，见 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)）。目标节点按“触发换 IP 后可能立即断网，实际地址只由持续公网 IPv4 观测收敛”的网络模型运行，见 [目标节点网络模型](docs/ARCHITECTURE.md#3-目标节点网络模型) 与 [WSS 协议](docs/PROTOCOL.md#ip-观察changeip-与-ipv4-核对)。
 
-- 公网 IPv4 与可选 IPv6 定时观察；
-- HTTP POST + Bearer token 的 ChangeIP provider，或固定本机程序（不带参数运行）；HTTP provider 只把状态码 `200` 视为明确触发成功，固定程序以退出码 `0` 为成功；
-- 已有 SOCKS5 代理的端口与登录（只供主控派发 IPQuality，Agent 不运行代理）；代理地址始终使用 Agent 观测到的公网 IPv4；
-- 3x-ui：按 Cloud 下发的目标管理本机面板中的受管客户端，并每分钟上报入站、流量和 Xray 是否走内核直传；开了 Xray 访问日志时，还报每个受管客户端的 TCP 连接数；
-- 限速：按 Cloud 下发的目标限制指定用户的下载，靠 3x-ui 的 Xray 访问日志认出连接属于谁；
-- 连接记录：把受管客户端在访问日志里的每次请求（时间、来源、目标、出站、是否被拦截）和连接结束时的流量上报给 Cloud 留作审计；
-- 路由：按 Cloud 下发的目标接管 3x-ui 所运行 Xray 的路由规则与出站（屏蔽、前置到落地、按客户分流），改动一般热更新、不断线，首次接管或默认出站变化（包括替换它的内容）时重启一次 Xray；
-- 防火墙：按 Cloud 下发的目标用一张自己的 nftables 表筛选发往本机的入站（封禁、入站访问来源、有序规则）并做端口转发（内核地址转换，把前置机的端口转到落地），改表前后都确认还连得上 Cloud，连不上就退回上一份；Agent 重启、更新或崩溃都不动这张表；
-- 监控：每分钟上报机器的 CPU、内存、硬盘、连接数和网卡流量计数，只读系统数据；Cloud 据此显示走势、算每日流量和流量额度；
-- IPQuality Runner：见下。
+## 代码结构与联动点
 
-Runner 使用主控随任务下发的目标 SOCKS5 登录，执行固定版本、经过摘要校验的官方 IPQuality 脚本，每台严格单并发，本身不保存代理密码。配置范围与固定版本入口见[安装教程](docs/INSTALLATION.md#ipquality-runner)。
+```text
+cmd/akastr-agent/       CLI 入口（run、prepare、install、version）
+internal/app/           唯一模块清单、依赖校验与装配入口（modules.go）
+internal/modules/*      11 个自包含功能模块目录
+internal/               共用底座：
+  protocol/ transport/ identity   协议编解码、Ed25519 认证与可重连 WSS
+  module/ operation/ desired/ lifecycle  五类模块接口、幂等 journal、目标状态与进程租约
+  xray/ panel/                    Xray 进程/访问日志/连接账本与 3x-ui 面板客户端
+  hostroute/ sockdiag/ netpolicy/ 默认路由网卡、netlink TCP 连接统计与公网 IP 判定
+  layout/ state/ install/ update/ A/B slot、原子 JSON 状态、安装与自更新
+docs/                   安装手册、架构与协议契约
+scripts/                Go 验证、IPQuality 源校验、构建与安装模板
+```
 
-完整步骤、更新、卸载和故障处理见 [安装与使用教程](docs/INSTALLATION.md)。
-
-## 职责边界
-
-Akastr Agent 只负责节点本地执行与观察：
-
-- 观察公网 IPv4，并在启用时独立观察 IPv6；
-- 执行本地固定的 ChangeIP provider；
-- 在专用 Runner 上执行固定版本、固定 checksum 的 IPQuality 脚本；
-- 可选的 `xui` 模块按 Cloud 下发的目标管理本机 3x-ui 中的受管客户端，并上报入站与流量；可与换 IP 同时开启。
-- 可选的 `rate_limit` 模块按 Cloud 下发的目标限制指定客户的下载速度，需要同时开启 `xui`。
-- 可选的 `connection_records` 模块上报受管客户端的连接记录，需要同时开启 `xui`。
-- 可选的 `routing` 模块按 Cloud 下发的目标写入本机 Xray 的路由规则与出站，需要同时开启 `xui`。
-- 可选的 `firewall` 模块按 Cloud 下发的目标筛选发往本机的入站、做端口转发，不依赖其他模块。
-- 可选的 `metrics` 模块每分钟上报机器的运行状态和网卡流量计数，不依赖其他模块。
-
-AkastrCloud 负责业务编排：
-
-- Telegram 命令、私聊通知、绑定关系和使用资格；
-- ChangeIP session、默认延迟 5 分钟、预设/自动计划和持久队列；
-- 目标节点与 Runner 的冲突检查和排队；
-- IPQuality 每个服务节点每天一次真实执行及缓存复用。
-
-IPQuality 的次数与缓存由 Cloud 管理，重装 Agent 不能绕过；具体规则见 [Cloud Carpool 契约](https://github.com/akastrmix/AkastrCloud/blob/main/docs/CARPOOL.md#5-changeip-与-ipquality)。
-
-目标节点按动态公网 IPv4、触发 ChangeIP 后可能立即断网、恢复后可能换 IP 也可能保持原 IP 的网络模型运行；provider 结果只描述触发，不直接代表地址已经改变。完整假设与收敛流程见 [目标节点网络模型](docs/ARCHITECTURE.md#3-目标节点网络模型)，消息契约见 [WSS 协议](docs/PROTOCOL.md#ip-观察changeip-与-ipv4-核对)。ChangeIP 与同一目标的 IPQuality 逻辑互斥；每台 Runner 另有单并发资源限制。Agent 不提供 Telegram channel 播报、离线或资源告警、任意远程命令或浏览器 HTTP-flow ChangeIP。
+**改代码必查联动点**：
+- **新增或修改模块/通信契约**：先改 [PROTOCOL.md](docs/PROTOCOL.md) → 在 `internal/modules/<name>/` 实现 `internal/module` 接口（`Commands`/`Desired`/`Reporter`/`Worker`/`Queries`；进程外留状态的须写明正常停止、原地换进程、崩溃、关模块 `Leftovers` 与卸载的清理或接受残留）→ 在 `internal/app/modules.go` 登记解析、宿主机包依赖与装配 → 同步 Cloud `core/nodes/{bootstrap,module-summary}.ts` 与 `backend/apps/assembly/index.ts`。
+- **修改跨版本升级契约**：`POST /internal/agents/maintenance` 与 CLI `version`/`prepare`/`run` 是旧版升新版的桥梁，改动须按 Cloud ADR 0024 先获批准并说明已装节点迁移方案。
+- **修改 IPQuality 固定脚本**：改 `internal/modules/ipqualityrunner/script/pin.go` 的 commit 与 SHA-256 后，须运行 `sh scripts/verify-ipquality-source.sh` 与 Debian 12/13 依赖检查。
 
 ## 文档
 
-- [安装与使用教程](docs/INSTALLATION.md)：安装、重装、验收、维护与排障。
-- [架构说明](docs/ARCHITECTURE.md)：运行时职责、本地状态与 lifecycle。
-- [WSS 协议](docs/PROTOCOL.md)：Cloud ↔ Agent HTTPS/WSS wire contract。
+`ARCHITECTURE.md` 与 `PROTOCOL.md` 顶部带章节行号索引，**单模块任务按索引分段读取对应小节，不整篇通读**：
+
+- [安装与使用教程](docs/INSTALLATION.md)：安装、重装、验收、维护与故障排查表。
+- [架构说明](docs/ARCHITECTURE.md)：进程模型、包职责、本地持久状态与 A/B 自更新。
+- [WSS 协议](docs/PROTOCOL.md)：Cloud ↔ Agent HTTPS/WSS 通信契约（wire contract）。
 
 ## 文档维护
 
 - 禁止在文档中记流水账或逐项复述本轮改动。只记录真正值得注意的规则、风险、操作前提，或无法从代码直接推导的背景、决策理由与外部约束；普通细节和实现变化由代码、测试及 Git 历史表达，不因完成一次改动就追加文档。
 - 现行文档只描述当前有效行为，不保留迁移流水和已取代实现；长期跨仓库决定进入 Cloud ADR，历史变化通过 Git 查询。
-- 同一事实只维护一份权威说明；职责由上方文档入口确定，其他位置只保留必要概览和链接，不复制完整字段、状态机、命令或流程。README 负责项目入口、产品边界、目录和验证入口。
+- 同一事实只维护一份权威说明；职责由上方文档入口确定，其他位置只保留必要概览和链接，不复制完整字段、状态机、命令或流程；改 `PROTOCOL.md` 或 `ARCHITECTURE.md` 后同步顶部行号索引。
 - 文档可拆分、合并、重命名或删除，路径不是兼容接口；结构调整不改变未批准的产品或架构语义。只有新的稳定职责无法由现有文档自然承载时才新建权威文档，并明确 authority、更新入口和链接、移除重复内容。
-
-## 仓库结构
-
-```text
-cmd/akastr-agent/       CLI 入口
-docs/                   架构、协议和安装教程
-internal/               运行时实现
-scripts/                release 构建与非交互安装模板
-```
-
-包职责以[架构说明](docs/ARCHITECTURE.md#4-包职责)为准。
 
 ## 本地开发
 
-状态转换、冲突规则、解析/校验和恢复语义的变化须有相应测试覆盖。代码变更交付前运行下面的 Go Gate；Debian 本机与 Linux CI 执行同一个原生 Shell 脚本。纯文档变更检查内容、链接和差异。
-
-开发环境使用 Debian 13、Git、Go、Bash；容器回归还需要可运行的 Docker Engine。需要 Go 1.27 或 `go.mod` 指定的兼容版本。Debian 自带 Go 低于该版本时，由 Go 的默认工具链选择按 `go.mod` 获取所需版本；首次执行需要网络。脚本可以从其他目录调用，输出目录按调用者提供的路径解析。
-
-2 核 2 GB 开发机上，验证默认单并发，并将 Go 的软内存目标设为 256 MiB；这不是进程内存硬上限。运行前检查可用内存，同一时间只运行一组验证，结束后核对测试进程和容器已退出。不要同时运行 Cloud 浏览器、数据库和 Agent 压力测试。需要调整时显式设置 `GOMAXPROCS`、`GOMEMLIMIT`。
-
-运行完整验证：
+开发环境使用 Debian 13、Git、Go（低于 `go.mod` 版本时由默认工具链自动拉取，首次需要网络）和 Bash；Debian 依赖回归需要 Docker。2 核 2 GB 开发机上默认单并发、Go 软内存目标 `256MiB`，一次只跑一组验证，不同时跑 Cloud 重型测试（可显式设 `GOMAXPROCS`、`GOMEMLIMIT`）：
 
 ```bash
 ./scripts/verify-go.sh
+scripts/build-release.sh vX.Y.Z /path/to/new-output-directory   # 仅输出 akastr-agent-linux-amd64 与 install.sh
 ```
 
-安装与更新逻辑都在 Go 里（`internal/install`、`internal/update`），由上面的 Go 测试用模拟主控覆盖；`install.sh` 只负责下载、校验并交给程序。
+安装与更新逻辑都在 Go 内（`internal/install`、`internal/update`）并用模拟主控验证，`install.sh` 只负责下载校验并移交程序；`--status` 与 `--uninstall` 同样由该模板资产承载。每次 `push main` 或 PR 由 GitHub Actions 自动运行 `./scripts/verify-go.sh`、`sh -n scripts/*.sh`、`scripts/verify-ipquality-source.sh`、构建校验及 Debian 12/13 容器依赖检查。
 
-每次推送到 `main` 或提交 Pull Request，GitHub Actions 都会自动运行 Go 测试、静态检查、构建、shell 语法检查、固定 IPQuality 源校验和 Debian 12/13 Runner 依赖检查。正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真和重跑规则见 [Cloud 更新指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#5-发布范围与操作者配置)，不在本仓库手工拆分发布步骤。
-
-本地排查发布构建时可以运行：
-
-```bash
-scripts/build-release.sh vX.Y.Z /path/to/new-output-directory
-```
-
-输出目录必须尚不存在。脚本只生成：
-
-```text
-akastr-agent-linux-amd64
-install.sh
-```
-
-`install.sh` 是由模板生成的版本专用资产，内部自动验证对应 binary。项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本；同一个文件接受安装码安装、只读 `--status` 和显式确认的 `--uninstall`。
-
-GitHub Release 只是同步发布中的不可变制品阶段；只有后续 AkastrCloud backend 激活成功，节点的更新检查才会看到该版本。同协议版本走普通同步发布；业务协议的破坏性版本使用相同入口加 `--breaking-protocol`，Cloud 短暂只读切换后恢复，节点通过独立的 HTTPS 更新检查自动更新；更新检查本身保持稳定，不维护多套业务协议。
+正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真与重跑规则见 [Cloud Agent 发布指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#7-agent-发布)，不在本仓库手工打标签。
