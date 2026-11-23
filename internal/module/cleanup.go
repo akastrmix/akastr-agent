@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// Cleanup is a Worker that removes what an earlier process left outside it,
-// for a module that is off: an update replaces the process without stopping
+// Cleanup is a Worker that removes, when the process starts, what an earlier
+// process left outside it: an update replaces the process without stopping
 // it, and a crash never stops it. A failed cleanup is retried every retry;
 // once one succeeds, Done closes and the worker waits for the process to end.
 type Cleanup struct {
