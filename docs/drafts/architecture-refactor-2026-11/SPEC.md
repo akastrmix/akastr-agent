@@ -2,7 +2,7 @@
 
 > **目录生命周期**：临时草稿；执行并发布后删除整个 `docs/drafts/` 目录，不采纳清单随 Git 历史保留。
 >
-> **状态：Claude 改写稿（基于 agy 初稿 61d769b），agy 已复核（同目录 REVIEW.md，0421449，无阻塞异议）并已并入其补充；待主人确认，未批准。** 文档里任何文字都不构成批准。
+> **状态：Claude 改写稿（基于 agy 初稿 61d769b），agy 已复核（同目录 REVIEW.md，0421449，无阻塞异议）并已并入其补充。主人 2026-11-23 在对话中确认按本 Spec 执行 R1–R6。**
 
 - 基准代码：`a37e6ea`（v1.30.1 之后；`61d769b` 只加了本草稿）。协议 `2026-11-01.v12`，节点配置 `schema_version = 5`。
 - 性质：纯 Agent 内部整理。不改协议与共享夹具、不改本地持久文件路径与格式、不改 Cloud、无新增界面术语/存储名/协议名，不触发 Cloud ADR 0024；节点上看不出区别。
@@ -83,7 +83,7 @@
 
 `internal/app/modules.go` 中删除 `ip-state.json` 的几行（协议 v8 以前的遗留，注释写明“没有节点再跑那种 Agent 就删”）。按记录，所有节点 2026-11-19 起都在 v1.30.1。即使某台离线很久的老节点以后直接升到新版：新 Agent 不读这个文件；安装时只在缺 identity 的情况下才检查状态目录，那时本来就会拒绝；卸载会删除整个目录。所以遗留的只是一个无人读取的小文件，属三级，**不需要再查生产**。`RemoveStaleAssets` 只剩清理旧版固定脚本：清理实现随 R3 归到 `ipqualityrunner`，`app.RemoveStaleAssets` 保留为 `daemon` 调用的入口并照旧无条件调用它（`daemon` 不直接导入模块；关掉 Runner 的节点也要清掉旧脚本）。
 
-### R6（可选，待主人决定）关模块后的残留清理共用一个 worker
+### R6 关模块后的残留清理共用一个 worker
 
 现状：`ratelimit.Leftovers`、`firewall.Leftovers`、`diagnostics.Sweeper` 各写了一遍“清理，失败隔一段时间重试，成功后空等到进程结束”。
 
@@ -110,10 +110,10 @@
 
 ## 5. 执行与验证
 
-1. 开工前在 `/root/AkastrAgent` 执行 `git pull --ff-only`；按 R1 → R5（R6 若批准则放最后）一项一个提交。
-2. 文档只做现行描述的最小同步：README“改代码必查联动点”中宿主机包改为由模块自己声明；ARCHITECTURE.md 第 4 节更新 `internal/module`（共用上报器，及 R6 的清理 worker）、`internal/xray`（受管用户判断）、`internal/modules/changeip`（不再有子包）。PROTOCOL.md 与 INSTALLATION.md 不改。
+1. 开工前在 `/root/AkastrAgent` 执行 `git pull --ff-only`；按 R1 → R6 一项一个提交。
+2. 文档只做现行描述的最小同步：README“改代码必查联动点”中宿主机包改为由模块自己声明；ARCHITECTURE.md 第 4 节更新 `internal/module`（共用上报器与清理 worker）、`internal/xray`（受管用户判断）、`internal/modules/changeip`（不再有子包）。PROTOCOL.md 与 INSTALLATION.md 不改。
 3. 验证（2 核 2 GB 机器，串行，不与 Cloud 重型测试并行）：`./scripts/verify-go.sh`、`sh -n scripts/*.sh`、`sh scripts/verify-ipquality-source.sh`。
-4. 执行者在本目录写 `REPORT.md`：每项的提交、与本 Spec 的偏差及原因、验证结果。不发布，发布由主人另行决定。
+4. 执行者在本目录写 `REPORT.md`：每项的提交、与本 Spec 的偏差及原因、验证结果；完成后推送，供 Claude 验收。不发布，发布由主人另行决定。
 
 ## 6. 复核记录
 
