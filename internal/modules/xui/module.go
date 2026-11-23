@@ -10,13 +10,13 @@ import (
 	"errors"
 	"net/netip"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	"github.com/akastrmix/akastr-agent/internal/xray"
 )
 
 const (
@@ -29,11 +29,6 @@ const (
 	maxSafeInt   = 1<<53 - 1
 	maxComment   = 200
 )
-
-var ownedEmail = regexp.MustCompile(`^ak-[a-z0-9]{1,61}$`)
-
-// Owned reports whether email names a client Cloud owns.
-func Owned(email string) bool { return ownedEmail.MatchString(email) }
 
 // settings is the part of an inbound's settings the module reads.
 type settings struct {
@@ -103,7 +98,7 @@ func decodeTarget(key string, raw json.RawMessage) (int, Target, error) {
 		// Every field is required: a missing limit must not read as unlimited.
 		c, err := protocol.DecodeStrict[Client](item, "xui target client",
 			"email", "credential", "flow", "enable", "total_bytes", "reset_seq", "comment")
-		if err != nil || !ownedEmail.MatchString(c.Email) || emails[c.Email] || credentials[c.Credential] ||
+		if err != nil || !xray.Owned(c.Email) || emails[c.Email] || credentials[c.Credential] ||
 			len(c.Credential) < 16 || len(c.Credential) > 256 || strings.ContainsAny(c.Credential, "\x00\r\n\"") ||
 			(c.Flow != "" && c.Flow != visionFlow) ||
 			c.TotalBytes < 0 || c.TotalBytes > maxSafeInt || c.ResetSeq < 0 || c.ResetSeq > maxSafeInt ||

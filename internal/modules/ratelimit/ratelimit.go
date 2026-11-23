@@ -25,8 +25,8 @@ import (
 
 	"github.com/akastrmix/akastr-agent/internal/hostroute"
 	"github.com/akastrmix/akastr-agent/internal/module"
-	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	"github.com/akastrmix/akastr-agent/internal/xray"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
 
@@ -62,7 +62,7 @@ func decodeTarget(raw json.RawMessage) (Target, error) {
 	invalid := err != nil || t.DownMbps < 0 || t.DownMbps > maxMbps
 	seen := map[string]bool{}
 	for _, email := range t.Emails {
-		invalid = invalid || !xui.Owned(email) || seen[email]
+		invalid = invalid || !xray.Owned(email) || seen[email]
 		seen[email] = true
 	}
 	if invalid {

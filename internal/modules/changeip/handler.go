@@ -3,14 +3,17 @@ package changeip
 import (
 	"context"
 	"encoding/json"
+	"net/netip"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
+// ObserveIPv4 observes the node's public IPv4 address and when it was seen.
+type ObserveIPv4 func(context.Context) (netip.Addr, time.Time, error)
+
 type Handler struct {
-	observer       ipwatch.AddressObserver
+	observe        ObserveIPv4
 	provider       Provider
 	reconciler     changeReconciler
 	observeTimeout time.Duration
@@ -23,9 +26,9 @@ type changeReconciler interface {
 	ChangeAddress(commandID string) (string, bool)
 }
 
-func New(observer ipwatch.AddressObserver, provider Provider, reconciler changeReconciler, observeTimeout time.Duration) *Handler {
+func New(observe ObserveIPv4, provider Provider, reconciler changeReconciler, observeTimeout time.Duration) *Handler {
 	return &Handler{
-		observer: observer, provider: provider, reconciler: reconciler,
+		observe: observe, provider: provider, reconciler: reconciler,
 		observeTimeout: observeTimeout,
 	}
 }
@@ -65,14 +68,14 @@ func (h *Handler) Run(ctx context.Context, offer protocol.OperationOffer) protoc
 		return failure("payload_invalid", nil, time.Now().UTC())
 	}
 	observeContext, cancelObserve := context.WithTimeout(ctx, h.observeTimeout)
-	beforeObservation, err := h.observer.Observe(observeContext, ipwatch.IPv4)
+	beforeAddress, observedAt, err := h.observe(observeContext)
 	cancelObserve()
 	if err != nil {
 		return failure("ipv4_observe_failed", nil, time.Now().UTC())
 	}
-	before := beforeObservation.Address.String()
+	before := beforeAddress.String()
 	if before != payload.ExpectedIPv4 {
-		return failure("stale_expected_ipv4", &before, beforeObservation.ObservedAt)
+		return failure("stale_expected_ipv4", &before, observedAt)
 	}
 	if h.reconciler == nil || h.reconciler.ArmChange(offer.CommandID, before, time.Now().UTC()) != nil {
 		return failure("reconciliation_state_failed", &before, time.Now().UTC())

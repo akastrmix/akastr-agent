@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
-	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	"github.com/akastrmix/akastr-agent/internal/xray"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
@@ -117,7 +117,7 @@ func (r *Records) Ended(e ledger.Ended) {
 // with its time, destination and outbound can make. Cloud refuses a batch
 // with one record it cannot read, and the batch would be sent again forever.
 func (r *Records) add(line accesslog.Line, end *ending) {
-	if !xui.Owned(line.Email) || line.Written.IsZero() || line.Dest.Host == "" || line.Outbound == "" || len(line.Outbound) > maxOutbound {
+	if !xray.Owned(line.Email) || line.Written.IsZero() || line.Dest.Host == "" || line.Outbound == "" || len(line.Outbound) > maxOutbound {
 		return
 	}
 	source := netip.AddrPortFrom(line.Conn.Remote.Addr().WithZone(""), line.Conn.Remote.Port())

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/operation"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
@@ -23,7 +22,7 @@ type fakeObserver struct {
 	calls int
 }
 
-func (o *fakeObserver) Observe(context.Context, ipwatch.Family) (ipwatch.Observation, error) {
+func (o *fakeObserver) observe(context.Context) (netip.Addr, time.Time, error) {
 	o.calls++
 	index := o.index
 	if index < len(o.steps)-1 {
@@ -31,11 +30,9 @@ func (o *fakeObserver) Observe(context.Context, ipwatch.Family) (ipwatch.Observa
 	}
 	step := o.steps[index]
 	if step.err != nil {
-		return ipwatch.Observation{}, step.err
+		return netip.Addr{}, time.Time{}, step.err
 	}
-	return ipwatch.Observation{
-		Address: netip.MustParseAddr(step.address), ObservedAt: time.Now().UTC(),
-	}, nil
+	return netip.MustParseAddr(step.address), time.Now().UTC(), nil
 }
 
 type fakeProvider struct{ result Result }
@@ -68,7 +65,7 @@ func (r *fakeReconciler) ChangeAddress(commandID string) (string, bool) {
 func TestCompletedProviderReturnsTriggeredWithoutASecondObservation(t *testing.T) {
 	observer := &fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}}
 	handler := &Handler{
-		observer: observer,
+		observe: observer.observe,
 		provider: fakeProvider{result: Result{
 			State: TriggerConfirmed, Code: "completed", FinishedAt: time.Now().UTC(),
 		}},
@@ -109,7 +106,7 @@ func TestProviderOutcomeControlsReconciliationWithoutRetry(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			reconciler := &fakeReconciler{}
 			handler := &Handler{
-				observer: &fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}},
+				observe: (&fakeObserver{steps: []observerStep{{address: "8.8.8.8"}}}).observe,
 				provider: fakeProvider{result: Result{
 					State: test.providerState, Code: test.providerCode, FinishedAt: time.Now().UTC(),
 				}},

@@ -13,6 +13,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/panel"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	"github.com/akastrmix/akastr-agent/internal/xray"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
 )
@@ -151,7 +152,7 @@ func ownedConnections(c ledger.Connections) connections {
 		out.ErrorCode = new("xui_log_unavailable")
 	}
 	for email, n := range c.Users {
-		if Owned(email) {
+		if xray.Owned(email) {
 			out.Clients = append(out.Clients, clientConnections{Email: email, Connections: n})
 		}
 	}

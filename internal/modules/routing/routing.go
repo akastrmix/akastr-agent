@@ -20,9 +20,9 @@ import (
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
-	"github.com/akastrmix/akastr-agent/internal/modules/xui"
 	"github.com/akastrmix/akastr-agent/internal/panel"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+	xrayuser "github.com/akastrmix/akastr-agent/internal/xray"
 )
 
 const (
@@ -153,7 +153,7 @@ func validRule(r Rule) bool {
 		}
 	}
 	for _, user := range r.Users {
-		if !xui.Owned(user) {
+		if !xrayuser.Owned(user) {
 			return false
 		}
 	}

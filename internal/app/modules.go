@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -252,7 +253,11 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 			if err != nil {
 				return err
 			}
-			runtime.addCommands(changefeature.New(observer, provider, monitor, changeIPObserveWindow))
+			observe := func(ctx context.Context) (netip.Addr, time.Time, error) {
+				observation, err := observer.Observe(ctx, ipwatch.IPv4)
+				return observation.Address, observation.ObservedAt, err
+			}
+			runtime.addCommands(changefeature.New(observe, provider, monitor, changeIPObserveWindow))
 		}
 	}
 	if m.runner != nil {
