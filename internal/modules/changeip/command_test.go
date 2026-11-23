@@ -1,4 +1,4 @@
-package command
+package changeip
 
 import (
 	"context"
@@ -6,8 +6,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
 
 // The provider runs its program without arguments, so the test binary itself
@@ -20,7 +18,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestProviderCompletesWithoutShell(t *testing.T) {
+func TestCommandCompletesWithoutShell(t *testing.T) {
 	provider := newHelperProvider(t, "success", time.Second)
 	result := provider.Run(context.Background())
 	if result.Code != CodeCompleted || result.ExitCode != 0 {
@@ -28,7 +26,7 @@ func TestProviderCompletesWithoutShell(t *testing.T) {
 	}
 }
 
-func TestProviderReportsNonZeroExit(t *testing.T) {
+func TestCommandReportsNonZeroExit(t *testing.T) {
 	provider := newHelperProvider(t, "failure", time.Second)
 	result := provider.Run(context.Background())
 	if result.Code != CodeExitedNonZero || result.ExitCode != 23 {
@@ -38,15 +36,15 @@ func TestProviderReportsNonZeroExit(t *testing.T) {
 
 // A program killed by a signal may already have changed the network; calling
 // that a failure would let Cloud offer the change again.
-func TestProviderReportsSignalledExitAsUnknown(t *testing.T) {
+func TestCommandReportsSignalledExitAsUnknown(t *testing.T) {
 	provider := newHelperProvider(t, "signal", time.Second)
 	result := provider.Run(context.Background())
-	if result.State != changeip.TriggerUnknown || result.Code != CodeTerminated {
+	if result.State != TriggerUnknown || result.Code != CodeTerminated {
 		t.Fatalf("Run() = %#v", result)
 	}
 }
 
-func TestProviderTimesOutAndTerminates(t *testing.T) {
+func TestCommandTimesOutAndTerminates(t *testing.T) {
 	provider := newHelperProvider(t, "sleep", 50*time.Millisecond)
 	result := provider.Run(context.Background())
 	if result.Code != CodeTimedOut {
@@ -54,7 +52,7 @@ func TestProviderTimesOutAndTerminates(t *testing.T) {
 	}
 }
 
-func TestProviderHonorsParentCancellation(t *testing.T) {
+func TestCommandHonorsParentCancellation(t *testing.T) {
 	provider := newHelperProvider(t, "sleep", time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -64,7 +62,7 @@ func TestProviderHonorsParentCancellation(t *testing.T) {
 	}
 }
 
-func TestProviderRejectsProgramSymlink(t *testing.T) {
+func TestCommandRejectsProgramSymlink(t *testing.T) {
 	directory := t.TempDir()
 	target := directory + string(os.PathSeparator) + "changeip-target"
 	link := directory + string(os.PathSeparator) + "changeip"
@@ -74,9 +72,9 @@ func TestProviderRejectsProgramSymlink(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlink creation is unavailable: %v", err)
 	}
-	_, err := New(Config{Program: link, Timeout: time.Second})
+	_, err := newCommandProvider(link, time.Second)
 	if err == nil || err.Error() != "ChangeIP program must not be a symbolic link" {
-		t.Fatalf("New() error = %v, want symbolic link rejection", err)
+		t.Fatalf("newCommandProvider() error = %v, want symbolic link rejection", err)
 	}
 }
 
@@ -98,7 +96,7 @@ func helperProcess(mode string) {
 	}
 }
 
-func newHelperProvider(t *testing.T, mode string, timeout time.Duration) *Provider {
+func newHelperProvider(t *testing.T, mode string, timeout time.Duration) *commandProvider {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
@@ -106,9 +104,9 @@ func newHelperProvider(t *testing.T, mode string, timeout time.Duration) *Provid
 	}
 	t.Setenv("AKASTR_AGENT_HELPER_PROCESS", "1")
 	t.Setenv("AKASTR_AGENT_HELPER_MODE", mode)
-	provider, err := New(Config{Program: executable, Timeout: timeout})
+	provider, err := newCommandProvider(executable, timeout)
 	if err != nil {
-		t.Fatalf("New() error = %v", err)
+		t.Fatalf("newCommandProvider() error = %v", err)
 	}
 	return provider
 }

@@ -8,22 +8,16 @@ import (
 	"io/fs"
 	"net/http"
 	"net/netip"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/layout"
-	changefeature "github.com/akastrmix/akastr-agent/internal/modules/changeip"
-	changecommand "github.com/akastrmix/akastr-agent/internal/modules/changeip/command"
-	changehttp "github.com/akastrmix/akastr-agent/internal/modules/changeip/httpcurl"
+	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 	"github.com/akastrmix/akastr-agent/internal/modules/connectionrecords"
 	"github.com/akastrmix/akastr-agent/internal/modules/diagnostics"
 	"github.com/akastrmix/akastr-agent/internal/modules/firewall"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner"
-	qualityscript "github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/modules/ipwatch"
 	"github.com/akastrmix/akastr-agent/internal/modules/metrics"
 	"github.com/akastrmix/akastr-agent/internal/modules/ratelimit"
@@ -33,15 +27,6 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/panel"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
-	"github.com/akastrmix/akastr-agent/internal/xray/process"
-)
-
-// Fixed runtime limits. Cloud configures what a node does, not these bounds.
-const (
-	changeIPTimeout       = time.Minute
-	changeIPObserveWindow = 5 * time.Minute
-	ipQualityTimeout      = 15 * time.Minute
-	observationTimeout    = 10 * time.Second
 )
 
 // modules holds the parsed configuration of every module a node can enable.
@@ -49,7 +34,7 @@ const (
 // field and its cases in this file.
 type modules struct {
 	ipWatch     *ipwatch.Config
-	changeIP    *changefeature.Config
+	changeIP    *changeip.Config
 	socks5      *socks5.Config
 	runner      *ipqualityrunner.Config
 	xui         *xui.Config
@@ -72,8 +57,8 @@ func parseModules(sections map[string]json.RawMessage) (modules, error) {
 			m.xui, err = parseSection(xui.ParseConfig, raw)
 		case ipwatch.Name:
 			m.ipWatch, err = parseSection(ipwatch.ParseConfig, raw)
-		case changefeature.Name:
-			m.changeIP, err = parseSection(changefeature.ParseConfig, raw)
+		case changeip.Name:
+			m.changeIP, err = parseSection(changeip.ParseConfig, raw)
 		case socks5.Name:
 			m.socks5, err = parseSection(socks5.ParseConfig, raw)
 		case ipqualityrunner.Name:
@@ -126,16 +111,16 @@ func parseSection[T any](parse func(json.RawMessage) (T, error), raw json.RawMes
 // hostCommands and hostPackages are what the installer provides with apt.
 func (m modules) hostCommands() (commands, packages []string) {
 	if m.runner != nil {
-		commands = append(commands, strings.Fields(qualityscript.RunnerCommands)...)
-		packages = append(packages, strings.Fields(qualityscript.RunnerPackages)...)
+		commands = append(commands, ipqualityrunner.HostCommands...)
+		packages = append(packages, ipqualityrunner.HostPackages...)
 	}
 	if m.rateLimit != nil {
-		commands = append(commands, ratelimit.TCProgram)
-		packages = append(packages, "iproute2")
+		commands = append(commands, ratelimit.HostCommands...)
+		packages = append(packages, ratelimit.HostPackages...)
 	}
 	if m.firewall != nil {
 		commands = append(commands, firewall.HostCommands...)
-		packages = append(packages, "nftables", "kmod", "procps")
+		packages = append(packages, firewall.HostPackages...)
 	}
 	return commands, packages
 }
@@ -149,13 +134,13 @@ func RemoveStaleAssets(paths layout.Layout) error {
 	if err := os.Remove(filepath.Join(paths.StateDir, "ip-state.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
-	return qualityscript.RemoveOtherScripts(filepath.Dir(qualityscript.PinnedPath(paths.Root)))
+	return ipqualityrunner.RemoveStaleScripts(paths.Root)
 }
 
 // prepare fetches pinned module assets before the runtime is built.
 func (m modules) prepare(ctx context.Context, paths layout.Layout, client *http.Client) error {
 	if m.runner != nil {
-		return qualityscript.EnsurePinnedScript(ctx, client, qualityscript.PinnedPath(paths.Root))
+		return ipqualityrunner.PrepareScript(ctx, client, paths.Root)
 	}
 	return nil
 }
@@ -187,14 +172,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 		connections := ledger.New(lines, ended)
 		runtime.workers = append(runtime.workers, connections)
-		spliced := func() (bool, error) {
-			xray, err := process.Find("/proc")
-			if err != nil {
-				return false, err
-			}
-			return xray.Spliced()
-		}
-		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel, connections.Connections, spliced))
+		runtime.reporters = append(runtime.reporters, xui.NewSnapshots(panel, connections.Connections))
 		if m.rateLimit != nil {
 			limiter := ratelimit.New(connections)
 			runtime.desired.Add(ratelimit.Name, limiter)
@@ -205,15 +183,15 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		runtime.workers = append(runtime.workers, ratelimit.Leftovers{})
 	}
 	if m.firewall != nil {
-		if err := firewall.Available(); err != nil {
+		filter, err := firewall.New(paths.StateDir, m.controlEndpoint)
+		if err != nil {
 			return err
 		}
-		filter := firewall.New(paths.StateDir, m.controlEndpoint)
 		runtime.desired.Add(firewall.Name, filter)
 		runtime.workers = append(runtime.workers, filter)
 		var panelPort *int
 		if m.xui != nil {
-			panelPort = urlPort(m.xui.PanelURL)
+			panelPort = m.xui.PanelPort()
 		}
 		runtime.reporters = append(runtime.reporters, firewall.NewStatus(filter, panelPort))
 	} else {
@@ -228,10 +206,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		runtime.addQueries(diagnostics.New(sweeper))
 	}
 	if m.ipWatch != nil {
-		observer, err := ipwatch.New(observationTimeout, "Akastr-Agent")
-		if err != nil {
-			return err
-		}
+		observer := ipwatch.New()
 		monitor, err := ipwatch.OpenMonitor(ipwatch.ReconciliationFile(paths.StateDir), observer,
 			time.Duration(m.ipWatch.IntervalSeconds)*time.Second, m.ipWatch.IPv6)
 		if err != nil {
@@ -239,54 +214,25 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 		runtime.reporters = append(runtime.reporters, ipwatch.Reporter{Monitor: monitor})
 		if m.changeIP != nil {
-			var provider changefeature.Provider
-			if m.changeIP.Provider == "http_bearer" {
-				provider, err = changehttp.New(changehttp.Config{
-					Program: "/usr/bin/curl", URL: m.changeIP.URL,
-					BearerToken: m.changeIP.BearerToken, Timeout: changeIPTimeout,
-				})
-			} else {
-				provider, err = changecommand.New(changecommand.Config{
-					Program: m.changeIP.Program, Timeout: changeIPTimeout,
-				})
-			}
-			if err != nil {
-				return err
-			}
 			observe := func(ctx context.Context) (netip.Addr, time.Time, error) {
 				observation, err := observer.Observe(ctx, ipwatch.IPv4)
 				return observation.Address, observation.ObservedAt, err
 			}
-			runtime.addCommands(changefeature.New(observe, provider, monitor, changeIPObserveWindow))
+			change, err := changeip.New(*m.changeIP, observe, monitor)
+			if err != nil {
+				return err
+			}
+			runtime.addCommands(change)
 		}
 	}
 	if m.runner != nil {
-		provider, err := qualityscript.New(qualityscript.Config{
-			ScriptPath: qualityscript.PinnedPath(paths.Root), Timeout: ipQualityTimeout,
-			ScriptVersion: qualityscript.PinnedVersion, ExpectedSHA256Hex: qualityscript.PinnedSHA256,
-		})
+		runner, err := ipqualityrunner.New(paths.Root)
 		if err != nil {
 			return err
 		}
-		runtime.addCommands(ipqualityrunner.New(provider, qualityscript.PinnedVersion))
+		runtime.addCommands(runner)
 	}
 	return nil
-}
-
-// urlPort is the port a URL connects to.
-func urlPort(raw string) *int {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil
-	}
-	port, err := strconv.Atoi(u.Port())
-	if u.Port() == "" {
-		port, err = map[string]int{"http": 80, "https": 443}[u.Scheme], nil
-	}
-	if err != nil || port < 1 || port > 65535 {
-		return nil
-	}
-	return &port
 }
 
 // sharedLog passes the access log's lines to the ledger, then to also.

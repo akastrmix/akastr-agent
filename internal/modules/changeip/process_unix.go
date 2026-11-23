@@ -1,4 +1,4 @@
-package command
+package changeip
 
 import (
 	"os/exec"

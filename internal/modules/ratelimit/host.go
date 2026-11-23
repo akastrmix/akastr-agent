@@ -16,6 +16,12 @@ import (
 // TCProgram is the only program the module runs, with fixed argument shapes.
 const TCProgram = "/usr/sbin/tc"
 
+// HostCommands and HostPackages are what the installer provides for the module.
+var (
+	HostCommands = []string{TCProgram}
+	HostPackages = []string{"iproute2"}
+)
+
 // runner runs tc with args, stdin as its input when not empty.
 type runner interface {
 	run(ctx context.Context, stdin string, args ...string) (string, error)

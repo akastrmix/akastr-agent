@@ -13,6 +13,7 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/xray"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
+	"github.com/akastrmix/akastr-agent/internal/xray/process"
 )
 
 const (
@@ -25,9 +26,18 @@ const (
 // open connections, and whether Xray splices, each minute even when nothing
 // changed: Cloud reads speed from the difference between two snapshots, so an
 // idle minute must say so.
-func NewSnapshots(panel *Panel, connections func() ledger.Connections, spliced func() (bool, error)) *module.Latest {
+func NewSnapshots(panel *Panel, connections func() ledger.Connections) *module.Latest {
 	s := &snapshots{panel: panel, connections: connections, spliced: spliced}
 	return module.NewLatest(KindSnapshot, snapshotInterval, s.sample)
+}
+
+// spliced reads whether the Xray 3x-ui runs splices.
+func spliced() (bool, error) {
+	xray, err := process.Find("/proc")
+	if err != nil {
+		return false, err
+	}
+	return xray.Spliced()
 }
 
 // snapshots reads what a snapshot says.

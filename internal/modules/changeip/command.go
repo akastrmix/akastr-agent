@@ -1,4 +1,4 @@
-package command
+package changeip
 
 import (
 	"context"
@@ -8,34 +8,27 @@ import (
 	"os"
 	"os/exec"
 	"time"
-
-	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
 
 const (
-	CodeCompleted     = "completed"
 	CodeStartFailed   = "start_failed"
 	CodeExitedNonZero = "exited_nonzero"
 	CodeTerminated    = "terminated"
-	CodeTimedOut      = "timed_out"
-	CodeCancelled     = "cancelled"
 )
 
-type Config struct {
-	Program string
-	Timeout time.Duration
+// commandProvider triggers a change by running a local program without a
+// shell or arguments.
+type commandProvider struct {
+	program string
+	timeout time.Duration
+	now     func() time.Time
 }
 
-type Provider struct {
-	config Config
-	now    func() time.Time
-}
-
-func New(config Config) (*Provider, error) {
-	if config.Program == "" {
+func newCommandProvider(program string, timeout time.Duration) (*commandProvider, error) {
+	if program == "" {
 		return nil, errors.New("ChangeIP program is required")
 	}
-	info, err := os.Lstat(config.Program)
+	info, err := os.Lstat(program)
 	if err != nil {
 		return nil, fmt.Errorf("stat ChangeIP program: %w", err)
 	}
@@ -48,24 +41,24 @@ func New(config Config) (*Provider, error) {
 	if info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("ChangeIP program must be executable")
 	}
-	if config.Timeout <= 0 || config.Timeout > 5*time.Minute {
+	if timeout <= 0 || timeout > 5*time.Minute {
 		return nil, errors.New("ChangeIP timeout must be positive and no longer than 5 minutes")
 	}
-	return &Provider{config: config, now: time.Now}, nil
+	return &commandProvider{program: program, timeout: timeout, now: time.Now}, nil
 }
 
-func (p *Provider) Run(ctx context.Context) changeip.Result {
+func (p *commandProvider) Run(ctx context.Context) Result {
 	startedAt := p.now().UTC()
-	runContext, cancel := context.WithTimeout(ctx, p.config.Timeout)
+	runContext, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
-	process := exec.Command(p.config.Program)
+	process := exec.Command(p.program)
 	process.Stdin = nil
 	process.Stdout = io.Discard
 	process.Stderr = io.Discard
 	configureProcess(process)
 	if err := process.Start(); err != nil {
-		return changeip.Result{State: changeip.TriggerFailed, Code: CodeStartFailed, ExitCode: -1, StartedAt: startedAt, FinishedAt: p.now().UTC()}
+		return Result{State: TriggerFailed, Code: CodeStartFailed, ExitCode: -1, StartedAt: startedAt, FinishedAt: p.now().UTC()}
 	}
 
 	done := make(chan error, 1)
@@ -83,21 +76,21 @@ func (p *Provider) Run(ctx context.Context) changeip.Result {
 		if ctx.Err() != nil {
 			code = CodeCancelled
 		}
-		return changeip.Result{State: changeip.TriggerUnknown, Code: code, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: p.now().UTC()}
+		return Result{State: TriggerUnknown, Code: code, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: p.now().UTC()}
 	}
 }
 
-func resultFromWait(waitError error, process *exec.Cmd, startedAt, finishedAt time.Time) changeip.Result {
+func resultFromWait(waitError error, process *exec.Cmd, startedAt, finishedAt time.Time) Result {
 	if waitError == nil {
-		return changeip.Result{State: changeip.TriggerConfirmed, Code: CodeCompleted, ExitCode: 0, StartedAt: startedAt, FinishedAt: finishedAt}
+		return Result{State: TriggerConfirmed, Code: CodeCompleted, ExitCode: 0, StartedAt: startedAt, FinishedAt: finishedAt}
 	}
 	// Only a status the program returned itself says it did not trigger. One
 	// killed by a signal may have changed the network before it stopped.
 	var exit *exec.ExitError
 	if errors.As(waitError, &exit) && exit.ExitCode() > 0 {
-		return changeip.Result{State: changeip.TriggerFailed, Code: CodeExitedNonZero, ExitCode: exit.ExitCode(), StartedAt: startedAt, FinishedAt: finishedAt}
+		return Result{State: TriggerFailed, Code: CodeExitedNonZero, ExitCode: exit.ExitCode(), StartedAt: startedAt, FinishedAt: finishedAt}
 	}
-	return changeip.Result{State: changeip.TriggerUnknown, Code: CodeTerminated, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: finishedAt}
+	return Result{State: TriggerUnknown, Code: CodeTerminated, ExitCode: exitCode(process), StartedAt: startedAt, FinishedAt: finishedAt}
 }
 
 func exitCode(process *exec.Cmd) int {

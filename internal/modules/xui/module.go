@@ -60,6 +60,22 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 	return c, nil
 }
 
+// PanelPort is the port the panel URL connects to.
+func (c Config) PanelPort() *int {
+	u, err := url.Parse(c.PanelURL)
+	if err != nil {
+		return nil
+	}
+	port, err := strconv.Atoi(u.Port())
+	if u.Port() == "" {
+		port, err = map[string]int{"http": 80, "https": 443}[u.Scheme], nil
+	}
+	if err != nil || port < 1 || port > 65535 {
+		return nil
+	}
+	return &port
+}
+
 // Target is what Cloud wants in one inbound, keyed by the inbound's panel id:
 // exactly these owned clients. Expiry stays with Cloud, which disables a
 // client instead; the panel enforces only the traffic limit.

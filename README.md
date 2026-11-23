@@ -43,7 +43,7 @@ scripts/                Go 验证、IPQuality 源校验、构建与安装模板
 ```
 
 **改代码必查联动点**：
-- **新增或修改模块/通信契约**：先改 [PROTOCOL.md](docs/PROTOCOL.md) → 在 `internal/modules/<name>/` 实现 `internal/module` 接口（`Commands`/`Desired`/`Reporter`/`Worker`/`Queries`；进程外留状态的须写明正常停止、原地换进程、崩溃、关模块 `Leftovers` 与卸载的清理或接受残留）→ 在 `internal/app/modules.go` 登记解析、宿主机包依赖与装配 → 同步 Cloud `core/nodes/{bootstrap,module-summary}.ts` 与 `backend/apps/assembly/index.ts`。
+- **新增或修改模块/通信契约**：先改 [PROTOCOL.md](docs/PROTOCOL.md) → 在 `internal/modules/<name>/` 实现 `internal/module` 接口（`Commands`/`Desired`/`Reporter`/`Worker`/`Queries`；进程外留状态的须写明正常停止、原地换进程、崩溃、关模块 `Leftovers` 与卸载的清理或接受残留）→ 模块按自己的配置组装自己并导出所需宿主机命令与 Debian 包，`internal/app/modules.go` 只登记解析、收集宿主机依赖并连接跨模块依赖 → 同步 Cloud `core/nodes/{bootstrap,module-summary}.ts` 与 `backend/apps/assembly/index.ts`。
 - **修改跨版本升级契约**：`POST /internal/agents/maintenance` 与 CLI `version`/`prepare`/`run` 是旧版升新版的桥梁，改动须按 Cloud ADR 0024 先获批准并说明已装节点迁移方案。
 - **修改 IPQuality 固定脚本**：改 `internal/modules/ipqualityrunner/script/pin.go` 的 commit 与 SHA-256 后，须运行 `sh scripts/verify-ipquality-source.sh` 与 Debian 12/13 依赖检查。
 

@@ -3,10 +3,23 @@ package ipqualityrunner
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/modules/ipqualityrunner/script"
 	"github.com/akastrmix/akastr-agent/internal/protocol"
+)
+
+// runTimeout bounds one run of the pinned script.
+const runTimeout = 15 * time.Minute
+
+// HostCommands and HostPackages are what the installer provides for the
+// pinned script.
+var (
+	HostCommands = strings.Fields(script.RunnerCommands)
+	HostPackages = strings.Fields(script.RunnerPackages)
 )
 
 type Handler struct {
@@ -14,8 +27,27 @@ type Handler struct {
 	scriptVersion string
 }
 
-func New(provider *script.Provider, scriptVersion string) *Handler {
-	return &Handler{provider: provider, scriptVersion: scriptVersion}
+// New runs the pinned script kept under the Agent root.
+func New(root string) (*Handler, error) {
+	provider, err := script.New(script.Config{
+		ScriptPath: script.PinnedPath(root), Timeout: runTimeout,
+		ScriptVersion: script.PinnedVersion, ExpectedSHA256Hex: script.PinnedSHA256,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Handler{provider: provider, scriptVersion: script.PinnedVersion}, nil
+}
+
+// PrepareScript downloads the pinned script under root unless it is there.
+func PrepareScript(ctx context.Context, client *http.Client, root string) error {
+	return script.EnsurePinnedScript(ctx, client, script.PinnedPath(root))
+}
+
+// RemoveStaleScripts deletes the scripts of earlier pins under root. Only a
+// committed deployment calls it: a later candidate downloads its own pin.
+func RemoveStaleScripts(root string) error {
+	return script.RemoveOtherScripts(filepath.Dir(script.PinnedPath(root)))
 }
 
 func (h *Handler) CommandType() string    { return CommandType }

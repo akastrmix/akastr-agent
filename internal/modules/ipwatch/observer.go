@@ -14,7 +14,13 @@ import (
 	"github.com/akastrmix/akastr-agent/internal/netpolicy"
 )
 
-const maxResponseBytes = 4096
+const (
+	maxResponseBytes = 4096
+	// sourceTimeout bounds each source; Cloud configures what a node does, not
+	// this bound.
+	sourceTimeout = 10 * time.Second
+	userAgent     = "Akastr-Agent"
+)
 
 type Family int
 
@@ -44,19 +50,13 @@ type Observer struct {
 	v6Sources        []source
 }
 
-func New(perSourceTimeout time.Duration, userAgent string) (*Observer, error) {
-	if perSourceTimeout <= 0 || perSourceTimeout > 30*time.Second {
-		return nil, errors.New("IP observation timeout must be between 1ns and 30s")
-	}
-	if strings.TrimSpace(userAgent) == "" {
-		return nil, errors.New("IP observation user agent is required")
-	}
+func New() *Observer {
 	return &Observer{
-		perSourceTimeout: perSourceTimeout,
+		perSourceTimeout: sourceTimeout,
 		userAgent:        userAgent,
 		clock:            time.Now,
-		v4Client:         newFamilyClient("tcp4", perSourceTimeout),
-		v6Client:         newFamilyClient("tcp6", perSourceTimeout),
+		v4Client:         newFamilyClient("tcp4", sourceTimeout),
+		v6Client:         newFamilyClient("tcp6", sourceTimeout),
 		v4Sources: []source{
 			{url: "https://api.ipify.org", parse: parsePlainAddress},
 			{url: "https://www.cloudflare.com/cdn-cgi/trace", parse: parseCloudflareTrace},
@@ -65,7 +65,7 @@ func New(perSourceTimeout time.Duration, userAgent string) (*Observer, error) {
 			{url: "https://api6.ipify.org", parse: parsePlainAddress},
 			{url: "https://www.cloudflare.com/cdn-cgi/trace", parse: parseCloudflareTrace},
 		},
-	}, nil
+	}
 }
 
 func (o *Observer) Observe(ctx context.Context, family Family) (Observation, error) {

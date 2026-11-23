@@ -135,7 +135,7 @@ func TestActiveJournalRecoveryNeverRunsProviderAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := &countingProvider{}
-	handler := New(nil, provider, nil, time.Second)
+	handler := &Handler{provider: provider, observeTimeout: time.Second}
 	result, err := operation.NewExecutor(engine).Execute(t.Context(), offer, "target-network", handler)
 	if err != nil {
 		t.Fatal(err)

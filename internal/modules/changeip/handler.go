@@ -26,11 +26,28 @@ type changeReconciler interface {
 	ChangeAddress(commandID string) (string, bool)
 }
 
-func New(observe ObserveIPv4, provider Provider, reconciler changeReconciler, observeTimeout time.Duration) *Handler {
+// Fixed runtime limits. Cloud configures what a node does, not these bounds.
+const (
+	triggerTimeout = time.Minute
+	observeTimeout = 5 * time.Minute
+)
+
+// New runs the provider cfg names; observe and reconciler come from ip_watch.
+func New(cfg Config, observe ObserveIPv4, reconciler changeReconciler) (*Handler, error) {
+	var provider Provider
+	var err error
+	if cfg.Provider == "http_bearer" {
+		provider, err = newHTTPProvider(cfg.URL, cfg.BearerToken, triggerTimeout)
+	} else {
+		provider, err = newCommandProvider(cfg.Program, triggerTimeout)
+	}
+	if err != nil {
+		return nil, err
+	}
 	return &Handler{
 		observe: observe, provider: provider, reconciler: reconciler,
 		observeTimeout: observeTimeout,
-	}
+	}, nil
 }
 
 func (h *Handler) CommandType() string    { return CommandType }

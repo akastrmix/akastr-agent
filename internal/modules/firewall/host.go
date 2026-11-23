@@ -76,17 +76,11 @@ func newSystem(controlEndpoint string) *system {
 	return &system{nft: []string{NFTProgram}, proc: "/proc", sys: "/sys", endpoint: controlEndpoint, netlink: openNetlink}
 }
 
-// HostCommands are the programs the installer provides for the module.
-var HostCommands = []string{NFTProgram, modprobe, sysctl}
-
-// Available refuses a configuration that turns the module on where nft is
-// missing, so the node keeps its previous configuration and Cloud shows why.
-func Available() error {
-	if toolMissing() {
-		return errors.New("module firewall needs " + NFTProgram + " (" + codeToolMissing + ")")
-	}
-	return nil
-}
+// HostCommands and HostPackages are what the installer provides for the module.
+var (
+	HostCommands = []string{NFTProgram, modprobe, sysctl}
+	HostPackages = []string{"nftables", "kmod", "procps"}
+)
 
 // toolMissing reports a node without nft; the installer provides it.
 func toolMissing() bool {

@@ -19,7 +19,7 @@ func TestActiveJournalRecoveryReleasesRunnerWithoutExecuting(t *testing.T) {
 	if _, err := engine.Begin(commandID, "ipquality.execute", "ipquality-runner"); err != nil {
 		t.Fatal(err)
 	}
-	handler := New(nil, "2026.08.13")
+	handler := &Handler{scriptVersion: "2026.08.13"}
 	result, err := operation.NewExecutor(engine).Execute(t.Context(), protocol.OperationOffer{CommandID: commandID, CommandType: "ipquality.execute"}, "ipquality-runner", handler)
 	if err != nil {
 		t.Fatal(err)

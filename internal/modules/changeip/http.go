@@ -1,4 +1,4 @@
-package httpcurl
+package changeip
 
 import (
 	"context"
@@ -9,74 +9,68 @@ import (
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
 
 const (
-	CodeCompleted             = "completed"
 	CodeHTTPStatusNot200      = "http_status_not_200"
 	CodeRequestFailed         = "request_failed"
 	CodeTriggerOutcomeUnknown = "trigger_outcome_unknown"
-	CodeTimedOut              = "timed_out"
-	CodeCancelled             = "cancelled"
 
-	bodyLimit  = 4096
-	replyLimit = 300
+	// curlProgram sends the HTTP request; the module runs no other program for it.
+	curlProgram = "/usr/bin/curl"
+	bodyLimit   = 4096
+	replyLimit  = 300
 )
 
-type Config struct {
-	Program     string
-	URL         string
-	BearerToken string
-	Timeout     time.Duration
+// httpProvider triggers a change with one HTTP POST through curl; only HTTP
+// 200 confirms it.
+type httpProvider struct {
+	url     string
+	token   string
+	timeout time.Duration
+	now     func() time.Time
 }
 
-type Provider struct {
-	config Config
-	now    func() time.Time
-}
-
-func New(config Config) (*Provider, error) {
-	if config.Program != "/usr/bin/curl" || config.URL == "" || config.BearerToken == "" ||
-		strings.ContainsAny(config.URL+config.BearerToken, "\r\n") || strings.ContainsAny(config.BearerToken, "\"\\") {
+func newHTTPProvider(url, token string, timeout time.Duration) (*httpProvider, error) {
+	if url == "" || token == "" ||
+		strings.ContainsAny(url+token, "\r\n") || strings.ContainsAny(token, "\"\\") {
 		return nil, errors.New("HTTP ChangeIP provider configuration is invalid")
 	}
-	info, err := os.Stat(config.Program)
+	info, err := os.Stat(curlProgram)
 	if err != nil {
 		return nil, fmt.Errorf("stat curl: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return nil, errors.New("curl must be an executable regular file")
 	}
-	if config.Timeout <= 0 || config.Timeout > 5*time.Minute {
+	if timeout <= 0 || timeout > 5*time.Minute {
 		return nil, errors.New("HTTP ChangeIP timeout must be positive and no longer than 5 minutes")
 	}
-	return &Provider{config: config, now: time.Now}, nil
+	return &httpProvider{url: url, token: token, timeout: timeout, now: time.Now}, nil
 }
 
-func (p *Provider) Run(ctx context.Context) changeip.Result {
+func (p *httpProvider) Run(ctx context.Context) Result {
 	startedAt := p.now().UTC()
-	runContext, cancel := context.WithTimeout(ctx, p.config.Timeout)
+	runContext, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 	// The URL and bearer token reach curl through its stdin config, never argv or disk.
 	// The body goes to stdout and the status to stderr, so neither can be mistaken for the other.
 	process := exec.Command(
-		p.config.Program,
+		curlProgram,
 		"--config", "-",
 		"--output", "-",
 		"--write-out", "%{stderr}%{http_code}",
 	)
 	process.Stdin = strings.NewReader(fmt.Sprintf(
 		"url = \"%s\"\nrequest = \"POST\"\nheader = \"Authorization: Bearer %s\"\nsilent\n",
-		strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(p.config.URL), p.config.BearerToken,
+		strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(p.url), p.token,
 	))
 	body := &headBuffer{limit: bodyLimit}
 	statusOutput := &headBuffer{limit: 64}
 	process.Stdout = body
 	process.Stderr = statusOutput
 	if err := process.Start(); err != nil {
-		return p.result(changeip.TriggerFailed, CodeRequestFailed, -1, startedAt)
+		return p.result(TriggerFailed, CodeRequestFailed, -1, startedAt)
 	}
 	done := make(chan error, 1)
 	go func() { done <- process.Wait() }()
@@ -87,7 +81,7 @@ func (p *Provider) Run(ctx context.Context) changeip.Result {
 		state, code := classify(waitError, exitCode, status)
 		result := p.result(state, code, exitCode, startedAt)
 		if code == CodeHTTPStatusNot200 {
-			result.Reply = reply(status, body, p.config.BearerToken)
+			result.Reply = reply(status, body, p.token)
 		}
 		return result
 	case <-runContext.Done():
@@ -97,24 +91,24 @@ func (p *Provider) Run(ctx context.Context) changeip.Result {
 		if ctx.Err() != nil {
 			code = CodeCancelled
 		}
-		return p.result(changeip.TriggerUnknown, code, process.ProcessState.ExitCode(), startedAt)
+		return p.result(TriggerUnknown, code, process.ProcessState.ExitCode(), startedAt)
 	}
 }
 
-func classify(waitError error, exitCode int, status string) (changeip.TriggerState, string) {
+func classify(waitError error, exitCode int, status string) (TriggerState, string) {
 	if status == "200" {
 		if waitError == nil {
-			return changeip.TriggerConfirmed, CodeCompleted
+			return TriggerConfirmed, CodeCompleted
 		}
-		return changeip.TriggerUnknown, CodeTriggerOutcomeUnknown
+		return TriggerUnknown, CodeTriggerOutcomeUnknown
 	}
 	if len(status) == 3 && status != "000" && status[0] >= '1' && status[0] <= '5' {
-		return changeip.TriggerFailed, CodeHTTPStatusNot200
+		return TriggerFailed, CodeHTTPStatusNot200
 	}
 	if exitCode == 6 || exitCode == 7 || exitCode == 35 {
-		return changeip.TriggerFailed, CodeRequestFailed
+		return TriggerFailed, CodeRequestFailed
 	}
-	return changeip.TriggerUnknown, CodeTriggerOutcomeUnknown
+	return TriggerUnknown, CodeTriggerOutcomeUnknown
 }
 
 // reply is the refusal as an administrator reads it: the status and the start
@@ -162,8 +156,8 @@ func (b *headBuffer) Write(p []byte) (int, error) {
 
 func (b *headBuffer) String() string { return string(b.data) }
 
-func (p *Provider) result(state changeip.TriggerState, code string, exitCode int, startedAt time.Time) changeip.Result {
-	return changeip.Result{
+func (p *httpProvider) result(state TriggerState, code string, exitCode int, startedAt time.Time) Result {
+	return Result{
 		State: state, Code: code, ExitCode: exitCode,
 		StartedAt: startedAt, FinishedAt: p.now().UTC(),
 	}

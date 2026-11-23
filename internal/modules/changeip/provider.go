@@ -13,6 +13,13 @@ const (
 	TriggerFailed    TriggerState = "failed"
 )
 
+// Result codes both providers use.
+const (
+	CodeCompleted = "completed"
+	CodeTimedOut  = "timed_out"
+	CodeCancelled = "cancelled"
+)
+
 type Result struct {
 	State    TriggerState
 	Code     string

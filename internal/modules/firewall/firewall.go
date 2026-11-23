@@ -88,8 +88,13 @@ var (
 	_ module.Worker  = (*Firewall)(nil)
 )
 
-func New(stateDir, controlEndpoint string) *Firewall {
-	return newFirewall(newSystem(controlEndpoint), stateDir)
+// New refuses a configuration that turns the module on where nft is missing,
+// so the node keeps its previous configuration and Cloud shows why.
+func New(stateDir, controlEndpoint string) (*Firewall, error) {
+	if toolMissing() {
+		return nil, errors.New("module firewall needs " + NFTProgram + " (" + codeToolMissing + ")")
+	}
+	return newFirewall(newSystem(controlEndpoint), stateDir), nil
 }
 
 func newFirewall(h host, stateDir string) *Firewall {

@@ -1,4 +1,4 @@
-package httpcurl
+package changeip
 
 import (
 	"context"
@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
-
-	"github.com/akastrmix/akastr-agent/internal/modules/changeip"
 )
 
 func TestClassifyRequiresExactHTTP200(t *testing.T) {
@@ -20,15 +18,15 @@ func TestClassifyRequiresExactHTTP200(t *testing.T) {
 		err      error
 		exitCode int
 		status   string
-		state    changeip.TriggerState
+		state    TriggerState
 		code     string
 	}{
-		{name: "200", status: "200", state: changeip.TriggerConfirmed, code: CodeCompleted},
-		{name: "200 with incomplete transfer", err: errors.New("exit 18"), exitCode: 18, status: "200", state: changeip.TriggerUnknown, code: CodeTriggerOutcomeUnknown},
-		{name: "redirect", status: "302", state: changeip.TriggerFailed, code: CodeHTTPStatusNot200},
-		{name: "server error", err: errors.New("exit 22"), exitCode: 22, status: "502", state: changeip.TriggerFailed, code: CodeHTTPStatusNot200},
-		{name: "dns", err: errors.New("exit 6"), exitCode: 6, status: "000", state: changeip.TriggerFailed, code: CodeRequestFailed},
-		{name: "response lost", err: errors.New("exit 56"), exitCode: 56, status: "000", state: changeip.TriggerUnknown, code: CodeTriggerOutcomeUnknown},
+		{name: "200", status: "200", state: TriggerConfirmed, code: CodeCompleted},
+		{name: "200 with incomplete transfer", err: errors.New("exit 18"), exitCode: 18, status: "200", state: TriggerUnknown, code: CodeTriggerOutcomeUnknown},
+		{name: "redirect", status: "302", state: TriggerFailed, code: CodeHTTPStatusNot200},
+		{name: "server error", err: errors.New("exit 22"), exitCode: 22, status: "502", state: TriggerFailed, code: CodeHTTPStatusNot200},
+		{name: "dns", err: errors.New("exit 6"), exitCode: 6, status: "000", state: TriggerFailed, code: CodeRequestFailed},
+		{name: "response lost", err: errors.New("exit 56"), exitCode: 56, status: "000", state: TriggerUnknown, code: CodeTriggerOutcomeUnknown},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,7 +41,7 @@ func TestClassifyRequiresExactHTTP200(t *testing.T) {
 // Runs the real curl, so a change to its arguments that breaks telling success
 // from refusal, or that lets the token reach the reply, fails here.
 func TestRunReportsTheRefusalWithoutTheToken(t *testing.T) {
-	if _, err := os.Stat("/usr/bin/curl"); err != nil {
+	if _, err := os.Stat(curlProgram); err != nil {
 		t.Skip("curl is not installed")
 	}
 	const token = "secret-token-123"
@@ -67,19 +65,19 @@ func TestRunReportsTheRefusalWithoutTheToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	run := func(path string) changeip.Result {
-		provider, err := New(Config{Program: "/usr/bin/curl", URL: server.URL + path, BearerToken: token, Timeout: 10 * time.Second})
+	run := func(path string) Result {
+		provider, err := newHTTPProvider(server.URL+path, token, 10*time.Second)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return provider.Run(context.Background())
 	}
-	if result := run("/ok"); result.State != changeip.TriggerConfirmed || result.Code != CodeCompleted || result.Reply != "" {
+	if result := run("/ok"); result.State != TriggerConfirmed || result.Code != CodeCompleted || result.Reply != "" {
 		t.Fatalf("200: %#v", result)
 	}
 	refused := run("/refuse")
 	wantStart := `HTTP 400 {"error":"頻率限制中", "echo":"<token>"}xxx`
-	if refused.State != changeip.TriggerFailed || refused.Code != CodeHTTPStatusNot200 ||
+	if refused.State != TriggerFailed || refused.Code != CodeHTTPStatusNot200 ||
 		!strings.HasPrefix(refused.Reply, wantStart) || !strings.HasSuffix(refused.Reply, "x…") ||
 		strings.Contains(refused.Reply, token) || utf8.RuneCountInString(refused.Reply) != len("HTTP 400 ")+replyLimit+1 {
 		t.Fatalf("400: %#v", refused)
