@@ -2,7 +2,7 @@
 
 > **目录生命周期**：临时草稿；执行并发布后删除整个 `docs/drafts/` 目录，不采纳清单随 Git 历史保留。
 >
-> **状态：Claude 改写稿（基于 agy 初稿 61d769b 复核），待 agy 复核、主人确认；未批准。** 文档里任何文字都不构成批准。
+> **状态：Claude 改写稿（基于 agy 初稿 61d769b），agy 已复核（同目录 REVIEW.md，0421449，无阻塞异议）并已并入其补充；待主人确认，未批准。** 文档里任何文字都不构成批准。
 
 - 基准代码：`a37e6ea`（v1.30.1 之后；`61d769b` 只加了本草稿）。协议 `2026-11-01.v12`，节点配置 `schema_version = 5`。
 - 性质：纯 Agent 内部整理。不改协议与共享夹具、不改本地持久文件路径与格式、不改 Cloud、无新增界面术语/存储名/协议名，不触发 Cloud ADR 0024；节点上看不出区别。
@@ -22,7 +22,7 @@
 2. `identity.json`、`state.json`、`update-attempt.json`、`changeip-reconciliation.json`、`xui/state.json`、`firewall/state.json` 的路径与 schema 不变。
 3. `transport`、`operation`、`desired`、`install`、`update` 的状态机、锁与租约不动；`xray/ledger` 的连接认领与计数算法不动；`firewall` 的 `apply` 顺序、规则渲染与摘要、`Started()` 先于控制连接的顺序不动。
 4. ChangeIP 与 IPQuality 的执行、恢复与结果码（`completed`、`timed_out`、`request_failed` 等字符串）逐字不变。
-5. `internal/modules/ipqualityrunner/script/pin.go` 中 `RunnerPackages = "..."`、`RunnerCommands = "..."` 两行的写法不变：`scripts/verify-debian-runtime-dependencies.sh` 用 sed 读取它们。
+5. `internal/modules/ipqualityrunner/script/pin.go` 的路径，以及其中 `PinnedCommit`、`PinnedSHA256`、`RunnerPackages`、`RunnerCommands` 四个常量的单行写法不变：`scripts/verify-ipquality-source.sh` 与 `scripts/verify-debian-runtime-dependencies.sh` 按这个路径和格式用 sed 读取它们。
 6. 只搬代码不改行为。下文唯一声明的行为差异见 R2，Cloud 侧无可观察变化。
 
 ## 3. 改动（每项一个提交，按序执行）
@@ -49,7 +49,7 @@
 做法：在 `internal/module` 加一个共用上报器（名字执行者定，例如 `module.Latest`），参数为 `kind`、周期、`sample func(context.Context) ([]byte, error)`：
 
 - 启动时、每个周期、每次 `ControlReady` 各采样一次；采样失败什么也不发（与现状一致；日志由模块的 `sample` 自己记，`metrics` 的“只在开始失败时记一次”保留在 `metrics` 内）。
-- 采样成功：没有待确认报告，或内容与待确认报告逐字节不同，就生成新 `report_id`；否则沿用原报告原样重发。
+- 采样成功：没有待确认报告，或内容与待确认报告逐字节不同，就生成新 `report_id`；否则沿用原报告原样重发。沿用现行写法：先在锁内更新待确认报告并取出副本，解锁后再发送（反过来写时，回执可能先于记录到达而对不上）。
 - 报告的 `data` 一律以 `json.RawMessage` 发出（杜绝 a564a18 那类事故）。
 - `Acknowledge` 只认当前待确认报告的 `report_id`；`UpdateSafe` 恒为 nil。
 - 各模块只保留采样逻辑：`xui` 的 30 秒读取时限、`metrics` 的上一份 CPU 读数与 `systemd-detect-virt` 结果都留在各自模块。
@@ -69,7 +69,7 @@
 1. **changeip**：把 `changeip/httpcurl` 与 `changeip/command` 并回 `changeip` 包（例如 `http.go`、`command.go`、`process_unix.go`，测试随之移动），由 `changeip` 按自己的配置选择触发方式；时限常量与 curl 路径移入 `changeip`。纯搬家，两份同值的结果码常量（`completed`、`timed_out`、`cancelled`）合为一份，字符串不变。
 2. **ipqualityrunner**：保留 `script` 子包（父包导入子包，没有环）。由 `ipqualityrunner` 用固定版本常量和时限构建 `script` 执行器，并对外提供准备与清理固定脚本的入口；`app` 不再导入 `script`。
 3. **宿主依赖**：`ratelimit`、`firewall`、`ipqualityrunner` 各自导出所需命令与 Debian 包；`app` 只按启用的模块收集。
-4. **其余**：面板端口解析移为 `xui` 配置的方法；`ipwatch` 观察器的时限与 User-Agent 移入 `ipwatch`。
+4. **其余**：面板端口解析移为 `xui` 配置的方法；`ipwatch` 观察器的时限与 User-Agent 移入 `ipwatch`；`xui` 快照默认自己读 Xray 是否直传（`app` 不再为此导入 `internal/xray/process`，包内测试仍可替换）；`firewall.Available()` 并入防火墙的构造函数，`app` 不必记得先调它。
 
 `app` 保留的只有跨模块连线与跨模块依赖校验：两份面板登录（`xui`/`routing` 共用一份、出站检测一份）、访问日志 → 连接账本 → 限速/连接记录/快照、给防火墙的控制地址与面板端口、诊断清理、模块关闭时的残留清理，以及“changeip 需要 ip_watch”等依赖检查。
 
@@ -81,7 +81,7 @@
 
 ### R5 删除到期的兼容代码
 
-`internal/app/modules.go` 中删除 `ip-state.json` 的几行（协议 v8 以前的遗留，注释写明“没有节点再跑那种 Agent 就删”）。按记录，所有节点 2026-11-19 起都在 v1.30.1。即使某台离线很久的老节点以后直接升到新版：新 Agent 不读这个文件；安装时只在缺 identity 的情况下才检查状态目录，那时本来就会拒绝；卸载会删除整个目录。所以遗留的只是一个无人读取的小文件，属三级，**不需要再查生产**。`RemoveStaleAssets` 只剩清理旧版固定脚本，随 R3 归到 `ipqualityrunner`。
+`internal/app/modules.go` 中删除 `ip-state.json` 的几行（协议 v8 以前的遗留，注释写明“没有节点再跑那种 Agent 就删”）。按记录，所有节点 2026-11-19 起都在 v1.30.1。即使某台离线很久的老节点以后直接升到新版：新 Agent 不读这个文件；安装时只在缺 identity 的情况下才检查状态目录，那时本来就会拒绝；卸载会删除整个目录。所以遗留的只是一个无人读取的小文件，属三级，**不需要再查生产**。`RemoveStaleAssets` 只剩清理旧版固定脚本：清理实现随 R3 归到 `ipqualityrunner`，`app.RemoveStaleAssets` 保留为 `daemon` 调用的入口并照旧无条件调用它（`daemon` 不直接导入模块；关掉 Runner 的节点也要清掉旧脚本）。
 
 ### R6（可选，待主人决定）关模块后的残留清理共用一个 worker
 
@@ -115,9 +115,10 @@
 3. 验证（2 核 2 GB 机器，串行，不与 Cloud 重型测试并行）：`./scripts/verify-go.sh`、`sh -n scripts/*.sh`、`sh scripts/verify-ipquality-source.sh`。
 4. 执行者在本目录写 `REPORT.md`：每项的提交、与本 Spec 的偏差及原因、验证结果。不发布，发布由主人另行决定。
 
-## 6. 请 agy 复核的问题
+## 6. 复核记录
 
-1. R2 的 ID 规则与 PROTOCOL.md“上报与回执”中 `xui.snapshot`、`firewall.status`、`metrics.sample` 三段是否逐条一致？还有没有别的上报依赖 `report_id` 区分轮次（类似出站检测）？
-2. R3 把 changeip 两个子包并回父包，是否有比“并包”更省改动、同样能让 changeip 自己选择触发方式的做法？
-3. 还有没有没列出的跨模块耦合，或 `internal/app` 里仍属于单个模块的细节？
-4. 不采纳清单中，有没有你认为确有实际后果、应当恢复的？请给出具体后果和会不会在生产上发生。
+agy 复核（REVIEW.md）：R2 与 PROTOCOL 三段逐条一致；Cloud 7 种上报里只有 `routing.outbound_health` 与 `ip.address` 使用 `report_id`，都不在 R2 内；并包是 R3.1 最简做法；跨模块耦合只有 R1 的 4 处；不采纳清单全部认同。
+
+已并入：不变量 5 补上 `verify-ipquality-source.sh` 与 `pin.go` 路径；R2 的加锁顺序；R3.4 的直传探测与 `firewall.Available()`；R5 的 `RemoveStaleAssets` 调用边界。
+
+未写入：`xui`、`ipwatch` 的状态路径由 `app` 拼接——纯外观，改 `ipwatch.OpenMonitor` 会牵连 `transport` 测试，维持现状；changeip 并包后包内只能有一个 `TestMain`（沿用 `command` 的即可），编译时自然发现，不另写规则。
