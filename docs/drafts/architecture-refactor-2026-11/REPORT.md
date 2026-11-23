@@ -56,4 +56,4 @@
 - `sh -n scripts/*.sh`：通过。
 - `sh scripts/verify-ipquality-source.sh`：通过（commit `0ee5f192…`，sha256 `9823c560…`）。
 - 本机跳过的测试：防火墙真实内核测试 `TestRulesInARealKernel`、`TestForwardingInARealKernel` 因为本机没装 nft 而跳过。本次对 `kernel_test.go` 只改了一个局部变量与类型名，`go vet` 已编译通过。诊断沙盒测试（root + systemd）实际运行并通过，包括 `TestSweeperStopsUnitsOfAnEarlierProcess`。
-- Debian 12/13 容器依赖检查没在本机跑（需要 Docker，不在 SPEC §5 的列表里），推送后由 GitHub Actions 运行。
+- Debian 12/13 容器依赖检查没在本机跑（需要 Docker，不在 SPEC §5 的列表里）；推送后 GitHub Actions `Verify`（run 45112887758，f7d48ad）全部通过，其中包括这项检查。
