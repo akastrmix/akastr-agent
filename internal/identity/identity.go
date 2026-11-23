@@ -14,7 +14,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -26,8 +25,6 @@ import (
 
 const SchemaVersion = 3
 
-var canonicalUUID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-
 type Identity struct {
 	SchemaVersion int    `json:"schema_version"`
 	AgentID       string `json:"agent_id"`
@@ -36,7 +33,7 @@ type Identity struct {
 }
 
 func Generate(agentID string) (Identity, error) {
-	if !canonicalUUID.MatchString(agentID) {
+	if !protocol.ValidUUID(agentID) {
 		return Identity{}, errors.New("identity agent_id is invalid")
 	}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
@@ -85,7 +82,7 @@ func ReadAgentID(filePath string) (string, bool, error) {
 	var owner struct {
 		AgentID string `json:"agent_id"`
 	}
-	if err := json.Unmarshal(raw, &owner); err != nil || !canonicalUUID.MatchString(owner.AgentID) {
+	if err := json.Unmarshal(raw, &owner); err != nil || !protocol.ValidUUID(owner.AgentID) {
 		return "", true, errors.New("existing identity does not name a valid node")
 	}
 	return owner.AgentID, true, nil
@@ -102,7 +99,7 @@ func (i Identity) Validate() error {
 	if i.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("identity schema_version must be %d", SchemaVersion)
 	}
-	if !canonicalUUID.MatchString(i.AgentID) {
+	if !protocol.ValidUUID(i.AgentID) {
 		return errors.New("identity agent_id is invalid")
 	}
 	publicKey, err := decodeKey(i.PublicKey, ed25519.PublicKeySize)
@@ -135,12 +132,10 @@ type Enrollment struct {
 // Enroll registers the identity's public key. Cloud replaces any earlier key of
 // the same node, so a failed or repeated install is repaired by rerunning it.
 func (i Identity) Enroll(ctx context.Context, enrollment Enrollment) error {
-	endpoint, err := url.Parse(enrollment.ControlEndpoint)
-	if err != nil || endpoint.Scheme != "wss" || endpoint.Host == "" || endpoint.Path != "/internal/agents/ws" ||
-		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+	endpoint, ok := protocol.ControlHTTPS(enrollment.ControlEndpoint, "/internal/agents/enroll")
+	if !ok {
 		return errors.New("control endpoint cannot derive enrollment URL")
 	}
-	endpoint.Scheme, endpoint.Path = "https", "/internal/agents/enroll"
 	body, err := json.Marshal(struct {
 		MachineToken          string `json:"machine_token"`
 		PublicKey             string `json:"public_key"`
@@ -153,7 +148,7 @@ func (i Identity) Enroll(ctx context.Context, enrollment Enrollment) error {
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

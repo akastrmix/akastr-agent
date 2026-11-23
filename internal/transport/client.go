@@ -105,10 +105,7 @@ func New(options Options) (*Client, error) {
 	if options.ConfigurationRevision < 1 {
 		return nil, errors.New("Agent configuration revision is invalid")
 	}
-	parsed, err := url.Parse(options.Endpoint)
-	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" ||
-		parsed.Path != "/internal/agents/ws" || parsed.User != nil ||
-		parsed.RawQuery != "" || parsed.Fragment != "" {
+	if !protocol.ValidControlEndpoint(options.Endpoint) {
 		return nil, errors.New("WSS endpoint is invalid")
 	}
 	return &Client{

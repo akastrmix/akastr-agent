@@ -189,6 +189,12 @@ func ValidUUID(value string) bool {
 	return canonicalUUID.MatchString(value)
 }
 
+// ValidSOCKS5Login reports whether value is a usable SOCKS5 username or
+// password (RFC 1929 allows up to 255 bytes).
+func ValidSOCKS5Login(value string) bool {
+	return value != "" && len(value) <= 255 && !strings.ContainsRune(value, '\x00')
+}
+
 func requireEOF(decoder *json.Decoder) error {
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {

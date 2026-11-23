@@ -15,13 +15,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/identity"
+	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 const (
@@ -111,12 +111,10 @@ func (c Client) Check(ctx context.Context, controlEndpoint string, credentials i
 	if errorCode != "" && !stableCode.MatchString(errorCode) {
 		return Target{}, errors.New("update error code is invalid")
 	}
-	endpoint, err := url.Parse(controlEndpoint)
-	if err != nil || endpoint.Scheme != "wss" || endpoint.Host == "" || endpoint.Path != "/internal/agents/ws" ||
-		endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+	endpoint, ok := protocol.ControlHTTPS(controlEndpoint, "/internal/agents/maintenance")
+	if !ok {
 		return Target{}, errors.New("control endpoint cannot derive the update endpoint")
 	}
-	endpoint.Scheme, endpoint.Path = "https", "/internal/agents/maintenance"
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {
 		return Target{}, errors.New("update nonce generation failed")
@@ -137,7 +135,7 @@ func (c Client) Check(ctx context.Context, controlEndpoint string, credentials i
 	if err != nil {
 		return Target{}, err
 	}
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.String(), bytes.NewReader(body))
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return Target{}, err
 	}
