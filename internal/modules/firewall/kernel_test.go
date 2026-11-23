@@ -159,9 +159,9 @@ func TestRulesInARealKernel(t *testing.T) {
 		t.Fatal("observe dropped a new connection")
 	}
 	reaches(5009)
-	status := &Status{firewall: f, system: system}
+	reader := &status{firewall: f, system: system}
 	recorded := map[int]bool{}
-	for _, hit := range status.readHits(context.Background()).Final {
+	for _, hit := range reader.readHits(context.Background()).Final {
 		if hit.Protocol == "tcp" && hit.Port != nil {
 			recorded[*hit.Port] = true
 		}

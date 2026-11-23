@@ -1,18 +1,15 @@
 package xui
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
 	"github.com/akastrmix/akastr-agent/internal/panel"
-	"github.com/akastrmix/akastr-agent/internal/protocol"
 	"github.com/akastrmix/akastr-agent/internal/xray"
 	"github.com/akastrmix/akastr-agent/internal/xray/accesslog"
 	"github.com/akastrmix/akastr-agent/internal/xray/ledger"
@@ -24,27 +21,21 @@ const (
 	maxSnapshotBytes = 900 * 1024
 )
 
-// Snapshots reports the panel's inbounds, the owned clients' traffic and open
-// connections, and whether Xray splices, each minute even when nothing
-// changed: Cloud reads speed from the difference between two snapshots, so
-// an idle minute must say so. Only the newest snapshot matters, so an
-// unacknowledged one is replaced, never queued.
-type Snapshots struct {
+// NewSnapshots reports the panel's inbounds, the owned clients' traffic and
+// open connections, and whether Xray splices, each minute even when nothing
+// changed: Cloud reads speed from the difference between two snapshots, so an
+// idle minute must say so.
+func NewSnapshots(panel *Panel, connections func() ledger.Connections, spliced func() (bool, error)) *module.Latest {
+	s := &snapshots{panel: panel, connections: connections, spliced: spliced}
+	return module.NewLatest(KindSnapshot, snapshotInterval, s.sample)
+}
+
+// snapshots reads what a snapshot says.
+type snapshots struct {
 	panel       *Panel
 	connections func() ledger.Connections
 	// spliced says whether Xray hands Vision downloads to the kernel.
 	spliced func() (bool, error)
-	wake    chan struct{}
-
-	mu       sync.Mutex
-	pending  *protocol.ReportBody
-	pendData []byte
-}
-
-var _ module.Reporter = (*Snapshots)(nil)
-
-func NewSnapshots(panel *Panel, connections func() ledger.Connections, spliced func() (bool, error)) *Snapshots {
-	return &Snapshots{panel: panel, connections: connections, spliced: spliced, wake: make(chan struct{}, 1)}
 }
 
 type snapshot struct {
@@ -89,41 +80,17 @@ type clientTraffic struct {
 	ResetSeq int64 `json:"reset_seq"`
 }
 
-func (s *Snapshots) Run(ctx context.Context, publish module.Publish) error {
-	ticker := time.NewTicker(snapshotInterval)
-	defer ticker.Stop()
-	for {
-		s.tick(ctx, publish)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		case <-s.wake:
-		}
-	}
-}
-
-func (s *Snapshots) tick(ctx context.Context, publish module.Publish) {
+func (s *snapshots) sample(ctx context.Context) ([]byte, error) {
 	readContext, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	data, err := s.read(readContext)
-	cancel()
 	if err != nil {
 		slog.Warn("3x-ui snapshot unavailable", "code", err.Error())
-		return
 	}
-	s.mu.Lock()
-	// An unacknowledged snapshot that says the same is sent again as it is.
-	if s.pending == nil || !bytes.Equal(s.pendData, data) {
-		s.pending = &protocol.ReportBody{ReportID: protocol.NewUUID(), Kind: KindSnapshot, Data: json.RawMessage(data)}
-		s.pendData = data
-	}
-	report := *s.pending
-	s.mu.Unlock()
-	// Without a session the next tick or ready session sends it.
-	_ = publish(report)
+	return data, err
 }
 
-func (s *Snapshots) read(ctx context.Context) ([]byte, error) {
+func (s *snapshots) read(ctx context.Context) ([]byte, error) {
 	result, err := s.readPanel(ctx)
 	if err != nil {
 		return nil, err
@@ -160,7 +127,7 @@ func ownedConnections(c ledger.Connections) connections {
 	return out
 }
 
-func (s *Snapshots) readPanel(ctx context.Context) (snapshot, error) {
+func (s *snapshots) readPanel(ctx context.Context) (snapshot, error) {
 	s.panel.mu.Lock()
 	defer s.panel.mu.Unlock()
 	inbounds, err := s.panel.client.Inbounds(ctx)
@@ -273,22 +240,3 @@ func encode(value map[string]any) json.RawMessage {
 type errorCode string
 
 func (e errorCode) Error() string { return string(e) }
-
-func (s *Snapshots) ControlReady() {
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
-}
-
-func (s *Snapshots) Acknowledge(reportID string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pending == nil || s.pending.ReportID != reportID {
-		return false, nil
-	}
-	s.pending, s.pendData = nil, nil
-	return true, nil
-}
-
-func (s *Snapshots) UpdateSafe() error { return nil }

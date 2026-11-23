@@ -1,7 +1,6 @@
 package firewall
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/hex"
@@ -14,11 +13,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/akastrmix/akastr-agent/internal/module"
-	"github.com/akastrmix/akastr-agent/internal/protocol"
 )
 
 const (
@@ -81,76 +78,25 @@ type domainStatus struct {
 	Failed     bool       `json:"failed"`
 }
 
-// Status sends firewall.status each minute. Only the newest matters, so an
-// unacknowledged one is replaced, never queued.
-type Status struct {
+// NewStatus sends firewall.status for f each minute; panelPort is the 3x-ui
+// panel's port when the node runs xui.
+func NewStatus(f *Firewall, panelPort *int) *module.Latest {
+	s := &status{firewall: f, system: newSystem(""), panelPort: panelPort}
+	return module.NewLatest(KindStatus, statusInterval, s.sample)
+}
+
+// status reads what firewall.status says.
+type status struct {
 	firewall  *Firewall
 	system    *system
 	panelPort *int
-	wake      chan struct{}
-
-	mu       sync.Mutex
-	pending  *protocol.ReportBody
-	pendData []byte
 }
 
-var _ module.Reporter = (*Status)(nil)
-
-// NewStatus reports for f; panelPort is the 3x-ui panel's port when the node
-// runs xui.
-func NewStatus(f *Firewall, panelPort *int) *Status {
-	return &Status{firewall: f, system: newSystem(""), panelPort: panelPort, wake: make(chan struct{}, 1)}
+func (s *status) sample(ctx context.Context) ([]byte, error) {
+	return json.Marshal(s.read(ctx))
 }
 
-func (s *Status) Run(ctx context.Context, publish module.Publish) error {
-	ticker := time.NewTicker(statusInterval)
-	defer ticker.Stop()
-	for {
-		s.tick(ctx, publish)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-		case <-s.wake:
-		}
-	}
-}
-
-func (s *Status) tick(ctx context.Context, publish module.Publish) {
-	data, err := json.Marshal(s.read(ctx))
-	if err != nil {
-		return
-	}
-	s.mu.Lock()
-	if s.pending == nil || !bytes.Equal(s.pendData, data) {
-		s.pending = &protocol.ReportBody{ReportID: protocol.NewUUID(), Kind: KindStatus, Data: json.RawMessage(data)}
-		s.pendData = data
-	}
-	report := *s.pending
-	s.mu.Unlock()
-	_ = publish(report)
-}
-
-func (s *Status) ControlReady() {
-	select {
-	case s.wake <- struct{}{}:
-	default:
-	}
-}
-
-func (s *Status) Acknowledge(reportID string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.pending == nil || s.pending.ReportID != reportID {
-		return false, nil
-	}
-	s.pending, s.pendData = nil, nil
-	return true, nil
-}
-
-func (s *Status) UpdateSafe() error { return nil }
-
-func (s *Status) read(ctx context.Context) statusData {
+func (s *status) read(ctx context.Context) statusData {
 	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
 	data := statusData{
@@ -199,7 +145,7 @@ func (s *Status) read(ctx context.Context) statusData {
 	return data
 }
 
-func (s *Status) readHits(ctx context.Context) hits {
+func (s *status) readHits(ctx context.Context) hits {
 	result := hits{Final: []finalHit{}, Ceiling: []ceilingHit{}}
 	for _, name := range slices.Sorted(maps.Keys(hitSizes)) {
 		out, err := s.system.run(ctx, "", "-j", "-n", "list", "set", "inet", Table, name)
