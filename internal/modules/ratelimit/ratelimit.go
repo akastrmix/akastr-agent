@@ -247,29 +247,13 @@ func (l *Limiter) setCode(code string) {
 }
 
 // Leftovers removes what a process that ran the module left behind, for a
-// node whose module is now off: an update replaces the process without
-// stopping it, and a crash never stops it.
-type Leftovers struct{}
-
-var _ module.Worker = Leftovers{}
-
-func (Leftovers) Run(ctx context.Context) error {
-	for {
+// node whose module is now off.
+func Leftovers() *module.Cleanup {
+	return module.NewCleanup("rate limit rules", leftoverRetry, func(ctx context.Context) error {
 		devs, err := links()
-		if err == nil {
-			err = cleanup(ctx, execTC{}, devs)
+		if err != nil {
+			return err
 		}
-		if err == nil {
-			<-ctx.Done()
-			return ctx.Err()
-		}
-		if ctx.Err() == nil {
-			slog.Warn("rate limit rules of an earlier process remain; retrying", "error", err.Error())
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(leftoverRetry):
-		}
-	}
+		return cleanup(ctx, execTC{}, devs)
+	})
 }

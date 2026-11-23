@@ -173,7 +173,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 	}
 	if m.rateLimit == nil {
-		runtime.workers = append(runtime.workers, ratelimit.Leftovers{})
+		runtime.workers = append(runtime.workers, ratelimit.Leftovers())
 	}
 	if m.firewall != nil {
 		filter, err := firewall.New(paths.StateDir, m.controlEndpoint)
@@ -188,7 +188,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		}
 		runtime.reporters = append(runtime.reporters, firewall.NewStatus(filter, panelPort))
 	} else {
-		runtime.workers = append(runtime.workers, firewall.Leftovers{StateDir: paths.StateDir})
+		runtime.workers = append(runtime.workers, firewall.Leftovers(paths.StateDir))
 	}
 	if m.metrics != nil {
 		runtime.reporters = append(runtime.reporters, metrics.New())
@@ -196,7 +196,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	sweeper := diagnostics.NewSweeper()
 	runtime.workers = append(runtime.workers, sweeper)
 	if m.diagnostics != nil {
-		runtime.addQueries(diagnostics.New(sweeper))
+		runtime.addQueries(diagnostics.New(sweeper.Done()))
 	}
 	if m.ipWatch != nil {
 		observer := ipwatch.New()

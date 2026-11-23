@@ -141,7 +141,7 @@ func TestSweeperStopsUnitsOfAnEarlierProcess(t *testing.T) {
 	stopped := make(chan error, 1)
 	go func() { stopped <- sweeper.Run(ctx) }()
 	select {
-	case <-sweeper.done:
+	case <-sweeper.Done():
 	case <-time.After(time.Minute):
 		t.Fatal("sweeper did not finish")
 	}
@@ -153,9 +153,9 @@ func TestSweeperStopsUnitsOfAnEarlierProcess(t *testing.T) {
 func sandboxRunner(t *testing.T) *Runner {
 	t.Helper()
 	requireSandbox(t)
-	sweeper := NewSweeper()
-	close(sweeper.done)
-	return New(sweeper)
+	swept := make(chan struct{})
+	close(swept)
+	return New(swept)
 }
 
 func requireSandbox(t *testing.T) {

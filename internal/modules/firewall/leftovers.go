@@ -15,29 +15,12 @@ import (
 const leftoverRetry = 30 * time.Second
 
 // Leftovers removes the table and the state directory on a node whose module
-// is off, and turns IPv4 forwarding back off if this Agent turned it on: an
-// update replaces the process without stopping it, and the module never
-// removes its table when the process stops.
-type Leftovers struct{ StateDir string }
-
-var _ module.Worker = Leftovers{}
-
-func (l Leftovers) Run(ctx context.Context) error {
-	for {
-		err := cleanup(ctx, newSystem(""), l.StateDir)
-		if err == nil {
-			<-ctx.Done()
-			return ctx.Err()
-		}
-		if ctx.Err() == nil {
-			slog.Warn("firewall table of an earlier process remains; retrying", "error", err.Error())
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(leftoverRetry):
-		}
-	}
+// is off, and turns IPv4 forwarding back off if this Agent turned it on: the
+// module never removes its table when the process stops.
+func Leftovers(stateDir string) *module.Cleanup {
+	return module.NewCleanup("firewall table", leftoverRetry, func(ctx context.Context) error {
+		return cleanup(ctx, newSystem(""), stateDir)
+	})
 }
 
 func cleanup(ctx context.Context, s *system, stateDir string) error {

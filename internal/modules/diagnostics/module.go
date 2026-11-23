@@ -107,10 +107,10 @@ type Runner struct {
 
 var _ module.Queries = (*Runner)(nil)
 
-// New returns a runner that starts scripts once sweeper has stopped what an
-// earlier process left running.
-func New(sweeper *Sweeper) *Runner {
-	return &Runner{swept: sweeper.done, timeLimit: timeLimit, localBlock: localBlock}
+// New returns a runner that starts scripts once swept closes: the sweeper has
+// stopped what an earlier process left running.
+func New(swept <-chan struct{}) *Runner {
+	return &Runner{swept: swept, timeLimit: timeLimit, localBlock: localBlock}
 }
 
 func (r *Runner) Types() (string, string) { return RequestType, ResultType }
@@ -280,34 +280,15 @@ func stop(command *exec.Cmd, unit string, done <-chan error) {
 	<-done
 }
 
-// Sweeper stops the units an earlier Agent process left running. It runs
+// NewSweeper stops the units an earlier Agent process left running. It runs
 // whether or not the module is enabled, so switching the module off ends them
 // as well.
-type Sweeper struct{ done chan struct{} }
-
-var _ module.Worker = (*Sweeper)(nil)
-
-func NewSweeper() *Sweeper { return &Sweeper{done: make(chan struct{})} }
-
-func (s *Sweeper) Run(ctx context.Context) error {
-	for {
+func NewSweeper() *module.Cleanup {
+	return module.NewCleanup("diagnostics units", time.Minute, func(ctx context.Context) error {
 		stopContext, cancel := context.WithTimeout(ctx, time.Minute)
-		err := exec.CommandContext(stopContext, systemctl, "stop", unitPrefix+"*.service").Run()
-		cancel()
-		if err == nil {
-			close(s.done)
-			<-ctx.Done()
-			return ctx.Err()
-		}
-		if ctx.Err() == nil {
-			slog.Warn("diagnostics units of an earlier process remain; retrying", "error", err.Error())
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Minute):
-		}
-	}
+		defer cancel()
+		return exec.CommandContext(stopContext, systemctl, "stop", unitPrefix+"*.service").Run()
+	})
 }
 
 // capped keeps the first limit bytes written and drains the rest, so a script
