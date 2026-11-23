@@ -73,6 +73,6 @@ scripts/build-release.sh vX.Y.Z /path/to/new-output-directory   # 仅输出 akas
 
 `build-release.sh` 的输出目录必须尚不存在；项目不发布 ARM binary、独立 `.sha256` 或额外维护脚本。
 
-安装与更新逻辑都在 Go 内（`internal/install`、`internal/update`）并用模拟主控验证，`install.sh` 只负责下载校验并移交程序；`--status` 与 `--uninstall` 同样由该模板资产承载。每次 `push main` 或 PR 由 GitHub Actions 自动运行 `./scripts/verify-go.sh`、`sh -n scripts/*.sh`、`scripts/verify-ipquality-source.sh`、构建校验及 Debian 12/13 容器依赖检查。
+安装与更新逻辑都在 Go 内（`internal/install`、`internal/update`）并用模拟主控验证，`install.sh` 只负责下载校验并移交程序；`--status` 与 `--uninstall` 同样由该模板资产承载。每次 `push main` 或 PR 由 GitHub Actions 自动运行 `./scripts/verify-go.sh`、对 `scripts/*.sh` 逐个执行 `sh -n`、`scripts/verify-ipquality-source.sh`、构建校验及 Debian 12/13 容器依赖检查。
 
 正式发布统一从 AkastrCloud 的同步发布入口执行，范围、顺序、CI 验真与重跑规则见 [Cloud Agent 发布指南](https://github.com/akastrmix/AkastrCloud/blob/main/docs/UPDATE_GUIDE.md#7-agent-发布)，不在本仓库手工打标签。
