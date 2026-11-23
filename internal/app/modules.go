@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -126,14 +124,9 @@ func (m modules) hostCommands() (commands, packages []string) {
 }
 
 // RemoveStaleAssets deletes pinned module assets that only earlier deployments
-// used. Call it once this deployment is committed.
+// used. Call it once this deployment is committed. A node with the Runner off
+// may still hold an earlier pin's script.
 func RemoveStaleAssets(paths layout.Layout) error {
-	// Agents before protocol v8 kept IP facts in ip-state.json. This Agent reports
-	// the address again on connecting, and an update never leaves a ChangeIP
-	// reconciliation behind. Delete these lines once no node runs such an Agent.
-	if err := os.Remove(filepath.Join(paths.StateDir, "ip-state.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
 	return ipqualityrunner.RemoveStaleScripts(paths.Root)
 }
 
