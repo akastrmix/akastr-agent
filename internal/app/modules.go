@@ -159,7 +159,7 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 		var lines ledger.Log = log
 		var ended func(ledger.Ended)
 		if m.records != nil {
-			records := connectionrecords.New()
+			records := connectionrecords.New(connectionrecords.Directory(paths.StateDir))
 			lines, ended = sharedLog{log, records.Lines}, records.Ended
 			runtime.reporters = append(runtime.reporters, records)
 		}
@@ -174,6 +174,9 @@ func (m modules) build(paths layout.Layout, runtime *Runtime) error {
 	}
 	if m.rateLimit == nil {
 		runtime.workers = append(runtime.workers, ratelimit.Leftovers())
+	}
+	if m.records == nil {
+		runtime.workers = append(runtime.workers, connectionrecords.Leftovers(paths.StateDir))
 	}
 	if m.firewall != nil {
 		filter, err := firewall.New(paths.StateDir, m.controlEndpoint)

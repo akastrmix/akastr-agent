@@ -311,9 +311,8 @@ func TestLocateFollowsTheRunningConfiguration(t *testing.T) {
 // Run passes the lines already in the copy and the log, then new ones, on the
 // inbound's port; a line of an inbound the panel added to the running Xray
 // later is not lost. An old line keeps its time; a new line stamped on
-// another clock counts as read now but keeps the time it carries. An old line
-// of an inbound that takes both TCP and UDP is not passed on. A line sent to a
-// blackhole outbound is blocked, whatever the outbound is called.
+// another clock counts as read now but keeps the time it carries. A line sent
+// to a blackhole outbound is blocked, whatever the outbound is called.
 func TestRunPassesLines(t *testing.T) {
 	proc, dir := fakeXray(t, `{"access":"./access.log","maskAddress":""}`)
 	path, copy := filepath.Join(dir, "access.log"), filepath.Join(dir, "3xipl-ap.log")
@@ -356,7 +355,11 @@ func TestRunPassesLines(t *testing.T) {
 	at := func(h, m, s, ms int) time.Time { return time.Date(2026, 10, 12, h, m, s, ms*1e6, time.Local) }
 	hysteria := line(9443, "203.0.113.4:4", "ak-h", at(11, 40, 0, 0), at(11, 40, 0, 0), true, true)
 	hysteria.TCP = false
-	want := []Line{line(443, "203.0.113.1:1", "ak-a", at(11, 0, 0, 0), at(11, 0, 0, 0), true, false), hysteria}
+	want := []Line{
+		line(443, "203.0.113.1:1", "ak-a", at(11, 0, 0, 0), at(11, 0, 0, 0), true, false),
+		line(8443, "203.0.113.2:2", "ak-b", at(11, 30, 0, 0), at(11, 30, 0, 0), true, true),
+		hysteria,
+	}
 	if got := next(); !reflect.DeepEqual(got, want) || l.Err() != nil {
 		t.Fatalf("first lines %+v, err %v", got, l.Err())
 	}

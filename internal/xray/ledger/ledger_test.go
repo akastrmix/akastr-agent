@@ -316,7 +316,14 @@ func TestOpenAtStartOnTCPAndUDPInboundCountsForNobody(t *testing.T) {
 	h := newHarness(t)
 	h.open(1, nodeA, 8388, "203.0.113.9:1001", 100)
 	h.tick(0)
+	// The log's tail, which may be either, binds nothing and is no flow.
+	old := lineAt(h.now.Add(-time.Minute), 8388, "203.0.113.9:1001", "ak-a", true)
+	old.Backlog = true
+	h.l.claim([]accesslog.Line{old})
 	h.tick(time.Minute)
+	if got := h.flows("ak-a"); got != nil {
+		t.Fatalf("an old line is a flow: %v", got)
+	}
 	h.line(h.now, 8388, "203.0.113.9:1001", "ak-b", true)
 	h.tick(2 * time.Second)
 	h.expect(map[string][2]uint64{})

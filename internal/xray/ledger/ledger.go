@@ -316,10 +316,16 @@ func (l *Ledger) claim(batch []accesslog.Line) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
-	if l.tail.IsZero() && !l.started.IsZero() {
-		l.tail = now
-	}
 	for _, line := range batch {
+		// The log cannot say whether an old line of an inbound that takes
+		// both TCP and UDP was a connection's or a flow's (see
+		// accesslog.Line.UDP).
+		if line.Backlog && line.TCP && line.UDP {
+			continue
+		}
+		if l.tail.IsZero() && !l.started.IsZero() {
+			l.tail = now
+		}
 		c := &claim{line: line, arrived: now, requests: 1}
 		at := claimKey{line.Conn, line.TCP}
 		if !line.TCP {

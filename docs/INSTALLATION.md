@@ -111,6 +111,7 @@ Akastr Agent <release-version> installed successfully.
 /var/lib/akastr-agent/update-attempt.json（仅在更新失败后出现）
 /var/lib/akastr-agent/xui/state.json（仅在开了 3x-ui 模块时存在）
 /var/lib/akastr-agent/firewall/state.json（仅在开了防火墙模块时存在）
+/var/lib/akastr-agent/connection_records/queue.jsonl 与 state.json（仅在开了连接记录模块时存在：待发送的客户访问记录，最多 200 MiB，去掉模块时删除）
 /usr/local/lib/akastr-agent/current -> slots/a 或 slots/b
 /usr/local/lib/akastr-agent/slots/{a,b}/{akastr-agent,config.json}
 /usr/local/lib/akastr-agent/ipquality/<sha256>.sh

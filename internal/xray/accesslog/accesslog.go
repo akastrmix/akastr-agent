@@ -69,10 +69,10 @@ type Line struct {
 	TCP bool
 	// UDP is set when the line may belong to a UDP flow rather than a TCP
 	// connection: the inbound takes UDP. The log does not say which a line of
-	// an inbound that takes both is for, so such an inbound's backlog is not
-	// passed on: as a TCP line an old one could give a connection open on
-	// opening the log to another user's UDP flow from the same relay address,
-	// and as a UDP flow it would stay limited for hours.
+	// an inbound that takes both is for, so the ledger leaves out such an
+	// inbound's backlog: as a TCP line an old one could give a connection open
+	// on opening the log to another user's UDP flow from the same relay
+	// address, and as a UDP flow it would stay limited for hours.
 	UDP      bool
 	Dest     Dest
 	Outbound string
@@ -258,14 +258,13 @@ func unknown(entries []entry, inbounds map[string]inbound, unlisted map[string]b
 	return false
 }
 
-// lines passes on the entries of inbounds the panel lists, but for the
-// backlog of those that take both TCP and UDP (see Line.UDP).
+// lines passes on the entries of inbounds the panel lists.
 func (l *Log) lines(entries []entry, inbounds map[string]inbound, blackholes map[string]bool) []Line {
 	now := l.now()
 	out := make([]Line, 0, len(entries))
 	for _, e := range entries {
 		ib, found := inbounds[e.tag]
-		if !found || (e.backlog && ib.tcp && ib.udp) {
+		if !found {
 			continue
 		}
 		at := e.at

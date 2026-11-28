@@ -53,7 +53,7 @@ WSS 的拨号、认证与试运行提交共用 30 秒建立窗口；会话中每
 - `internal/panel`：本机 3x-ui 面板的客户端，`xui` 与 `routing` 模块共用一个登录（出站检测另用一个会话，测试的几秒不挡住其他调用）：列入站、增删改客户端、重置流量、读写 Xray 模板、经面板重启 Xray。路径和请求体都固定在这里，Cloud 不能指定。
 - `internal/modules/routing`：把 Cloud 算好的整台节点路由（默认出站、`ak-o-` 受管出站和规则表）先写进 3x-ui 的 Xray 模板，再用运行中那个 Xray 程序的 `api` 子命令热更新；什么时候经面板重启 Xray 见 [PROTOCOL.md](PROTOCOL.md#routing)。配置经标准输入交给 Xray，不落盘。它在进程外留下的状态是模板和运行配置，关闭或卸载时保留（Cloud ADR 0099）。每 5 分钟还用面板自带的出站测试把每个 `ak-o-` 出站测一遍并上报（`routing.outbound_health`，Cloud ADR 0106），测试用面板临时起的 Xray，不碰运行中的那个。
 - `internal/modules/diagnostics`：在一次性 systemd 沙盒里运行 Cloud 转来的诊断脚本（Cloud ADR 0102）：临时用户、只多给读取任何文件的权限、整个文件系统只读（临时目录在内存里）、写不进 journal、连不上本机端口（每次运行前先探测，挡不住就不跑）、有时间与资源上限，脚本结束时单元连同它启动的进程一起消失。一次只跑一个；输出只回答一次，不落盘、不进日志。进程外留下的是运行中的单元：会话结束或到时限时停掉，更新换进程或崩溃后由下一个进程启动时停掉（模块关闭时也停），没有 Agent 时由单元自己的时限结束；卸载先停服务，同样停掉。
-- `internal/modules/connectionrecords`：把受管客户端的日志行和连接结束事件变成记录，在内存里有界排队、分批上报；不写盘。
+- `internal/modules/connectionrecords`：把受管客户端的日志行和连接结束事件变成记录，写进节点磁盘上的有界队列，分批上报，收到回执才删除；重启时从上次写进队列的最后一行补读日志，丢掉的记录和没读回的日志作为缺口上报。
 - `internal/hostroute`：读本机各路由表里 IPv4、IPv6 默认路由所在的网卡，限速、防火墙与监控共用；不认识任何模块。
 - `internal/sockdiag`：经 netlink sock_diag 读取本机 TCP 连接及其收发字节，并订阅连接关闭时的最终计数；不运行外部程序，不认识任何模块。
 - `internal/netpolicy`：判断 IPv4/IPv6 地址是否为公网可达地址，`ipwatch`、IPQuality 脚本与协议校验共用；不认识任何模块。
